@@ -30,10 +30,14 @@ struct PhotogrammetryCLI
 		  -d, --detail <値>               preview | reduced | medium | full | raw（既定: medium）
 		  -o, --sample-ordering <値>      unordered | sequential（既定: unordered）
 		  -s, --feature-sensitivity <値>  normal | high（既定: normal）
+		      --subject <値>              object | scene（既定: object）
+		                                  建物・部屋などシーン全体の写真は scene を指定
+		                                  （オブジェクトマスキングを無効化）
 		  -h, --help                      このヘルプを表示
 
 		例:
 		  photogrammetry-cli ~/Pictures/chair ~/Desktop/chair.usdz --detail full
+		  photogrammetry-cli ~/Pictures/house ~/Desktop/house.usdz --subject scene
 		"""
 
 	static func main() async
@@ -88,7 +92,9 @@ struct PhotogrammetryCLI
 		}
 		catch
 		{
-			fail(error.localizedDescription, code: 1)
+			// domain / code / userInfo まで含めて出す。PhotogrammetrySession の
+			// 失敗は localizedDescription だけでは原因が分からないため。
+			fail(ErrorDetails.describe(error), code: 1)
 		}
 	}
 

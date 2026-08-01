@@ -81,4 +81,22 @@ final class ReconstructionRequestTests: XCTestCase
 			outputFile: workDir.appendingPathComponent("MODEL.USDZ"))
 		XCTAssertNoThrow(try request.validate())
 	}
+
+	func testImageFileCount() throws
+	{
+		// 大文字拡張子・HEIC を数え、画像以外は無視する。
+		try Data().write(to: workDir.appendingPathComponent("a.JPG"))
+		try Data().write(to: workDir.appendingPathComponent("b.heic"))
+		try Data().write(to: workDir.appendingPathComponent("c.txt"))
+		try Data().write(to: workDir.appendingPathComponent("d.png"))
+		XCTAssertEqual(ReconstructionRequest.imageFileCount(in: workDir), 3)
+	}
+
+	func testImageFileCountMissingFolderIsZero()
+	{
+		XCTAssertEqual(
+			ReconstructionRequest.imageFileCount(
+				in: workDir.appendingPathComponent("does-not-exist")),
+			0)
+	}
 }

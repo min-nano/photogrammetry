@@ -44,7 +44,11 @@ xattr -dr com.apple.quarantine /Applications/Photogrammetry.app
 
 1. 「入力」で写真フォルダを選択
 2. 「出力」で保存先（`.usdz`）を選択
-3. 品質（詳細度・写真の並び・特徴点検出）を選んで「3D モデルを生成」
+3. 品質（**対象の種類**・詳細度・写真の並び・特徴点検出）を選んで「3D モデルを生成」
+
+**対象の種類**は重要な設定です。単一の物体（家具・小物など）を撮った写真なら
+「物体」、建物・部屋・現場全体のようなシーンを撮った写真なら「シーン・建物」を
+選んでください（下記「うまくいかないとき」参照）。
 
 ### CLI
 
@@ -52,7 +56,8 @@ xattr -dr com.apple.quarantine /Applications/Photogrammetry.app
 photogrammetry-cli <入力フォルダ> <出力ファイル.usdz> \
     [--detail preview|reduced|medium|full|raw] \
     [--sample-ordering unordered|sequential] \
-    [--feature-sensitivity normal|high]
+    [--feature-sensitivity normal|high] \
+    [--subject object|scene]
 ```
 
 stdout に機械可読な `key=value` 行を逐次出力します（`progress=0.42` /
@@ -69,7 +74,7 @@ open "photogrammetry://process?input=/Users/me/photos&output=/Users/me/model.usd
 ```
 
 パラメータ: `input`（必須）/ `output`（必須）/ `detail` / `ordering` /
-`sensitivity`。語彙は CLI と共通で、解釈は `PhotogrammetryCore` の
+`sensitivity` / `subject`。語彙は CLI と共通で、解釈は `PhotogrammetryCore` の
 `APICommand` に一元化されています。
 
 ### Swift ライブラリ
@@ -90,6 +95,32 @@ try await engine.process(request) { event in
     if case .progress(let fraction) = event { print(fraction) }
 }
 ```
+
+## うまくいかないとき
+
+**「CoreOC.PhotogrammetrySession.Error エラー 6」で失敗する**
+写真群の位置合わせ（アライメント）に失敗しています。典型原因は 2 つ:
+
+1. **対象の種類が合っていない。** 既定の「物体」モードは背景から単一の物体を
+   切り出して復元します（オブジェクトマスキング）。建物・部屋・現場全体の写真では
+   切り出す物体が無いため失敗します。「シーン・建物」（CLI では
+   `--subject scene`）に切り替えてください。
+2. **写真が Object Capture の想定と異なる。** 想定は「1 つの対象を全周から、隣接
+   写真と 70% 程度重なるように 20〜200 枚」。記録用に歩き回って撮った写真の
+   寄せ集めでは、視点のつながりが復元できず失敗します。
+
+**枚数の上限**
+入力枚数がこの Mac のハードウェア上限（`PhotogrammetrySession.limits`）を超えると
+ログに警告が出ます。失敗する場合は写真を減らしてください。
+
+**エラーの詳細**
+失敗時はログ（GUI のログ欄 / CLI の stderr）にエラーの domain / code / userInfo が
+出ます。問い合わせ・調査の際はこの全文を添えてください。
+
+**クラウド上のフォルダが遅い・見つからない**
+Google Drive などのストリーミングフォルダは、実体が未ダウンロードだと読めない・
+非常に遅いことがあります。写真をローカル（例: `~/Pictures`）へコピーしてから
+実行するのが確実です。
 
 ## 自動アップデート
 

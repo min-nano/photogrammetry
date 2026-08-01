@@ -19,6 +19,7 @@ final class ReconstructionViewModel: ObservableObject
 	@Published var detail: ReconstructionRequest.Detail = .medium
 	@Published var sampleOrdering: ReconstructionRequest.SampleOrdering = .unordered
 	@Published var featureSensitivity: ReconstructionRequest.FeatureSensitivity = .normal
+	@Published var subject: ReconstructionRequest.SubjectKind = .object
 
 	@Published var isProcessing = false
 	@Published var progress: Double = 0
@@ -79,7 +80,8 @@ final class ReconstructionViewModel: ObservableObject
 			outputFile: output,
 			detail: detail,
 			sampleOrdering: sampleOrdering,
-			featureSensitivity: featureSensitivity))
+			featureSensitivity: featureSensitivity,
+			subject: subject))
 	}
 
 	/// URL スキーム（photogrammetry://process?...）からの起動。解釈は Core の
@@ -94,6 +96,7 @@ final class ReconstructionViewModel: ObservableObject
 			detail = request.detail
 			sampleOrdering = request.sampleOrdering
 			featureSensitivity = request.featureSensitivity
+			subject = request.subject
 			appendLog("URL コマンドを受信: \(url.absoluteString)")
 			run(request)
 		}
@@ -145,8 +148,10 @@ final class ReconstructionViewModel: ObservableObject
 			}
 			catch
 			{
+				// ログには domain / code / userInfo まで残す（「エラー 6」のような
+				// 表示だけでは原因調査ができないため）。
 				self?.statusText = "エラー: \(error.localizedDescription)"
-				self?.appendLog("エラー: \(error.localizedDescription)")
+				self?.appendLog("エラー: \(ErrorDetails.describe(error))")
 			}
 			self?.isProcessing = false
 			self?.engine = nil

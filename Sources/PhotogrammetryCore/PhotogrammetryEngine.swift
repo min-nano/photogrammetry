@@ -34,6 +34,18 @@ public final class PhotogrammetryEngine
 		PhotogrammetrySession.isSupported
 	}
 
+	/// この Mac のハードウェア上限: 入力画像の最大枚数。
+	public static var maximumImageCount: Int
+	{
+		PhotogrammetrySession.limits.maximumNumberOfInputImages
+	}
+
+	/// この Mac のハードウェア上限: 入力画像の最大辺長（ピクセル）。
+	public static var maximumImageDimension: Int
+	{
+		PhotogrammetrySession.limits.maximumInputImageDimension
+	}
+
 	private var session: PhotogrammetrySession?
 
 	public init() {}
@@ -46,9 +58,30 @@ public final class PhotogrammetryEngine
 	{
 		try request.validate()
 
+		// 事前警告: 入力枚数がこの Mac のハードウェア上限を超えていれば先に知らせる。
+		// 処理自体は止めない（上限の強制は OS 側の仕事で、ここで確実な失敗と断定
+		// できないため）が、アライメント失敗（CoreOC エラー 6 等）の典型原因なので
+		// 必ずログに手掛かりを残す。
+		let imageCount = ReconstructionRequest.imageFileCount(in: request.inputFolder)
+		let maximum = Self.maximumImageCount
+		if imageCount > maximum
+		{
+			onEvent(.note(
+				"警告: 入力画像 \(imageCount) 枚はこの Mac の上限 \(maximum) 枚を超えています。"
+					+ "失敗する場合は写真を \(maximum) 枚以下に減らしてください。"))
+		}
+		else
+		{
+			onEvent(.note("入力画像: \(imageCount) 枚（この Mac の上限: \(maximum) 枚）"))
+		}
+
 		var configuration = PhotogrammetrySession.Configuration()
 		configuration.sampleOrdering = request.sampleOrdering.realityKitValue
 		configuration.featureSensitivity = request.featureSensitivity.realityKitValue
+		// 対象の種類: .object はオブジェクトマスキング有効（背景から単一の物体を
+		// 切り出す = RealityKit の既定）。建物・部屋などシーン全体の写真では前景の
+		// 切り出しが破綻してアライメント失敗になるため、.scene では無効にする。
+		configuration.isObjectMaskingEnabled = (request.subject == .object)
 
 		let session = try PhotogrammetrySession(
 			input: request.inputFolder,

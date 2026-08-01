@@ -39,8 +39,8 @@ Sources/
 - RealityKit の型は `PhotogrammetryEngine.swift` の外に漏らさない
   （API 表現は `ReconstructionRequest` の自前 enum。変換表はエンジン内に 1 つだけ）。
 - 外部連携のパラメータ語彙（`input` / `output` / `detail` / `ordering` /
-  `sensitivity`）は `APICommand` に **1 か所だけ**定義する。入口（URL / CLI）を
-  増やす・変えるときは `APICommand` とそのテストを同時に更新する。
+  `sensitivity` / `subject`）は `APICommand` に **1 か所だけ**定義する。入口
+  （URL / CLI）を増やす・変えるときは `APICommand` とそのテストを同時に更新する。
 - リリースの機械可読形式（アセット名 `Photogrammetry.app.zip`、notes の
   `channel=` / `branch=` / `commit=` / `built=` 行、タグ `stable` / `dev-<slug>`）は
   `UpdateFeed` と `build.yml` の**対**で定義されている。片方を変えるときは必ず

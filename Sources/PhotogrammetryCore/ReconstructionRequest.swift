@@ -25,19 +25,23 @@ public struct ReconstructionRequest: Equatable, Sendable
 	public var sampleOrdering: SampleOrdering
 	/// 特徴点検出の感度。写真が少ない・質感が乏しい対象は .high。
 	public var featureSensitivity: FeatureSensitivity
+	/// 撮影対象の種類（オブジェクトマスキングの有効/無効）。
+	public var subject: SubjectKind
 
 	public init(
 		inputFolder: URL,
 		outputFile: URL,
 		detail: Detail = .medium,
 		sampleOrdering: SampleOrdering = .unordered,
-		featureSensitivity: FeatureSensitivity = .normal)
+		featureSensitivity: FeatureSensitivity = .normal,
+		subject: SubjectKind = .object)
 	{
 		self.inputFolder = inputFolder
 		self.outputFile = outputFile
 		self.detail = detail
 		self.sampleOrdering = sampleOrdering
 		self.featureSensitivity = featureSensitivity
+		self.subject = subject
 	}
 
 	/// PhotogrammetrySession.Request.Detail に対応。rawValue が CLI /
@@ -65,6 +69,18 @@ public struct ReconstructionRequest: Equatable, Sendable
 		case high
 	}
 
+	/// 撮影対象の種類。Object Capture は既定で「背景から単一の物体を切り出す」
+	/// オブジェクトマスキングを行うため、建物・部屋のようなシーン全体の写真では
+	/// 前景の切り出しが破綻し、アライメント失敗（CoreOC エラー 6）になりやすい。
+	/// シーンを扱うときは .scene（マスキング無効）を選ぶ。
+	public enum SubjectKind: String, CaseIterable, Equatable, Sendable
+	{
+		/// 単一の物体（オブジェクトマスキング有効 = RealityKit の既定）。
+		case object
+		/// シーン・建物全体（オブジェクトマスキング無効）。
+		case scene
+	}
+
 	/// セッションを作る前に分かる誤りを検出する。ファイルシステムを見るのは
 	/// ここだけで、呼び出し側（エンジン・CLI・GUI）は throw の内容をそのまま
 	/// ユーザーへ提示すればよい。
@@ -83,6 +99,31 @@ public struct ReconstructionRequest: Equatable, Sendable
 		{
 			throw RequestError.outputExtensionInvalid(outputFile.path)
 		}
+	}
+}
+
+public extension ReconstructionRequest
+{
+	/// 入力フォルダ直下でカウント対象にする画像拡張子。PhotogrammetrySession が
+	/// 実際に受理する形式は ImageIO 依存だが、枚数上限の事前警告に使う概算には
+	/// この近似で足りる。
+	static let imageExtensions: Set<String> = [
+		"jpg", "jpeg", "png", "heic", "heif", "tiff", "tif", "bmp", "dng",
+	]
+
+	/// 入力フォルダ直下の画像ファイル数（概算）。ハードウェア上限の事前警告に
+	/// 使う。フォルダが読めない場合は 0 を返す（存在チェックは validate の仕事）。
+	static func imageFileCount(in folder: URL, fileManager: FileManager = .default) -> Int
+	{
+		guard let names = try? fileManager.contentsOfDirectory(atPath: folder.path)
+		else
+		{
+			return 0
+		}
+		return names.filter
+		{ name in
+			imageExtensions.contains((name as NSString).pathExtension.lowercased())
+		}.count
 	}
 }
 
