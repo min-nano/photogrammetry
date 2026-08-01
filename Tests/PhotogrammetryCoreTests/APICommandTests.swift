@@ -25,17 +25,30 @@ final class APICommandTests: XCTestCase
 		XCTAssertEqual(request.detail, .medium)
 		XCTAssertEqual(request.sampleOrdering, .unordered)
 		XCTAssertEqual(request.featureSensitivity, .normal)
+		XCTAssertEqual(request.subject, .object)
 	}
 
 	func testParseURLAllParameters() throws
 	{
 		let url = URL(
 			string: "photogrammetry://process?input=/a&output=/b.usdz"
-				+ "&detail=full&ordering=sequential&sensitivity=high")!
+				+ "&detail=full&ordering=sequential&sensitivity=high&subject=scene")!
 		let request = try APICommand.parse(url: url)
 		XCTAssertEqual(request.detail, .full)
 		XCTAssertEqual(request.sampleOrdering, .sequential)
 		XCTAssertEqual(request.featureSensitivity, .high)
+		XCTAssertEqual(request.subject, .scene)
+	}
+
+	func testParseURLInvalidSubject()
+	{
+		let url = URL(
+			string: "photogrammetry://process?input=/a&output=/b.usdz&subject=person")!
+		XCTAssertThrowsError(try APICommand.parse(url: url))
+		{ error in
+			XCTAssertEqual(
+				error as? APICommandError, .invalidValue(parameter: "subject", value: "person"))
+		}
 	}
 
 	func testParseURLPercentEncodedPath() throws
@@ -95,10 +108,23 @@ final class APICommandTests: XCTestCase
 			"--detail", "raw",
 			"--sample-ordering", "sequential",
 			"--feature-sensitivity", "high",
+			"--subject", "scene",
 		])
 		XCTAssertEqual(request.detail, .raw)
 		XCTAssertEqual(request.sampleOrdering, .sequential)
 		XCTAssertEqual(request.featureSensitivity, .high)
+		XCTAssertEqual(request.subject, .scene)
+	}
+
+	func testParseArgumentsInvalidSubject()
+	{
+		XCTAssertThrowsError(
+			try APICommand.parse(arguments: ["/a", "/b.usdz", "--subject", "person"]))
+		{ error in
+			XCTAssertEqual(
+				error as? APICommandError,
+				.invalidValue(parameter: "--subject", value: "person"))
+		}
 	}
 
 	func testParseArgumentsShortOptionsAndOrder() throws

@@ -27,6 +27,7 @@ public enum APICommand
 	// -----------------------------------------------------------------
 	// URL スキーム: photogrammetry://process?input=<パス>&output=<パス>
 	//               [&detail=medium][&ordering=sequential][&sensitivity=high]
+	//               [&subject=scene]
 	// パスはパーセントエンコード済みの絶対パス。
 	// -----------------------------------------------------------------
 	public static func parse(url: URL) throws -> ReconstructionRequest
@@ -75,13 +76,19 @@ public enum APICommand
 		{
 			request.featureSensitivity = try enumValue(raw, parameter: "sensitivity")
 		}
+		if let raw = parameters["subject"]
+		{
+			request.subject = try enumValue(raw, parameter: "subject")
+		}
 		return request
 	}
 
 	// -----------------------------------------------------------------
 	// CLI 引数: <input-folder> <output-file>
 	//           [--detail d] [--sample-ordering o] [--feature-sensitivity s]
+	//           [--subject k]
 	// Apple の HelloPhotogrammetry と同じ語彙にしてある（移行しやすさ優先）。
+	// --subject は本アプリの拡張（マスキングの有効/無効）。
 	// -----------------------------------------------------------------
 	public static func parse(arguments: [String]) throws -> ReconstructionRequest
 	{
@@ -89,6 +96,7 @@ public enum APICommand
 		var detailRaw: String?
 		var orderingRaw: String?
 		var sensitivityRaw: String?
+		var subjectRaw: String?
 
 		var index = 0
 		while index < arguments.count
@@ -104,6 +112,9 @@ public enum APICommand
 					index += 2
 				case "--feature-sensitivity", "-s":
 					sensitivityRaw = try optionValue(arguments, at: index, name: argument)
+					index += 2
+				case "--subject":
+					subjectRaw = try optionValue(arguments, at: index, name: argument)
 					index += 2
 				default:
 					if argument.hasPrefix("-")
@@ -135,6 +146,10 @@ public enum APICommand
 		if let raw = sensitivityRaw
 		{
 			request.featureSensitivity = try enumValue(raw, parameter: "--feature-sensitivity")
+		}
+		if let raw = subjectRaw
+		{
+			request.subject = try enumValue(raw, parameter: "--subject")
 		}
 		return request
 	}

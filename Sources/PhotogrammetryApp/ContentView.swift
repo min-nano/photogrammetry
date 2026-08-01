@@ -66,6 +66,13 @@ struct ContentView: View
 			{
 				VStack(alignment: .leading, spacing: 8)
 				{
+					Picker("対象の種類", selection: $model.subject)
+					{
+						ForEach(ReconstructionRequest.SubjectKind.allCases, id: \.self)
+						{ value in
+							Text(Self.label(for: value)).tag(value)
+						}
+					}
 					Picker("詳細度", selection: $model.detail)
 					{
 						ForEach(ReconstructionRequest.Detail.allCases, id: \.self)
@@ -189,6 +196,15 @@ struct ContentView: View
 		{
 			case .normal: return "標準"
 			case .high: return "高"
+		}
+	}
+
+	private static func label(for value: ReconstructionRequest.SubjectKind) -> String
+	{
+		switch value
+		{
+			case .object: return "物体（単一の対象物）"
+			case .scene: return "シーン・建物（マスキング無効）"
 		}
 	}
 }
