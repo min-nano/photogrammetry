@@ -1,0 +1,17 @@
+# SwiftPM
+.build/
+.swiftpm/
+
+# パッケージング・CI の成果物
+dist/
+dist-app/
+debug-out/
+
+# Xcode（リポジトリはプロジェクトファイルを持たない — SwiftPM のみ）
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+
+# macOS
+.DS_Store

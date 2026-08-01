@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Photogrammetry.app の Info.plist テンプレート。
+  scripts/package-app.sh が SwiftPM のビルド成果物と一緒に .app へ組み立て、
+  GitCommit / GitBranch / BuildChannel / CFBundleVersion を PlistBuddy で
+  スタンプする（自動アップデートがこのスタンプとリリースを突き合わせる）。
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>ja</string>
+	<key>CFBundleDisplayName</key>
+	<string>Photogrammetry</string>
+	<key>CFBundleExecutable</key>
+	<string>Photogrammetry</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.minnano.photogrammetry</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Photogrammetry</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.graphics-design</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string></string>
+	<!-- 外部アプリ連携 API: photogrammetry://process?input=...&amp;output=... -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.minnano.photogrammetry.url</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>photogrammetry</string>
+			</array>
+		</dict>
+	</array>
+	<!-- ビルドスタンプ（package-app.sh が上書きする） -->
+	<key>GitCommit</key>
+	<string>unknown</string>
+	<key>GitBranch</key>
+	<string>unknown</string>
+	<key>BuildChannel</key>
+	<string>unknown</string>
+	<key>BuiltAt</key>
+	<string>unknown</string>
+</dict>
+</plist>

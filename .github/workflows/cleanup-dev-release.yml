@@ -1,0 +1,34 @@
+name: Clean up dev prerelease
+
+# ブランチが削除されたら、build.yml がそのブランチ用に公開した "dev-<branch>"
+# プレリリース（とタグ）を消す。古い dev ビルドを積み上げないため。
+#
+# NOTE: `delete` トリガのワークフローは常に**デフォルトブランチ上の**この
+# ファイルで走る。main に入って以降に削除されたブランチから有効になる。
+on:
+  delete:
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    # ブランチ削除だけが対象（タグ削除は dev プレリリースに対応しない）。
+    if: github.event.ref_type == 'branch' && github.event.ref != 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete the branch's dev prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch="${{ github.event.ref }}"
+          # build.yml の "Publish dev prerelease" ステップと同じ slug 規則。
+          slug="$(printf '%s' "$branch" | tr '/:@ ' '----' | tr -c 'A-Za-z0-9._-' '-')"
+          tag="dev-${slug}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Deleting release + tag: $tag (branch: $branch)"
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          else
+            echo "No dev release for '$branch' (expected tag '$tag'); nothing to clean up."
+          fi

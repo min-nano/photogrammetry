@@ -1,0 +1,150 @@
+name: CI debug
+
+# ---------------------------------------------------------------------------
+# 手動ディスパッチ専用の「CI 上で 1 コマンド動かす」ワークフロー。
+#
+# なぜ必要か: リモートセッション（claude.ai/code などクラウド上のコンテナ）は
+# Linux で、macOS / Xcode / RealityKit が無い。Swift のビルドエラーやテストの失敗、
+# 実機挙動の調査は macOS ランナー上でしか確かめられない。それを build.yml に
+# 一時ステップを挿して調べるのは、(1) 戻し忘れる (2) その commit が dev プレ
+# リリースとして公開される — と副作用が大きい。
+#
+# このワークフローは push / pull_request では**決して**起動せず（トリガは
+# workflow_dispatch のみ）、リリースも公開しない。調査したいことがあるときだけ
+# 叩き、終わったら何も残らない。
+#
+# 使い方（AI・人間とも）は scripts/ci-debug.sh 経由が基本:
+#
+#   scripts/ci-debug.sh run --mode test --args '--filter UpdateFeedTests'
+#
+# ディスパッチ → 完了待ち → ペイロード抽出までを 1 コマンドで行う。詳細は
+# CLAUDE.md「CI デバッグ」節と scripts/ci-debug.sh のヘッダを参照。
+#
+# NOTE: workflow_dispatch はデフォルトブランチに存在するワークフローしか起動でき
+# ない。このファイルが main に入って初めて、作業ブランチを ref に指定して呼べる
+# ようになる（実行されるワークフロー定義はその ref 側のもの）。逆に言えばモードの
+# 追加・修正は scripts/ci-debug-job.sh 側で行えば作業ブランチだけで完結する。
+# ---------------------------------------------------------------------------
+
+# run-name は REST API の workflow_runs[].display_title として返る。dispatch API は
+# 起動した run の id を返さないため、一意な label をここへ埋め込むことで
+# 「自分が起動した run」を後から特定できるようにしている（scripts/ci-debug.sh が
+# "[label]" で突き合わせる）。label を必須入力にしているのはこのため。
+run-name: "ci-debug ${{ inputs.mode }} [${{ inputs.label }}]"
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行する調査の種類"
+        required: true
+        type: choice
+        options:
+          - build
+          - test
+          - run-cli
+          - shell
+      label:
+        description: "この実行の一意な識別子（run 名に出る。呼び出し側が run を特定するのに使う）"
+        required: true
+        type: string
+      args:
+        description: "mode ごとの引数（swift build/test への追加フラグ、CLI の引数）"
+        required: false
+        type: string
+      script:
+        description: "mode=shell のときに実行する bash"
+        required: false
+        type: string
+      notify_pr:
+        description: "完了時に結果を投稿する PR 番号（空なら投稿しない）"
+        required: false
+        type: string
+
+# 最小権限。contents: write は与えないので、このワークフローがリリースを公開したり
+# ブランチを書き換えたりすることは構造的に起こり得ない。pull-requests: write は
+# notify_pr が指定されたときの結果コメント投稿にだけ使う。
+permissions:
+  contents: read
+  pull-requests: write
+
+# concurrency グループは意図的に設定しない。デバッグ実行は互いに独立で、条件を変えた
+# 2 本を同時に流したいことがあるため（グループ化すると片方が cancel され、完了待ち
+# している呼び出し側が結果を取り逃す）。暴走は timeout-minutes で頭打ちにする。
+
+jobs:
+  debug:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    env:
+      # 入力は必ず環境変数として渡す（run: のスクリプト本文へ ${{ }} で展開しない）。
+      MODE: ${{ inputs.mode }}
+      ARGS: ${{ inputs.args }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Select Xcode 16.2
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: "16.2"
+
+      - name: Show context
+        run: |
+          set -euo pipefail
+          echo "mode=$MODE runner=$RUNNER_OS"
+          echo "ref=${{ github.ref_name }} sha=${{ github.sha }}"
+          echo "args=$ARGS"
+          swift --version
+
+      # ここが本体。ログの末尾がペイロードになるよう、これ以降のステップは
+      # アーティファクトのアップロードと（任意の）PR コメントだけに絞ってある。
+      - name: Run debug command
+        id: payload
+        env:
+          SCRIPT: ${{ inputs.script }}
+        run: scripts/ci-debug-job.sh
+
+      # AI は GitHub MCP でアーティファクトを取得できないため、これはあくまで人間用の
+      # 保険（切り捨てられた全文ログを後から追える）。
+      - name: Upload raw output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-debug-${{ inputs.label }}
+          path: debug-out
+          if-no-files-found: warn
+          retention-days: 7
+
+      # 完了通知の保険。PR 購読中のセッションには「CI 失敗」とコメントは配信される
+      # が、成功は配信されない。scripts/ci-debug.sh のバックグラウンド待機が主たる
+      # 通知経路で、これはその待機プロセスが失われた場合（セッション再開など）に
+      # 結果へ追いつくための冗長化。既定はオフ（notify_pr が空なら投稿しない）。
+      - name: Comment the result on a pull request
+        if: always() && inputs.notify_pr != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.notify_pr }}
+          OUTCOME: ${{ steps.payload.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LABEL: ${{ inputs.label }}
+        run: |
+          set -euo pipefail
+          {
+            echo "**ci-debug** \`mode=$MODE\` — **$OUTCOME** ([run]($RUN_URL))"
+            echo
+            echo "<details><summary>payload (label: <code>$LABEL</code>)</summary>"
+            echo
+            echo '```text'
+            if [ -f debug-out/payload.txt ]; then
+              head -n 120 debug-out/payload.txt
+            else
+              echo "(no payload — the job failed before the debug command ran)"
+            fi
+            echo '```'
+            echo
+            echo "</details>"
+          } > comment.md
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file comment.md

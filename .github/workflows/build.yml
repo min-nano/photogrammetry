@@ -1,0 +1,281 @@
+name: Build app
+
+on:
+  # main はプッシュでビルドする（保護されたデフォルトブランチ）。作業ブランチは
+  # 必ず PR 経由でビルドされ、その PR が dev プレリリースを公開する。こうして
+  # おくと「PR の開いたブランチ」が push と PR で二重にビルドされない。
+  push:
+    branches: [main]
+  pull_request:
+  # 手動再ディスパッチ用（stable リリースの再公開など）。調査目的の実行には
+  # ci-debug.yml を使うこと（build.yml に一時ステップを挿してはならない）。
+  workflow_dispatch:
+
+# 最小権限。ビルドジョブはチェックアウトとアーティファクトのアップロードだけ
+# なので read で足り、リリースを公開する release ジョブだけが自分に
+# contents: write を要求する。
+permissions:
+  contents: read
+
+# ref ごとに 1 ビルド。PR は新しい push が進行中のビルドをキャンセルする
+# （最新コミットの dev プレリリースだけが意味を持つため）。main はキャンセル
+# しない — main への各コミットが自分の stable リリースを公開するので、
+# どのビルドも完走しなければならない。
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-mac:
+    # Apple Silicon ランナー（macos-14 以降は arm64）。
+    runs-on: macos-15
+
+    steps:
+      # 実際にビルドする commit/ref を解決する。pull_request イベントの
+      # GITHUB_SHA は一時的なマージコミットで GITHUB_REF_NAME は "<n>/merge" に
+      # なるため、PR では head を使う（開発者が push した commit が dev
+      # プレリリースの指す commit になるべき）。
+      - name: Resolve build context
+        id: ctx
+        env:
+          # head_ref（ブランチ名）は攻撃者が制御できる文字列なので、スクリプト
+          # 本文へ ${{ }} で展開せず環境変数として渡す。
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            sha="${{ github.event.pull_request.head.sha }}"
+            ref="$HEAD_REF"
+            channel="dev"
+          else
+            sha="${{ github.sha }}"
+            ref="${{ github.ref_name }}"
+            channel="stable"
+          fi
+          {
+            echo "sha=$sha"
+            echo "short=${sha:0:7}"
+            echo "ref=$ref"
+            echo "channel=$channel"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.ctx.outputs.sha }}
+
+      - name: Select Xcode 16.2
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: "16.2"
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      # 純ロジック（APICommand / UpdateFeed / validate）の単体テスト。実際の
+      # 3D 再構成はランナーの GPU 要件次第なのでテストしない（ローカル確認）。
+      - name: Run tests
+        run: swift test
+
+      # ユニバーサルバイナリ（arm64 + x86_64）のリリースビルド。Object Capture
+      # は Intel Mac（GPU 要件あり）でも動くため両アーキテクチャを入れる。
+      - name: Build (release, universal)
+        id: build
+        run: |
+          set -euo pipefail
+          swift build -c release --arch arm64 --arch x86_64
+          bin="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)"
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+
+      # SwiftPM は .app を作れないので、バンドルの組み立てはスクリプトに集約
+      # してある（ローカルでも同じ手順で作れる）。ビルドスタンプ（コミット・
+      # ブランチ・チャンネル）は自動アップデートがリリースと突き合わせる鍵。
+      - name: Package app bundle
+        env:
+          PG_COMMIT: ${{ steps.ctx.outputs.short }}
+          PG_BRANCH: ${{ steps.ctx.outputs.ref }}
+          PG_CHANNEL: ${{ steps.ctx.outputs.channel }}
+          PG_BUILD_NUMBER: ${{ github.run_number }}
+          BIN_DIR: ${{ steps.build.outputs.bin }}
+        run: scripts/package-app.sh "$BIN_DIR/PhotogrammetryApp" dist-app
+
+      # Apple Silicon はすべての Mach-O に署名を要求する。無料・証明書不要の
+      # ad-hoc 署名（"-"）で十分カーネルはロードする。Apple Developer ID 署名や
+      # 公証ではないので、初回起動には Gatekeeper の回避操作が要る（README 参照）。
+      - name: Ad-hoc code-sign the app
+        run: |
+          set -euo pipefail
+          codesign --force --deep --sign - dist-app/Photogrammetry.app
+          codesign --verify --strict --verbose=2 dist-app/Photogrammetry.app
+
+      - name: Inspect built app
+        run: |
+          set -euo pipefail
+          app="dist-app/Photogrammetry.app"
+          test -d "$app" || { echo "::error::$app was not produced"; exit 1; }
+          find "$app" -maxdepth 3
+          lipo -info "$app/Contents/MacOS/Photogrammetry"
+          test -x "$app/Contents/Resources/install-update.sh" \
+            || { echo "::error::install-update.sh was not bundled"; exit 1; }
+          echo "Build stamp:"
+          /usr/libexec/PlistBuddy -c "Print :BuildChannel" "$app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :GitBranch"    "$app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :GitCommit"    "$app/Contents/Info.plist"
+
+      # zip は CI アーティファクトであると同時に、リリースアセット（自動アップ
+      # デートがダウンロードするもの）でもある。名前は UpdateFeed.appAssetName と
+      # 一致させること。ditto はシンボリックリンク・実行権限を保ったまま固める。
+      - name: Package zips
+        env:
+          BIN_DIR: ${{ steps.build.outputs.bin }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --keepParent dist-app/Photogrammetry.app dist/Photogrammetry.app.zip
+          zip -j dist/photogrammetry-cli.zip "$BIN_DIR/photogrammetry-cli"
+          ls -l dist
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: app-zips
+          path: dist
+
+  # ---------------------------------------------------------------------------
+  # ダウンロード可能なリリースの公開。ビルドが終わってから 1 回だけ走る。
+  #   main  -> ローリングの "stable" リリースを作り直す（自動アップデートの安定版）。
+  #   PR    -> ブランチごとの "dev-<slug>" プレリリースを作り直す。
+  # ローリングタグは削除→再作成で常にこのビルドを指すようにする。
+  release:
+    needs: build-mac
+    runs-on: ubuntu-latest
+
+    # リリースを公開（更新）するのはこのジョブだけなので、write もここだけ。
+    permissions:
+      contents: write
+
+    steps:
+      # ビルドジョブと同じ commit/ref 解決（PR の head、または push された sha）。
+      - name: Resolve build context
+        id: ctx
+        env:
+          # head_ref は攻撃者が制御できる文字列なので環境変数として渡す。
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            sha="${{ github.event.pull_request.head.sha }}"
+            ref="$HEAD_REF"
+          else
+            sha="${{ github.sha }}"
+            ref="${{ github.ref_name }}"
+          fi
+          {
+            echo "sha=$sha"
+            echo "short=${sha:0:7}"
+            echo "ref=$ref"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: app-zips
+          path: dist
+
+      - name: List downloaded assets
+        run: ls -l dist
+
+      - name: Publish stable release (main)
+        # main への push と、main での手動再ディスパッチで走る（stable リリースの
+        # 再公開経路）。
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_SHA: ${{ steps.ctx.outputs.sha }}
+          SHORT: ${{ steps.ctx.outputs.short }}
+        run: |
+          set -euo pipefail
+          short="$SHORT"
+          # notes の key=value 行はアプリの自動アップデート（UpdateFeed）が
+          # パースする機械可読データ。書式を変えるときは UpdateFeed も更新する。
+          cat > notes.txt <<EOF
+          channel=stable
+          branch=main
+          commit=${BUILD_SHA}
+          built=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+          # 削除→再作成を 1 かたまりで行い、両アセットを同時に添付する。
+          # stable の取りこぼしは気づかれにくいので、長めのバックオフで再試行する。
+          publish() {
+            gh release delete stable --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+            gh release create stable \
+              "dist/Photogrammetry.app.zip" \
+              "dist/photogrammetry-cli.zip" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$BUILD_SHA" \
+              --title "Stable (${short})" \
+              --notes-file notes.txt \
+              --latest
+          }
+          if publish; then exit 0; fi
+          attempts=1
+          for delay in 30 60 120 300 600; do
+            echo "publish attempt $attempts failed; retrying in ${delay}s..."
+            sleep "$delay"
+            attempts=$((attempts + 1))
+            if publish; then exit 0; fi
+          done
+          echo "::error::Failed to publish the stable release after $attempts attempts."
+          exit 1
+
+      - name: Publish dev prerelease (pull requests)
+        # 作業ブランチは PR 経由でビルドされる。fork からの PR は GITHUB_TOKEN が
+        # 読み取り専用でリリースを公開できないためスキップする。
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_SHA: ${{ steps.ctx.outputs.sha }}
+          SHORT: ${{ steps.ctx.outputs.short }}
+          BRANCH: ${{ steps.ctx.outputs.ref }}
+        run: |
+          set -euo pipefail
+          short="$SHORT"
+          branch="$BRANCH"
+          # ブランチ名をタグに使える文字列へ変換する（cleanup-dev-release.yml と
+          # 同じ規則にすること）。
+          slug="$(printf '%s' "$branch" | tr '/:@ ' '----' | tr -c 'A-Za-z0-9._-' '-')"
+          tag="dev-${slug}"
+          cat > notes.txt <<EOF
+          channel=dev
+          branch=${branch}
+          commit=${BUILD_SHA}
+          built=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+          # 削除/公開の競合ガード。PR が開いた後・この（遅い）ビルドが終わる前に
+          # ブランチが削除されていることがある。その場合 cleanup-dev-release.yml は
+          # すでに走っていて消すべきプレリリースが無かった（このジョブがまだ公開して
+          # いない）ので、いま公開すると永遠に孤児になる。ブランチが無ければ公開しない。
+          branch_exists() {
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" >/dev/null 2>&1
+          }
+          if ! branch_exists; then
+            echo "Branch '$branch' no longer exists; skipping dev prerelease publish to avoid orphaning it."
+            exit 0
+          fi
+          # dev ビルドは作業中しか使わないので再試行はしない（一過性のエラーなら
+          # ジョブを手で再実行すればよい）。
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+          gh release create "$tag" \
+            "dist/Photogrammetry.app.zip" \
+            "dist/photogrammetry-cli.zip" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$BUILD_SHA" \
+            --title "Dev: ${branch} (${short})" \
+            --notes-file notes.txt \
+            --prerelease
+          # 上のチェックから公開までの間にブランチが消された狭い窓を閉じる:
+          # cleanup が公開中に走っていたら取り逃しているので、自分で消す。
+          if ! branch_exists; then
+            echo "Branch '$branch' was deleted during publish; removing the prerelease just created."
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+          fi
