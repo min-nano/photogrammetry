@@ -18,7 +18,7 @@ struct ContentView: View
 	{
 		VStack(alignment: .leading, spacing: 12)
 		{
-			if !PhotogrammetryEngine.isSupported
+			if !ReconstructionService.isSupported
 			{
 				Label(
 					"この Mac は Object Capture に対応していません（モデル生成は実行できません）。",

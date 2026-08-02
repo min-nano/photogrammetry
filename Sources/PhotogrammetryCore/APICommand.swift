@@ -154,6 +154,21 @@ public enum APICommand
 		return request
 	}
 
+	/// Request を CLI の引数列へ戻す（parse(arguments:) の逆）。GUI が
+	/// ヘルパープロセス（photogrammetry-cli）を起動するときに使う。語彙を
+	/// 1 か所に保つため、組み立てもここに置く（往復はテストで固定している）。
+	public static func arguments(for request: ReconstructionRequest) -> [String]
+	{
+		[
+			request.inputFolder.path,
+			request.outputFile.path,
+			"--detail", request.detail.rawValue,
+			"--sample-ordering", request.sampleOrdering.rawValue,
+			"--feature-sensitivity", request.featureSensitivity.rawValue,
+			"--subject", request.subject.rawValue,
+		]
+	}
+
 	// -----------------------------------------------------------------
 	// 内部ヘルパー
 	// -----------------------------------------------------------------

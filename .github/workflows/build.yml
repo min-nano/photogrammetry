@@ -129,6 +129,11 @@ jobs:
           lipo -info "$app/Contents/MacOS/Photogrammetry"
           test -x "$app/Contents/Resources/install-update.sh" \
             || { echo "::error::install-update.sh was not bundled"; exit 1; }
+          # 生成はこのヘルパー（子プロセス）で走る。同梱漏れは「アプリごと
+          # クラッシュする」旧挙動への逆戻りなので、ここで必ず落とす。
+          test -x "$app/Contents/MacOS/photogrammetry-cli" \
+            || { echo "::error::photogrammetry-cli was not bundled"; exit 1; }
+          lipo -info "$app/Contents/MacOS/photogrammetry-cli"
           echo "Build stamp:"
           /usr/libexec/PlistBuddy -c "Print :BuildChannel" "$app/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Print :GitBranch"    "$app/Contents/Info.plist"

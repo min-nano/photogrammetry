@@ -1,7 +1,7 @@
 //
 //  ReconstructionViewModel.swift
 //
-//  生成画面の状態管理。PhotogrammetryEngine の進捗イベントをメインアクターへ
+//  生成画面の状態管理。ReconstructionService の進捗イベントをメインアクターへ
 //  持ち上げて UI へ反映するのが仕事で、生成ロジック自体は一切持たない。
 //
 
@@ -26,7 +26,7 @@ final class ReconstructionViewModel: ObservableObject
 	@Published var statusText = ""
 	@Published var logLines: [String] = []
 
-	private var engine: PhotogrammetryEngine?
+	private var service: ReconstructionService?
 
 	var canStart: Bool
 	{
@@ -114,7 +114,7 @@ final class ReconstructionViewModel: ObservableObject
 			appendLog("すでに処理中です。")
 			return
 		}
-		guard PhotogrammetryEngine.isSupported
+		guard ReconstructionService.isSupported
 		else
 		{
 			statusText = "この Mac は Object Capture に対応していません。"
@@ -126,17 +126,19 @@ final class ReconstructionViewModel: ObservableObject
 		statusText = "処理中…"
 		appendLog("開始: \(request.inputFolder.path) → \(request.outputFile.path)")
 
-		let engine = PhotogrammetryEngine()
-		self.engine = engine
+		// 実行方式（別プロセス / 同一プロセス）の判断は Core の
+		// ReconstructionService が持つ。ここは結果を表示するだけ。
+		let service = ReconstructionService()
+		self.service = service
 
 		// self は @MainActor なので、この Task の本体はメインアクター上で走る。
-		// engine.process の await 中だけ裏へ hop し、イベントは Task { @MainActor }
+		// process の await 中だけ裏へ hop し、イベントは Task { @MainActor }
 		// で持ち上げる。
 		Task
 		{ [weak self] in
 			do
 			{
-				try await engine.process(request)
+				try await service.process(request)
 				{ event in
 					Task
 					{ @MainActor [weak self] in
@@ -150,25 +152,35 @@ final class ReconstructionViewModel: ObservableObject
 			{
 				// ログには domain / code / userInfo まで残す（「エラー 6」のような
 				// 表示だけでは原因調査ができないため）。
-				self?.statusText = "エラー: \(error.localizedDescription)"
+				self?.statusText = "エラー: \(Self.summary(of: error))"
 				self?.appendLog("エラー: \(ErrorDetails.describe(error))")
 			}
 			self?.isProcessing = false
-			self?.engine = nil
+			self?.service = nil
 		}
 	}
 
 	func cancel()
 	{
 		appendLog("キャンセルを要求しました…")
-		engine?.cancel()
+		service?.cancel()
+	}
+
+	/// ステータス行は 1 行なので、複数行のエラー（ヘルパーの異常終了は対処方法
+	/// まで含む）は先頭行だけを出す。全文はログ欄に残る。
+	static func summary(of error: Error) -> String
+	{
+		error.localizedDescription
+			.split(separator: "\n", omittingEmptySubsequences: false)
+			.first
+			.map(String.init) ?? ""
 	}
 
 	// -----------------------------------------------------------------
 	// イベント・ログ
 	// -----------------------------------------------------------------
 
-	private func handle(event: PhotogrammetryEngine.Event)
+	private func handle(event: ReconstructionEvent)
 	{
 		switch event
 		{

@@ -14,19 +14,10 @@ import RealityKit
 
 public final class PhotogrammetryEngine
 {
-	/// 処理中にフロントエンドへ流す進捗イベント。UI スレッドへの hop は
-	/// 受け取り側の責任（このエンジンはスレッドを知らない）。
-	public enum Event: Sendable
-	{
-		/// リクエスト全体の進捗（0.0〜1.0）。
-		case progress(Double)
-		/// 個々の写真のスキップ・無効などの注意情報（処理は続行している）。
-		case note(String)
-		/// モデルファイルが書き出された。
-		case completed(URL)
-		/// キャンセルにより中断した。
-		case cancelled
-	}
+	/// 処理中にフロントエンドへ流す進捗イベント。別プロセス実行
+	/// （HelperProcessEngine）でも同じ型を流すので、定義は
+	/// ReconstructionEvent.swift に置いてある。
+	public typealias Event = ReconstructionEvent
 
 	/// この Mac が Object Capture に対応しているか（GPU 要件がある）。
 	public static var isSupported: Bool
@@ -58,21 +49,16 @@ public final class PhotogrammetryEngine
 	{
 		try request.validate()
 
-		// 事前警告: 入力枚数がこの Mac のハードウェア上限を超えていれば先に知らせる。
-		// 処理自体は止めない（上限の強制は OS 側の仕事で、ここで確実な失敗と断定
-		// できないため）が、アライメント失敗（CoreOC エラー 6 等）の典型原因なので
-		// 必ずログに手掛かりを残す。
-		let imageCount = ReconstructionRequest.imageFileCount(in: request.inputFolder)
-		let maximum = Self.maximumImageCount
-		if imageCount > maximum
+		// 事前チェック: 枚数の上限超過・iCloud の未ダウンロードなど、失敗や
+		// クラッシュの典型原因を先に知らせる。処理自体は止めない（確実な失敗と
+		// 断定できないため）が、必ずログに手掛かりを残す。判定は InputInspection
+		// （純ロジック）に置いてある。
+		let summary = InputInspection.inspect(
+			folder: request.inputFolder,
+			maximumImageCount: Self.maximumImageCount)
+		for note in InputInspection.notes(for: summary)
 		{
-			onEvent(.note(
-				"警告: 入力画像 \(imageCount) 枚はこの Mac の上限 \(maximum) 枚を超えています。"
-					+ "失敗する場合は写真を \(maximum) 枚以下に減らしてください。"))
-		}
-		else
-		{
-			onEvent(.note("入力画像: \(imageCount) 枚（この Mac の上限: \(maximum) 枚）"))
+			onEvent(.note(note))
 		}
 
 		var configuration = PhotogrammetrySession.Configuration()

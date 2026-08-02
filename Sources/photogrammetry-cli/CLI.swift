@@ -10,10 +10,14 @@
 //    progress=0.123    進捗（0.0〜1.0）
 //    note=...          注意情報（スキップされた写真など）
 //    output=<パス>     生成されたモデルファイル
+//    cancelled         SIGINT / SIGTERM で中断した（終了コード 0）
 //    ok                正常終了（終了コード 0）
+//  行の書式は PhotogrammetryCore の HelperProtocol が唯一の定義で、GUI は
+//  同じ定義でこれを読み戻す（この CLI は GUI のヘルパープロセスでもある）。
 //  エラーは stderr へ "error: ..." を出し、終了コード 1。使い方誤りは 2。
 //
 
+import Dispatch
 import Foundation
 import PhotogrammetryCore
 
@@ -74,21 +78,21 @@ struct PhotogrammetryCLI
 		do
 		{
 			let engine = PhotogrammetryEngine()
+			installCancelHandler(engine: engine)
+			let cancelled = Flag()
 			try await engine.process(request)
 			{ event in
-				switch event
+				if case .cancelled = event
 				{
-					case .progress(let fraction):
-						emit(String(format: "progress=%.3f", fraction))
-					case .note(let message):
-						emit("note=\(message)")
-					case .completed(let url):
-						emit("output=\(url.path)")
-					case .cancelled:
-						emit("cancelled")
+					cancelled.set()
 				}
+				emit(HelperProtocol.encode(event))
 			}
-			emit("ok")
+			// 中断で終わったときに ok を出すと、呼び出し側が成功と誤読する。
+			if !cancelled.isSet
+			{
+				emit(HelperProtocol.finishedLine)
+			}
 		}
 		catch
 		{
@@ -97,6 +101,28 @@ struct PhotogrammetryCLI
 			fail(ErrorDetails.describe(error), code: 1)
 		}
 	}
+
+	/// SIGINT / SIGTERM をセッションの cancel に振り替える。既定動作（即座に
+	/// プロセス終了）だとセッションが後始末されず一時ファイルが残るうえ、
+	/// 親プロセス（GUI）からは「異常終了」と区別が付かないため。
+	static func installCancelHandler(engine: PhotogrammetryEngine)
+	{
+		for number in [SIGINT, SIGTERM]
+		{
+			// DispatchSource で扱うので既定ハンドラは無効化する。
+			signal(number, SIG_IGN)
+			let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
+			source.setEventHandler
+			{
+				engine.cancel()
+			}
+			source.resume()
+			// ソースは解放されると監視も止まるので、プロセスが終わるまで保持する。
+			signalSources.append(source)
+		}
+	}
+
+	static var signalSources: [DispatchSourceSignal] = []
 
 	/// 1 行出して即 flush する。パイプ越しの連携（進捗の逐次読み取り）のため
 	/// 行バッファリングに頼らない。
@@ -110,5 +136,27 @@ struct PhotogrammetryCLI
 	{
 		FileHandle.standardError.write(Data("error: \(message)\n".utf8))
 		exit(code)
+	}
+}
+
+/// スレッドを跨いで立てられる真偽値。イベントは任意のスレッドから届くので、
+/// ローカル変数の書き換えでは扱えない。
+final class Flag: @unchecked Sendable
+{
+	private let lock = NSLock()
+	private var value = false
+
+	func set()
+	{
+		lock.lock()
+		value = true
+		lock.unlock()
+	}
+
+	var isSet: Bool
+	{
+		lock.lock()
+		defer { lock.unlock() }
+		return value
 	}
 }
