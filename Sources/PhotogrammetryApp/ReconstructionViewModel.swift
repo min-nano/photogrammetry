@@ -101,25 +101,99 @@ final class ReconstructionViewModel: ObservableObject
 			subject: subject))
 	}
 
-	/// URL スキーム（photogrammetry://process?...）からの起動。解釈は Core の
-	/// APICommand に委譲し、成功したらフォームへ反映してそのまま実行する。
+	/// URL スキーム（photogrammetry://process?... / photogrammetry://sort?...）
+	/// からの起動。解釈は Core の APICommand に委譲し、成功したらフォームへ
+	/// 反映してそのまま実行する。
 	func handle(url: URL)
 	{
 		do
 		{
-			let request = try APICommand.parse(url: url)
-			inputFolder = request.inputFolder
-			outputFile = request.outputFile
-			detail = request.detail
-			sampleOrdering = request.sampleOrdering
-			featureSensitivity = request.featureSensitivity
-			subject = request.subject
+			let command = try APICommand.parse(url: url)
 			appendLog("URL コマンドを受信: \(url.absoluteString)")
-			run(request)
+			switch command
+			{
+				case .process(let request):
+					inputFolder = request.inputFolder
+					outputFile = request.outputFile
+					detail = request.detail
+					sampleOrdering = request.sampleOrdering
+					featureSensitivity = request.featureSensitivity
+					subject = request.subject
+					run(request)
+				case .sort(let request):
+					runSort(request)
+			}
 		}
 		catch
 		{
 			appendLog("URL コマンドを解釈できません: \(error.localizedDescription)")
+		}
+	}
+
+	/// 写真の仕分け。再構成と違って RealityKit を使わないため
+	/// `CorePhotogrammetry` の異常終了に巻き込まれる恐れがなく、別プロセスに
+	/// する必要がない（別プロセス化が要るのは生成だけ。CLAUDE.md 参照）。
+	/// 判断はすべて Core の PhotoSorter にあり、ここは進捗を映すだけ。
+	func runSort(_ request: SortRequest)
+	{
+		guard !isProcessing
+		else
+		{
+			appendLog("すでに処理中です。")
+			return
+		}
+
+		isProcessing = true
+		progress = 0
+		processingStage = nil
+		estimatedRemainingTime = nil
+		loggedStage = nil
+		canPurgeModelCache = false
+		statusText = "写真を仕分けています…"
+		appendLog("仕分け開始: \(request.inputFolder.path) → \(request.outputFolder.path)")
+
+		let sink: @Sendable (ReconstructionEvent) -> Void =
+		{ [weak self] event in
+			Task
+			{ @MainActor in
+				self?.handle(event: event)
+			}
+		}
+		let sorter = PhotoSorter(hardwareLimit: ReconstructionService.maximumImageCount)
+
+		// 解析は数百〜数千枚のデコードで数分かかる。メインアクターを塞がない
+		// ように裏で走らせる。
+		Task.detached(priority: .userInitiated)
+		{
+			let failure: Error?
+			do
+			{
+				try sorter.run(request, progress: sink)
+				failure = nil
+			}
+			catch
+			{
+				failure = error
+			}
+			await MainActor.run
+			{ [weak self] in
+				guard let self
+				else
+				{
+					return
+				}
+				if let failure
+				{
+					self.statusText = "エラー: \(Self.summary(of: failure))"
+					self.appendLog("エラー: \(ErrorDetails.describe(failure))")
+				}
+				else
+				{
+					self.statusText = "仕分け完了"
+					self.appendLog("仕分け完了")
+				}
+				self.isProcessing = false
+			}
 		}
 	}
 

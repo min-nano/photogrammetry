@@ -32,6 +32,15 @@ public final class ReconstructionService
 		PhotogrammetryEngine.isSupported
 	}
 
+	/// この Mac が 1 セッションで受け付ける写真の上限枚数。Object Capture に
+	/// 対応していなければ nil。仕分け（PhotoSorter）が「グループが上限を超えて
+	/// いないか」を診断するのに使う — 上限を知っているのは RealityKit だけなので、
+	/// 取り出し口を Core 側の 1 か所にまとめておく。
+	public static var maximumImageCount: Int?
+	{
+		isSupported ? PhotogrammetryEngine.maximumImageCount : nil
+	}
+
 	/// 同梱ヘルパーがあればそれを使う方式を返す。
 	public static func resolveMode(fileManager: FileManager = .default) -> Mode
 	{
