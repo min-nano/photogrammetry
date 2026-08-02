@@ -352,9 +352,16 @@ USD の合成機能に一切依存しないので**最も確実**。姉妹リポ
 
 ### 5.5.1 検証結果: 案(a) を採用する
 
-`scripts/make-usd-samples.sh` で生成した `scene_reloaded.usdz`（= 既存 usdz を
-読み直し、変換を掛けて再結合したもの。**実際の `merge` と同じ経路**）を
-Vectorworks で開いて確認した。
+`scripts/make-usd-samples.sh` で生成した 2 つを Vectorworks で開いて確認した。
+
+- `scene_reloaded.usdz` — 既存 usdz を**読み直し**、変換を掛けて再結合したもの。
+  **実際の `merge` と同じ経路。**
+- `scene_flattened.usdz` — SceneKit 上でノードを直接組んで書き出したもの
+  （usdz を一度も読んでいない）。
+
+**両者は同じ結果になった。** 作られ方が違うのに一致したので、
+**`SCNScene(url:)` による usdz の読み込み工程は劣化要因ではない**と切り分けられる
+（少なくともこの規模では）。以下は両者に共通の結果。
 
 | 確認項目 | 期待 | 結果 |
 | --- | --- | --- |
