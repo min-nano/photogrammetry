@@ -89,11 +89,25 @@ public final class HelperProcessEngine
 
 		let state = self.state
 
+		// パイプは**ハンドラだけが読む**。読み終わり（EOF）を合図で受け取り、
+		// process() はそれを待ってから後始末に進む。
+		//
+		// `readabilityHandler = nil` は**実行中のハンドラを待たない**ので、
+		// 終了直後に readDataToEndOfFile で読み直すと同じパイプを 2 か所から
+		// 読むことになる。最後の行（`output=…`）がハンドラ側に取られると
+		// process() の戻りに間に合わず、`.completed` が落ちる（実際に CI で
+		// 再現した）。EOF はハンドラ自身のキュー上で検出するので取りこぼしが無い。
+		let outputFinished = ExitSignal()
+		let errorFinished = ExitSignal()
+
 		standardOutput.fileHandleForReading.readabilityHandler =
 		{ handle in
 			let data = handle.availableData
 			if data.isEmpty
 			{
+				// EOF。以降このハンドラは呼ばれない。
+				handle.readabilityHandler = nil
+				outputFinished.signal()
 				return
 			}
 			state.consumeStandardOutput(data, onEvent: onEvent)
@@ -105,6 +119,8 @@ public final class HelperProcessEngine
 			let data = handle.availableData
 			if data.isEmpty
 			{
+				handle.readabilityHandler = nil
+				errorFinished.signal()
 				return
 			}
 			state.appendStandardError(data)
@@ -138,14 +154,12 @@ public final class HelperProcessEngine
 
 		await exited.wait()
 
-		// ハンドラを外してから残りを読み切る（終了直前の行を落とさないため）。
-		standardOutput.fileHandleForReading.readabilityHandler = nil
-		standardError.fileHandleForReading.readabilityHandler = nil
-		state.consumeStandardOutput(
-			standardOutput.fileHandleForReading.readDataToEndOfFile(),
-			onEvent: onEvent)
+		// プロセスの終了と出力の読み終わりは前後する。**両方**待たないと
+		// 終了直前に書かれた行（`output=…` / `cancelled`）を取りこぼす。
+		await outputFinished.wait()
+		await errorFinished.wait()
+		// 改行で終わらなかった最後の 1 行だけがここに残る。
 		state.flushPartialStandardOutput(onEvent: onEvent)
-		state.appendStandardError(standardError.fileHandleForReading.readDataToEndOfFile())
 		state.setProcess(nil)
 
 		let status = process.terminationStatus
@@ -323,9 +337,10 @@ private final class RunState: @unchecked Sendable
 	}
 }
 
-/// terminationHandler（任意のスレッド）から async な待ち側へ 1 回だけ合図する。
-/// 合図が待ち始めるより先に来る場合（プロセスが即終了）と後から来る場合の
-/// 両方があるので、internal にしてどちらの順序も単体テストで確かめている。
+/// 任意のスレッド（terminationHandler / 読み取りハンドラ）から async な待ち側へ
+/// 1 回だけ合図する。合図が待ち始めるより先に来る場合（プロセスが即終了）と
+/// 後から来る場合の両方があるので、internal にしてどちらの順序も単体テストで
+/// 確かめている。プロセスの終了と、パイプの読み終わり（EOF）の両方に使う。
 final class ExitSignal: @unchecked Sendable
 {
 	private let lock = NSLock()

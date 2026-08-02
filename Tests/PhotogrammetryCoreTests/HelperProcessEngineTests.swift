@@ -164,6 +164,33 @@ final class HelperProcessEngineTests: XCTestCase
 		XCTAssertEqual(events.all, [.progress(0.75)])
 	}
 
+	func testEveryLineIsDeliveredInOrderEvenWhenTheHelperExitsImmediately() async throws
+	{
+		// **終了直前に書かれた行を落とさないこと。** パイプの読み取りハンドラと
+		// 終了処理が同じパイプを取り合うと、最後の `output=` がハンドラ側に
+		// 取られて process() の戻りに間に合わず、`.completed` が消える
+		// （CI で実際に起きた。1 行だけのヘルパーでは再現しにくいので、
+		// 一気に書いて即終了させて競合を起こしやすくしている）。
+		let helper = try makeHelper(
+			"""
+			i=1
+			while [ $i -le 50 ]; do
+				printf 'progress=0.%03d\\n' "$i"
+				i=$((i + 1))
+			done
+			echo "output=$2"
+			echo "ok"
+			""")
+		let engine = HelperProcessEngine(helperURL: helper)
+		let events = EventLog()
+
+		try await engine.process(request) { events.append($0) }
+
+		let expected: [ReconstructionEvent] =
+			(1 ... 50).map { .progress(Double($0) / 1000) } + [.completed(request.outputFile)]
+		XCTAssertEqual(events.all, expected)
+	}
+
 	func testFailedExitWithoutMessage() async throws
 	{
 		let helper = try makeHelper("exit 3")
