@@ -172,14 +172,16 @@ jobs:
             const pct = (n) =>
               (typeof n === 'number') ? `${n.toFixed(1)}%` : '—';
 
-            // 指標ごとのしきい値（%）。現状のベースライン
-            // （lines 92.7% / functions 78.1% / regions 87.3%、
-            // PhotogrammetryEngine.swift / UpdaterService.swift 除外後）を
-            // green/yellow に収まる位置に設定してある。ratchet up は別途。
+            // 指標ごとのしきい値（%）。functions は「常に 100%」を維持する方針
+            // なので yellow を持たず、100% 未満は即 🔴。未使用だった内部
+            // クロージャ・computed property をテストで踏むか、ErrorDetails.swift
+            // でやったように到達不能なコード自体を削るかで 100% を保つ。
+            // lines / regions は、上記の対応後の実測値をベースラインに、
+            // green/yellow へ引き上げてある。ratchet up は別途。
             const THRESHOLDS = {
-              lines: { green: 90, yellow: 80 },
-              regions: { green: 85, yellow: 70 },
-              functions: { green: 90, yellow: 70 },
+              lines: { green: 97, yellow: 90 },
+              regions: { green: 95, yellow: 85 },
+              functions: { green: 100 },
               diff: { green: 100, yellow: 95 },
             };
             const badge = (metric, n) => {

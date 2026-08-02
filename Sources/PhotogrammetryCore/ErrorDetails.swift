@@ -34,15 +34,17 @@ public enum ErrorDetails
 		}
 		let indent = String(repeating: "  ", count: depth + 1)
 		lines.append("\(indent)domain=\(error.domain) code=\(error.code)")
-		for key in error.userInfo.keys.sorted()
+		// userInfo をペアで列挙するので、値が「キーはあるが必ず存在する」ことを
+		// 前提にできる（subscript + ?? のような、実際には起こらない nil 分岐を
+		// 書かずに済む）。
+		for (key, value) in error.userInfo.sorted(by: { $0.key < $1.key })
 		{
 			// 説明は 1 行目に、underlying は連鎖として下で出すので重複を省く。
 			if key == NSLocalizedDescriptionKey || key == NSUnderlyingErrorKey
 			{
 				continue
 			}
-			let value = error.userInfo[key].map { String(describing: $0) } ?? ""
-			lines.append("\(indent)\(key)=\(value)")
+			lines.append("\(indent)\(key)=\(String(describing: value))")
 		}
 		if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError
 		{
