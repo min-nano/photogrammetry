@@ -281,6 +281,54 @@ final class PhotoGroupingTests: XCTestCase
 		XCTAssertEqual(result.evidenceCoverage[.altitude], 1)
 	}
 
+	func testLocationWithoutAccuracyIsStillUsable()
+	{
+		// EXIF に GPSHPositioningError を書かない機材もある。誤差が分からない
+		// ことは「使えない」ではない（古い測位かどうかは別途見ている）。
+		let photos = (0 ..< 20).map
+		{ index in
+			SamplePhoto.make(
+				index: index,
+				secondsFromEpoch: Double(index) * 3,
+				latitude: 35.0 + Double(index) * 0.00001,
+				longitude: 139.0,
+				accuracy: nil,
+				hash: UInt64(index) &* 0x9E37_79B9_7F4A_7C15)
+		}
+		let result = PhotoGrouping.group(photos: photos)
+		XCTAssertTrue(result.usedEvidence.contains(.gps))
+		XCTAssertEqual(result.evidenceCoverage[.gps], 1)
+	}
+
+	func testSmallGroupBetweenTwoNeighboursPicksTheStrongerOne()
+	{
+		// 両隣に繋がる小さな塊。どちらへ寄せるかを結び付きの強さで決める。
+		var settings = GroupingSettings()
+		settings.minPerGroup = 8
+		settings.maxPerGroup = 20
+		let photos = SamplePhoto.sequence(start: 1, count: 12, startTime: 0, hashSeed: 0)
+			+ SamplePhoto.sequence(
+				start: 101, count: 3, startTime: 3000, hashSeed: 0x0F0F_0F0F_0F0F_0F0F)
+			+ SamplePhoto.sequence(
+				start: 201, count: 12, startTime: 6000, hashSeed: 0xFFFF_FFFF_FFFF_FFFF)
+		let result = PhotoGrouping.group(photos: photos, settings: settings)
+		XCTAssertEqual(result.groups.count, 2)
+		XCTAssertTrue(result.unassigned.isEmpty)
+		// 3 枚だけのグループは残らない（吸収されている）。
+		XCTAssertEqual(result.groups.map { $0.members.count }.sorted(), [12, 15])
+	}
+
+	func testStartsBeforeHandlesEmptySets()
+	{
+		// グループの並べ替えの比較。空集合は作らない設計だが、比較そのものは
+		// 全順序として成立させておく。
+		XCTAssertTrue(PhotoGrouping.startsBefore([1, 2], [3]))
+		XCTAssertFalse(PhotoGrouping.startsBefore([3], [1, 2]))
+		XCTAssertTrue(PhotoGrouping.startsBefore([1], []))
+		XCTAssertFalse(PhotoGrouping.startsBefore([], [1]))
+		XCTAssertFalse(PhotoGrouping.startsBefore([], []))
+	}
+
 	func testEveryEvidenceKindHasADisplayName()
 	{
 		// 診断で「使った手がかり」として並ぶ語彙。

@@ -296,7 +296,7 @@ public enum PhotoGrouping
 
 		// --- 連結成分 → 大きすぎるものを撮影の流れの切れ目で分割 ---
 		var components = connectedComponents(count: photos.count, edges: scored, threshold: threshold)
-		components.sort { ($0.first ?? 0) < ($1.first ?? 0) }
+		components.sort(by: startsBefore)
 
 		var parts: [[Int]] = []
 		for component in components
@@ -307,7 +307,7 @@ public enum PhotoGrouping
 				maxPerGroup: max(2, settings.maxPerGroup),
 				minPerGroup: max(1, min(settings.minPerGroup, settings.maxPerGroup / 3))))
 		}
-		parts.sort { ($0.first ?? 0) < ($1.first ?? 0) }
+		parts.sort(by: startsBefore)
 
 		// --- 小さすぎるグループの吸収 ---
 		let absorbed = absorbSmallGroups(
@@ -335,6 +335,26 @@ public enum PhotoGrouping
 	public static func identifier(_ index: Int) -> String
 	{
 		String(format: "group-%02d", index + 1)
+	}
+
+	/// 添字の集合を「先頭の添字（＝撮影順で最初の写真）」で比べる。グループの
+	/// 並びを撮影順に揃えるために使う。
+	///
+	/// 空の集合は作らない設計だが、`$0.first ?? 0` と書くと**決して評価されない
+	/// 既定値**が残る。ここは判定を明示して、到達しないコードを持たないようにする。
+	static func startsBefore(_ a: [Int], _ b: [Int]) -> Bool
+	{
+		guard let left = a.first
+		else
+		{
+			return false
+		}
+		guard let right = b.first
+		else
+		{
+			return true
+		}
+		return left < right
 	}
 
 	// -----------------------------------------------------------------
@@ -380,15 +400,17 @@ public enum PhotoGrouping
 		var usable = Set<EvidenceKind>()
 		for kind in EvidenceKind.allCases
 		{
-			guard (settings.weights[kind] ?? 0) > 0
+			guard let weight = settings.weights[kind], weight > 0
 			else
 			{
 				continue
 			}
-			if (coverage[kind] ?? 0) >= settings.minimumEvidenceCoverage
+			guard let available = coverage[kind], available >= settings.minimumEvidenceCoverage
+			else
 			{
-				usable.insert(kind)
+				continue
 			}
+			usable.insert(kind)
 		}
 		// 連番は時刻の代役。時刻が使えるなら混ぜない（連番は撮影順の粗い写しで、
 		// 時刻より情報が少ないうえフォルダをまたぐと意味が変わる）。
@@ -579,7 +601,12 @@ public enum PhotoGrouping
 		{
 			return min(0.8, max(0.15, estimate.threshold))
 		}
-		return max(0.15, ThresholdEstimator.percentile(scores, 0.2) ?? 0.15)
+		guard let percentile = ThresholdEstimator.percentile(scores, 0.2)
+		else
+		{
+			return 0.15
+		}
+		return max(0.15, percentile)
 	}
 
 	/// 閾値以上のエッジで連結成分を作る（union-find）。
@@ -674,10 +701,22 @@ public enum PhotoGrouping
 		{
 			let weight = weights[position]
 			// 同点なら中央に近いほうを選ぶ。誤差の連鎖を抑えるため木を浅く
-			// したい（設計メモ §5.4）。
+			// したい（設計メモ §5.4）。条件を `||` / `&&` で繋がず分けて書くのは、
+			// 短絡評価の右辺が到達しないコードとして残らないようにするため。
+			let isBetter: Bool
 			if weight < bestWeight - 1e-9
-				|| (abs(weight - bestWeight) <= 1e-9
-					&& abs(Double(position) - center) < abs(Double(bestPosition) - center))
+			{
+				isBetter = true
+			}
+			else if abs(weight - bestWeight) <= 1e-9
+			{
+				isBetter = abs(Double(position) - center) < abs(Double(bestPosition) - center)
+			}
+			else
+			{
+				isBetter = false
+			}
+			if isBetter
 			{
 				bestWeight = weight
 				bestPosition = position
@@ -760,7 +799,7 @@ public enum PhotoGrouping
 				changed = true
 			}
 		}
-		result.sort { ($0.first ?? 0) < ($1.first ?? 0) }
+		result.sort(by: startsBefore)
 		return (result, unassigned)
 	}
 

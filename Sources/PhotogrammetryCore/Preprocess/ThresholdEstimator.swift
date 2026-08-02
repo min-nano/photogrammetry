@@ -51,9 +51,7 @@ public enum ThresholdEstimator
 		{
 			return nil
 		}
-		let minimum = values.min() ?? 0
-		let maximum = values.max() ?? 0
-		guard maximum > minimum
+		guard let minimum = values.min(), let maximum = values.max(), maximum > minimum
 		else
 		{
 			return nil

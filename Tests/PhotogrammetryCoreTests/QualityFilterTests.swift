@@ -164,6 +164,47 @@ final class QualityFilterTests: XCTestCase
 			["IMG_0007.HEIC", "IMG_0012.HEIC"])
 	}
 
+	func testPhotosWithoutMeasuredQualityAreNotDropped()
+	{
+		// 画素を読めなかった写真（サムネイルが作れない等）は品質が nil になる。
+		// 測れないことを理由に落とさない。
+		let input = (1 ... 6).map
+		{ index in
+			PhotoMetadata(
+				url: URL(fileURLWithPath: "/tmp/IMG_\(index).HEIC"),
+				relativePath: "IMG_\(index).HEIC",
+				captureDate: SamplePhoto.epoch.addingTimeInterval(Double(index)),
+				pixelWidth: 4032,
+				pixelHeight: 3024,
+				fingerprint: PerceptualHash(bits: 0xAAAA),
+				quality: nil)
+		}
+		let outcome = QualityFilter.apply(to: input)
+		// 指紋が同じなので「ほぼ同一」の塊にはなるが、鮮鋭度で選べないので
+		// 先頭が残る。落ちるのは重複としてだけ。
+		XCTAssertEqual(outcome.kept.map(\.relativePath), ["IMG_1.HEIC"])
+		XCTAssertTrue(outcome.excluded.allSatisfy { $0.reason == .duplicate })
+		XCTAssertNil(outcome.sharpnessThreshold)
+		XCTAssertNil(outcome.sharpnessMedian)
+	}
+
+	func testHammingDistanceNeedsBothFingerprints()
+	{
+		let withHash = SamplePhoto.make(index: 1, hash: 0b1011)
+		let other = SamplePhoto.make(index: 2, hash: 0b1000)
+		let without = SamplePhoto.make(index: 3, hash: nil)
+		XCTAssertEqual(QualityFilter.hammingDistance(withHash, other), 2)
+		XCTAssertEqual(QualityFilter.hammingDistance(withHash, without), 0)
+	}
+
+	func testSharpnessOfPhotoWithoutQualityIsZero()
+	{
+		XCTAssertEqual(QualityFilter.sharpness(of: SamplePhoto.make(index: 1, hash: 1)), 100)
+		let measured = PhotoMetadata(
+			url: URL(fileURLWithPath: "/tmp/a.HEIC"), relativePath: "a.HEIC")
+		XCTAssertEqual(QualityFilter.sharpness(of: measured), 0)
+	}
+
 	func testEveryExclusionReasonHasADisplayName()
 	{
 		// 診断レポートに出る語彙。1 つでも欠けると「除外の内訳」が読めなくなる。

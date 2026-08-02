@@ -265,13 +265,12 @@ public enum QualityFilter
 			{
 				return
 			}
-			// 塊の代表は最も鮮鋭な 1 枚（同点なら撮影が早いほう）。
+			// 塊の代表は最も鮮鋭な 1 枚（同点なら撮影が早いほう）。品質を測れて
+			// いない写真（読み取り時に画素を取れなかった）は最下位に扱う。
 			var best = range.lowerBound
 			for candidate in range
 			{
-				let bestSharpness = ordered[best].quality?.sharpness ?? 0
-				let candidateSharpness = ordered[candidate].quality?.sharpness ?? 0
-				if candidateSharpness > bestSharpness
+				if sharpness(of: ordered[candidate]) > sharpness(of: ordered[best])
 				{
 					best = candidate
 				}
@@ -279,14 +278,10 @@ public enum QualityFilter
 			keptPaths.insert(ordered[best].relativePath)
 			for candidate in range where candidate != best
 			{
-				let distance = ordered[candidate].fingerprint.flatMap
-				{ hash in
-					ordered[best].fingerprint.map { Double(hash.distance(to: $0)) }
-				}
 				excluded.append(ExcludedPhoto(
 					photo: ordered[candidate].relativePath,
 					reason: .duplicate,
-					score: distance ?? 0))
+					score: hammingDistance(ordered[candidate], ordered[best])))
 			}
 		}
 		while index <= ordered.count
@@ -319,6 +314,30 @@ public enum QualityFilter
 			sharpnessThreshold: threshold,
 			sharpnessMedian: median,
 			blurFilterSuppressed: suppressed)
+	}
+
+	/// 鮮鋭度。測れていない写真は 0 として扱う（重複の塊から残す 1 枚を選ぶ
+	/// ときに、測れている写真を優先させたい）。
+	static func sharpness(of photo: PhotoMetadata) -> Double
+	{
+		guard let quality = photo.quality
+		else
+		{
+			return 0
+		}
+		return quality.sharpness
+	}
+
+	/// 2 枚の指紋のハミング距離。どちらかに指紋が無ければ 0（判断の根拠として
+	/// 記録するだけの値なので、無いことを 0 で表す）。
+	static func hammingDistance(_ a: PhotoMetadata, _ b: PhotoMetadata) -> Double
+	{
+		guard let left = a.fingerprint, let right = b.fingerprint
+		else
+		{
+			return 0
+		}
+		return Double(left.distance(to: right))
 	}
 
 	/// 鮮鋭度の分布からブレの閾値を決める。判定できないときは nil（＝切らない）。
