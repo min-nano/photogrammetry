@@ -146,6 +146,32 @@ final class UpdateFeedTests: XCTestCase
 		XCTAssertEqual(list[0].title, "dev-fallback")
 	}
 
+	func testCommitFallsBackToEmptyWhenNotesAndTargetCommitishAreBothMissing() throws
+	{
+		// notes に commit= が無く、target_commitish 自体も無い（null）という
+		// 壊れたリリースでも落ちずに空文字へフォールバックすることを確かめる。
+		let json = """
+			[
+			  {
+			    "tag_name": "stable",
+			    "name": "Stable",
+			    "prerelease": false,
+			    "target_commitish": null,
+			    "body": "channel=stable\\nbranch=main\\n",
+			    "assets": [
+			      {
+			        "name": "Photogrammetry.app.zip",
+			        "browser_download_url": "https://example.com/stable/Photogrammetry.app.zip"
+			      }
+			    ]
+			  }
+			]
+			"""
+		let list = try UpdateFeed.channels(fromReleasesJSON: Data(json.utf8))
+		XCTAssertEqual(list.count, 1)
+		XCTAssertEqual(list[0].commit, "")
+	}
+
 	func testUpdateAvailable() throws
 	{
 		let list = try channels()

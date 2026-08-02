@@ -89,6 +89,60 @@ final class APICommandTests: XCTestCase
 		}
 	}
 
+	func testParseURLWithoutAuthorityHasNoHost()
+	{
+		// "//" が無い URI（photogrammetry:process）は scheme は一致するが
+		// host が nil になる。呼び出し元がスキームを誤って組み立てた場合に
+		// 実際に起こりうる形なので、空文字へのフォールバックごと確かめる。
+		let url = URL(string: "photogrammetry:process?input=/a&output=/b.usdz")!
+		XCTAssertThrowsError(try APICommand.parse(url: url))
+		{ error in
+			XCTAssertEqual(error as? APICommandError, .unsupportedCommand(""))
+		}
+	}
+
+	func testParseURLWithoutQueryStringHasNoQueryItems()
+	{
+		// "?" 自体が無ければ queryItems は nil（空配列とは区別される）。
+		let url = URL(string: "photogrammetry://process")!
+		XCTAssertThrowsError(try APICommand.parse(url: url))
+		{ error in
+			XCTAssertEqual(error as? APICommandError, .missingParameter("input"))
+		}
+	}
+
+	func testParseURLQueryItemWithoutValue()
+	{
+		// "input" だけで "=" が無いクエリ項目は value が nil になる
+		// （空文字と区別される）。
+		let url = URL(string: "photogrammetry://process?input&output=/b.usdz")!
+		XCTAssertThrowsError(try APICommand.parse(url: url))
+		{ error in
+			XCTAssertEqual(error as? APICommandError, .missingParameter("input"))
+		}
+	}
+
+	func testAPICommandErrorDescriptions()
+	{
+		// エラーは XCTAssertThrowsError で「投げられること」しか確認していない
+		// ケースが多いので、ここでメッセージの中身自体を確かめる。
+		XCTAssertEqual(
+			APICommandError.unsupportedCommand("export").errorDescription,
+			"サポートされていないコマンドです: export")
+		XCTAssertEqual(
+			APICommandError.missingParameter("input").errorDescription,
+			"パラメータ input が指定されていません。")
+		XCTAssertEqual(
+			APICommandError.invalidValue(parameter: "detail", value: "ultra").errorDescription,
+			"detail の値が不正です: ultra")
+		XCTAssertEqual(
+			APICommandError.unknownOption("--turbo").errorDescription,
+			"不明なオプションです: --turbo")
+		XCTAssertEqual(
+			APICommandError.missingArguments.errorDescription,
+			"引数が不足しています（<入力フォルダ> <出力ファイル.usdz> が必要です）。")
+	}
+
 	// -----------------------------------------------------------------
 	// CLI 引数
 	// -----------------------------------------------------------------

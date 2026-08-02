@@ -1,0 +1,286 @@
+name: Test
+
+# 純ロジックの正しさを見る、このプロジェクトの主な CI。build.yml（ビルド・
+# パッケージング・リリース公開）とは完全に独立したワークフロー。同じ push /
+# pull_request イベントで起動するが、`needs` などでは繋がず並列に走る —
+# ビルドの結果を待たずにテストの結果が見え、テストの結果を待たずにビルドが
+# 進む。テストの合否は branch protection の required checks 側で見る。
+#
+# 2 ジョブに分けているのは、失敗の原因が一目で分かるようにするため:
+#   * test     — カバレッジ計測つきで swift test を 1 回だけ実行し（テストを
+#                プレーンとカバレッジ付きの 2 回走らせない）、lcov / JSON
+#                summary / diff カバレッジを生成してアーティファクトとして
+#                渡す。ここが赤ならテストの失敗か、llvm-cov / diff-cover
+#                側のツールチェーンが壊れたかのどちらか。
+#   * coverage — test の成果物を読むだけなので ubuntu-latest で走る（Swift/
+#                Xcode 不要）。表を組み立てて PR にコメントし、しきい値未満
+#                （🔴）ならこのジョブだけを失敗させる。
+#
+# カバレッジのレポート形式（表・🟢🟡🔴・sticky コメント・diff カバレッジ・
+# しきい値ゲート）は姉妹リポジトリ vectorworks-plugin-import-ifc-homeskz の
+# test.yml を Swift 向けに移植したもの。C++ 版は gcovr でブランチカバレッジ
+# まで取れるが、Swift の llvm-cov はブランチを計測しない（常に 0/0）。代わりに
+# 条件分岐の粒度を持つ「regions」（llvm-cov 用語）を 3 つ目の指標として使う。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# ref ごとに 1 テスト実行。新しい push は進行中の実行をキャンセルする
+# （最新コミットの結果だけが意味を持つ。build.yml と異なりリリースを公開
+# しないので、main への push でもキャンセルして構わない）。
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    # チェックアウトとアーティファクトのアップロードだけなので read で足りる。
+    permissions:
+      contents: read
+
+    steps:
+      # フルヒストリー（fetch-depth: 0）でチェックアウトする。diff-cover は
+      # base ブランチとのマージベースをローカルに要求するため、必要になって
+      # から shallow を deepen するのは history が浅いリポジトリでは
+      # マージベースに届かず失敗することがある（実際に ci-debug で確認済み）。
+      # このリポジトリの履歴は小さいので、フルフェッチのコストは無視できる。
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode 16.2
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: "16.2"
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      # diff-cover: base ブランチと比較して「この PR が変更した行」だけの
+      # カバレッジを計算する CLI（Python 製）。pipx は Xcode ランナーに
+      # プリインストール済み。GITHUB_PATH に追記して以降のステップでも
+      # そのまま呼べるようにする。
+      - name: Install diff-cover
+        run: |
+          set -euo pipefail
+          pipx install diff-cover
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # 純ロジック（APICommand / UpdateFeed / validate）の単体テスト。実際の
+      # 3D 再構成はランナーの GPU 要件次第なのでテストしない（ローカル確認）。
+      # カバレッジ計測つきで 1 回だけ実行する（プレーンな swift test を別途
+      # 走らせると同じテストを 2 回実行することになり、時間の無駄になる）。
+      - name: Run tests (with coverage instrumentation)
+        run: swift test --enable-code-coverage
+
+      # llvm-cov export で 2 種類のレポートを作る:
+      #   coverage-summary.json — 全体集計（llvm-cov の JSON テキスト形式）
+      #   coverage.lcov         — diff-cover が読める lcov 形式
+      # -ignore-filename-regex で除外するのは:
+      #   .build/    — SwiftPM が生成するテストランナー（自分のコードではない）
+      #   /Tests/    — テストコード自身（100% 実行されるのは自明で無意味な指標）
+      #   PhotogrammetryEngine.swift — RealityKit/GPU 依存。CLAUDE.md の方針で
+      #                                自動テスト対象外（ローカル/ci-debug の
+      #                                run-cli で確認する）。
+      #   UpdaterService.swift       — ネットワーク I/O。同じ理由で対象外。
+      # 後者 2 つを含めると分母が常に薄まり、しきい値が意味を失う
+      # （実測: 含めると lines 52% / functions 47%、除外すると lines 93% /
+      # functions 78% — 除外後の数字がこのプロジェクトの「純ロジック」の
+      # 実態に近い）。
+      - name: Generate coverage report (JSON summary + lcov)
+        id: cov
+        run: |
+          set -euo pipefail
+          BIN_DIR="$(swift build --show-bin-path)"
+          PROFDATA="$BIN_DIR/codecov/default.profdata"
+          XCTEST_BUNDLE="$(find "$BIN_DIR" -maxdepth 1 -iname '*.xctest' | head -1)"
+          test -n "$XCTEST_BUNDLE" || { echo "::error::no .xctest bundle found under $BIN_DIR"; exit 1; }
+          EXE="$XCTEST_BUNDLE/Contents/MacOS/$(basename "$XCTEST_BUNDLE" .xctest)"
+          test -f "$PROFDATA" || { echo "::error::coverage profile not found at $PROFDATA"; exit 1; }
+          test -x "$EXE" || { echo "::error::test binary not found at $EXE"; exit 1; }
+          IGNORE='(\.build/|/Tests/|/PhotogrammetryEngine\.swift$|/UpdaterService\.swift$)'
+          xcrun llvm-cov export -format=text -instr-profile="$PROFDATA" -ignore-filename-regex="$IGNORE" "$EXE" \
+            > coverage-summary.json
+          xcrun llvm-cov export -format=lcov -instr-profile="$PROFDATA" -ignore-filename-regex="$IGNORE" "$EXE" \
+            > coverage.lcov
+
+      # この PR が変更した行だけのカバレッジ（base ブランチとの差分）。push
+      # イベント（main への直接 push）には比較対象の PR が無いので実行しない。
+      - name: Compute diff coverage vs base branch
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          # 上のチェックアウトが fetch-depth: 0 なので、マージベースは既に
+          # ローカルにある。origin/<base> という参照名を解決できるように
+          # するためだけに base ブランチを取得する。
+          git fetch --no-tags origin \
+            "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+          diff-cover coverage.lcov \
+            --compare-branch "origin/$BASE_REF" \
+            --json-report diff-cover.json \
+            --fail-under 0
+
+      - name: Upload coverage report artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-report
+          path: |
+            coverage.lcov
+            coverage-summary.json
+            diff-cover.json
+          if-no-files-found: ignore
+
+  coverage:
+    # test が生成したアーティファクトを読むだけで、Swift/Xcode は一切
+    # 使わないので ubuntu-latest で足りる。
+    needs: test
+    runs-on: ubuntu-latest
+    # pull-requests: write は PR へのカバレッジコメント投稿に使う。
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Download coverage report artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-report
+
+      # カバレッジ表を組み立て、PR に sticky コメントとして投稿し、いずれかの
+      # 指標がしきい値未満（🔴）ならジョブを失敗させる。fork PR は
+      # GITHUB_TOKEN が読み取り専用でコメントできないため投稿はスキップする
+      # が、ゲートはどのイベントでも必ずかかる。
+      - name: Report coverage & enforce thresholds
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+
+            const marker = '<!-- coverage-report -->';
+
+            const pct = (n) =>
+              (typeof n === 'number') ? `${n.toFixed(1)}%` : '—';
+
+            // 指標ごとのしきい値（%）。functions は「常に 100%」を維持する方針
+            // なので yellow を持たず、100% 未満は即 🔴。未使用だった内部
+            // クロージャ・computed property をテストで踏むか、ErrorDetails.swift
+            // でやったように到達不能なコード自体を削るかで 100% を保つ。
+            // lines / regions は、上記の対応後の実測値をベースラインに、
+            // green/yellow へ引き上げてある。ratchet up は別途。
+            const THRESHOLDS = {
+              lines: { green: 97, yellow: 90 },
+              regions: { green: 95, yellow: 85 },
+              functions: { green: 100 },
+              diff: { green: 100, yellow: 95 },
+            };
+            const badge = (metric, n) => {
+              if (typeof n !== 'number') return '⚪';
+              const t = THRESHOLDS[metric];
+              if (n >= t.green) return '🟢';
+              if (t.yellow !== undefined && n >= t.yellow) return '🟡';
+              return '🔴';
+            };
+
+            const rows = [];
+
+            try {
+              const s = JSON.parse(
+                fs.readFileSync('coverage-summary.json', 'utf8'));
+              const t = s.data[0].totals;
+              for (const [metric, name] of [
+                ['lines', 'Lines'],
+                ['regions', 'Regions'],
+                ['functions', 'Functions'],
+              ]) {
+                const m = t[metric];
+                if (m && typeof m.percent === 'number' && m.count > 0) {
+                  rows.push([
+                    `${name} (overall)`,
+                    `${badge(metric, m.percent)} ${pct(m.percent)}`,
+                    `${m.covered} / ${m.count}`,
+                  ]);
+                }
+              }
+            } catch (e) {
+              core.warning(`Could not read coverage summary: ${e}`);
+            }
+
+            try {
+              const d = JSON.parse(fs.readFileSync('diff-cover.json', 'utf8'));
+              const total = d.total_num_lines;
+              const covered = total - d.total_num_violations;
+              if (total > 0) {
+                const p = d.total_percent_covered;
+                rows.push([
+                  '**Diff (changed lines)**',
+                  `${badge('diff', p)} **${pct(p)}**`,
+                  `**${covered} / ${total}**`,
+                ]);
+              } else {
+                rows.push([
+                  '**Diff (changed lines)**', '⚪ **—**',
+                  '_no covered lines changed_',
+                ]);
+              }
+            } catch (e) {
+              core.warning(`Could not read diff-cover report: ${e}`);
+            }
+
+            const hasRed = rows.some((r) => r[1].includes('🔴'));
+
+            const table = rows.length
+              ? [
+                  '| Metric | Coverage | Covered / Total |',
+                  '| --- | ---: | ---: |',
+                  ...rows.map((r) => `| ${r[0]} | ${r[1]} | ${r[2]} |`),
+                ].join('\n')
+              : '_Coverage report unavailable._';
+
+            const { owner, repo } = context.repo;
+            const pr = context.payload.pull_request;
+            const isSameRepoPr =
+              pr && pr.head.repo.full_name === `${owner}/${repo}`;
+
+            if (isSameRepoPr) {
+              const sha = pr.head.sha.slice(0, 7);
+              const body = [
+                marker,
+                '### 🧪 Test coverage report',
+                '',
+                table,
+                '',
+                'Coverage of `Sources/PhotogrammetryCore` + ' +
+                  '`Sources/PhotogrammetryUpdater`\'s pure logic, plus ' +
+                  'coverage of only the lines this PR changed (vs. the base ' +
+                  'branch). `PhotogrammetryEngine.swift` (RealityKit/GPU) and ' +
+                  '`UpdaterService.swift` (network I/O) are excluded — ' +
+                  'CLAUDE.md keeps those out of automated testing.',
+                '',
+                `<sub>Generated by the \`coverage\` job · commit ${sha}</sub>`,
+              ].join('\n');
+
+              const { data: comments } = await github.rest.issues.listComments(
+                { owner, repo, issue_number: pr.number, per_page: 100 });
+              const existing = comments.find(
+                (c) => c.body && c.body.includes(marker));
+
+              if (existing) {
+                await github.rest.issues.updateComment(
+                  { owner, repo, comment_id: existing.id, body });
+              } else {
+                await github.rest.issues.createComment(
+                  { owner, repo, issue_number: pr.number, body });
+              }
+            }
+
+            if (hasRed) {
+              core.setFailed(
+                'Coverage below threshold: one or more metrics are 🔴. ' +
+                'See the coverage table above.');
+            }

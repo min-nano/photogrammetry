@@ -1,5 +1,11 @@
 name: Build app
 
+# テスト（swift test・カバレッジ計測）は test.yml が別ワークフローとして担う。
+# 同じ push / pull_request イベントで独立に起動し、build.yml とは `needs` で
+# 繋がない（＝並列に走る）。ビルドの結果を待たずにテストの結果が見え、テストの
+# 結果を待たずにビルドが進む。テストの合否そのものは branch protection の
+# required checks で見る（このワークフローの release ジョブはテストの成否を
+# 待たない）。
 on:
   # main はプッシュでビルドする（保護されたデフォルトブランチ）。作業ブランチは
   # 必ず PR 経由でビルドされ、その PR が dev プレリリースを公開する。こうして
@@ -26,15 +32,19 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build-mac:
-    # Apple Silicon ランナー（macos-14 以降は arm64）。
-    runs-on: macos-15
-
+  # 実際にビルドする commit/ref/リリースチャンネルを解決する。pull_request
+  # イベントの GITHUB_SHA は一時的なマージコミットで GITHUB_REF_NAME は
+  # "<n>/merge" になるため、PR では head を使う（開発者が push した commit が
+  # dev プレリリースの指す commit になるべき）。build-mac / release の 2 ジョブが
+  # この結果を共有する。
+  ctx:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.ctx.outputs.sha }}
+      short: ${{ steps.ctx.outputs.short }}
+      ref: ${{ steps.ctx.outputs.ref }}
+      channel: ${{ steps.ctx.outputs.channel }}
     steps:
-      # 実際にビルドする commit/ref を解決する。pull_request イベントの
-      # GITHUB_SHA は一時的なマージコミットで GITHUB_REF_NAME は "<n>/merge" に
-      # なるため、PR では head を使う（開発者が push した commit が dev
-      # プレリリースの指す commit になるべき）。
       - name: Resolve build context
         id: ctx
         env:
@@ -58,10 +68,16 @@ jobs:
             echo "channel=$channel"
           } >> "$GITHUB_OUTPUT"
 
+  build-mac:
+    needs: ctx
+    # Apple Silicon ランナー（macos-14 以降は arm64）。
+    runs-on: macos-15
+
+    steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.ctx.outputs.sha }}
+          ref: ${{ needs.ctx.outputs.sha }}
 
       - name: Select Xcode 16.2
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
@@ -72,11 +88,6 @@ jobs:
         run: |
           swift --version
           xcodebuild -version
-
-      # 純ロジック（APICommand / UpdateFeed / validate）の単体テスト。実際の
-      # 3D 再構成はランナーの GPU 要件次第なのでテストしない（ローカル確認）。
-      - name: Run tests
-        run: swift test
 
       # ユニバーサルバイナリ（arm64 + x86_64）のリリースビルド。Object Capture
       # は Intel Mac（GPU 要件あり）でも動くため両アーキテクチャを入れる。
@@ -93,9 +104,9 @@ jobs:
       # ブランチ・チャンネル）は自動アップデートがリリースと突き合わせる鍵。
       - name: Package app bundle
         env:
-          PG_COMMIT: ${{ steps.ctx.outputs.short }}
-          PG_BRANCH: ${{ steps.ctx.outputs.ref }}
-          PG_CHANNEL: ${{ steps.ctx.outputs.channel }}
+          PG_COMMIT: ${{ needs.ctx.outputs.short }}
+          PG_BRANCH: ${{ needs.ctx.outputs.ref }}
+          PG_CHANNEL: ${{ needs.ctx.outputs.channel }}
           PG_BUILD_NUMBER: ${{ github.run_number }}
           BIN_DIR: ${{ steps.build.outputs.bin }}
         run: scripts/package-app.sh "$BIN_DIR/PhotogrammetryApp" dist-app
@@ -148,7 +159,7 @@ jobs:
   #   PR    -> ブランチごとの "dev-<slug>" プレリリースを作り直す。
   # ローリングタグは削除→再作成で常にこのビルドを指すようにする。
   release:
-    needs: build-mac
+    needs: [ctx, build-mac]
     runs-on: ubuntu-latest
 
     # リリースを公開（更新）するのはこのジョブだけなので、write もここだけ。
@@ -156,26 +167,6 @@ jobs:
       contents: write
 
     steps:
-      # ビルドジョブと同じ commit/ref 解決（PR の head、または push された sha）。
-      - name: Resolve build context
-        id: ctx
-        env:
-          # head_ref は攻撃者が制御できる文字列なので環境変数として渡す。
-          HEAD_REF: ${{ github.head_ref }}
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            sha="${{ github.event.pull_request.head.sha }}"
-            ref="$HEAD_REF"
-          else
-            sha="${{ github.sha }}"
-            ref="${{ github.ref_name }}"
-          fi
-          {
-            echo "sha=$sha"
-            echo "short=${sha:0:7}"
-            echo "ref=$ref"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Download artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -191,8 +182,8 @@ jobs:
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_SHA: ${{ steps.ctx.outputs.sha }}
-          SHORT: ${{ steps.ctx.outputs.short }}
+          BUILD_SHA: ${{ needs.ctx.outputs.sha }}
+          SHORT: ${{ needs.ctx.outputs.short }}
         run: |
           set -euo pipefail
           short="$SHORT"
@@ -234,9 +225,9 @@ jobs:
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_SHA: ${{ steps.ctx.outputs.sha }}
-          SHORT: ${{ steps.ctx.outputs.short }}
-          BRANCH: ${{ steps.ctx.outputs.ref }}
+          BUILD_SHA: ${{ needs.ctx.outputs.sha }}
+          SHORT: ${{ needs.ctx.outputs.short }}
+          BRANCH: ${{ needs.ctx.outputs.ref }}
         run: |
           set -euo pipefail
           short="$SHORT"

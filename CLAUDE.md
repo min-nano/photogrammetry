@@ -56,6 +56,19 @@ Sources/
   （`isSupported` で弾かれるならその出力自体が調査結果）。
 - GUI（ViewModel）はロジックを持たないので専用テストは置かない。テストしたい
   判断が ViewModel に生えてきたら、それは Core / Updater へ下ろすサイン。
+- **カバレッジ**は `test.yml` の `test` ジョブ（macOS）が `swift test
+  --enable-code-coverage` を 1 回だけ実行して測る（プレーンな swift test を
+  別に走らせて同じテストを 2 回実行することはしない）。`llvm-cov` で lcov /
+  JSON summary / diff カバレッジをアーティファクトにし、`coverage` ジョブ
+  （ubuntu-latest、Swift 不要）がそれを読んで PR に表（🟢/🟡/🔴、全体 + この
+  PR が変更した行だけの diff カバレッジ）を sticky コメントとして投稿し、
+  しきい値未満なら `coverage` ジョブだけを失敗させる（ゲート）。計測とレポート
+  を分けているのは「テスト（または llvm-cov/diff-cover）が壊れた」のか
+  「しきい値を下回った」のかを一目で区別するため。`PhotogrammetryEngine.swift`
+  （RealityKit/GPU 依存）と `UpdaterService.swift`（ネットワーク I/O）は上記の
+  「自動テストしない」方針どおり集計から除外している — 含めると分母が常に
+  薄まりしきい値が意味を失うため。しきい値・除外規則は `test.yml` の `test`/
+  `coverage` ジョブに 1 か所ずつだけ定義されている。
 
 ## Swift コード規約
 
@@ -71,8 +84,17 @@ Sources/
 
 - ローカル: `swift build` / `swift test`。`.app` の組み立ては
   `scripts/package-app.sh`（SwiftPM は .app を作れないため）。
-- CI（`build.yml`）: macos-15 ランナーで `swift test` → ユニバーサルビルド →
-  `.app` 組み立て → ad-hoc 署名 → zip → リリース公開。
+- CI はテストとビルドで完全に独立した 2 本のワークフローに分かれている。
+  同じ push（main）/ pull_request イベントで起動するが、`needs` などでは
+  互いに繋がず**並列に走る**（ビルドの結果を待たずにテストの結果が見え、
+  テストの結果を待たずにビルドが進む）。テスト・ビルドの合否は branch
+  protection の required checks 側で見る。
+  - `test.yml`: 2 ジョブ。`test`（macos-15、カバレッジ計測つきで `swift
+    test` を 1 回実行しアーティファクト化）→ `coverage`（ubuntu-latest、
+    アーティファクトを PR にコメント・しきい値でゲート。テスト方針節を参照）。
+  - `build.yml`: `ctx` ジョブで commit/ref/リリースチャンネルを解決し、
+    `build-mac`（ユニバーサルビルド → `.app` 組み立て → ad-hoc 署名 → zip）
+    → `release` の順に `needs` で直列化する。
   - main への push → タグ `stable` のローリングリリース（削除して作り直し）。
   - PR への push → タグ `dev-<slug>` のプレリリース（同上）。fork PR は公開不可。
   - ブランチ削除 → `cleanup-dev-release.yml` がプレリリースを掃除。
