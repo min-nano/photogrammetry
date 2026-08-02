@@ -1,35 +1,39 @@
 name: Test
 
-# swift test だけを行う独立ワークフロー。build.yml から reusable workflow として
-# 呼び出され、ビルド前にテストを直列化する（`needs: test`）ほか、
-# workflow_dispatch で単体でも起動できる（ci-debug の test モードとは別に、
-# 通常の CI 経路でテストだけを再実行したいときに使う）。
+# 純ロジックの正しさを見る、このプロジェクトの主な CI。build.yml（ビルド・
+# パッケージング・リリース公開）とは完全に独立したワークフロー。同じ push /
+# pull_request イベントで起動するが、`needs` などでは繋がず並列に走る —
+# ビルドの結果を待たずにテストの結果が見え、テストの結果を待たずにビルドが
+# 進む。テストの合否は branch protection の required checks 側で見る。
+#
+# 2 ジョブに分けているのは、失敗の原因が一目で分かるようにするため:
+#   * test     — swift test を実行する。ここが赤なら純粋にテストの失敗。
+#   * coverage — test が通った後だけ走り、カバレッジ計測付きで再実行して
+#                レポートを PR にコメントする。ここが赤なら「レポート生成が
+#                失敗した」か「しきい値を下回った」のどちらかで、テストの
+#                失敗ではない。
 on:
-  workflow_call:
-    inputs:
-      ref:
-        description: "チェックアウトする commit/ref（省略時は github.sha）"
-        required: false
-        type: string
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: "チェックアウトする commit/ref（省略時は github.sha）"
-        required: false
-        type: string
+  push:
+    branches: [main]
+  pull_request:
 
-permissions:
-  contents: read
+# ref ごとに 1 テスト実行。新しい push は進行中の実行をキャンセルする
+# （最新コミットの結果だけが意味を持つ。build.yml と異なりリリースを公開
+# しないので、main への push でもキャンセルして構わない）。
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: macos-15
+    # チェックアウトだけなので read で足りる。
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref || github.sha }}
 
       - name: Select Xcode 16.2
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1

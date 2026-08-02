@@ -1,5 +1,11 @@
 name: Build app
 
+# テスト（swift test・カバレッジ計測）は test.yml が別ワークフローとして担う。
+# 同じ push / pull_request イベントで独立に起動し、build.yml とは `needs` で
+# 繋がない（＝並列に走る）。ビルドの結果を待たずにテストの結果が見え、テストの
+# 結果を待たずにビルドが進む。テストの合否そのものは branch protection の
+# required checks で見る（このワークフローの release ジョブはテストの成否を
+# 待たない）。
 on:
   # main はプッシュでビルドする（保護されたデフォルトブランチ）。作業ブランチは
   # 必ず PR 経由でビルドされ、その PR が dev プレリリースを公開する。こうして
@@ -29,8 +35,8 @@ jobs:
   # 実際にビルドする commit/ref/リリースチャンネルを解決する。pull_request
   # イベントの GITHUB_SHA は一時的なマージコミットで GITHUB_REF_NAME は
   # "<n>/merge" になるため、PR では head を使う（開発者が push した commit が
-  # dev プレリリースの指す commit になるべき）。test / build-mac / release の
-  # 3 ジョブがこの結果を共有する。
+  # dev プレリリースの指す commit になるべき）。build-mac / release の 2 ジョブが
+  # この結果を共有する。
   ctx:
     runs-on: ubuntu-latest
     outputs:
@@ -62,19 +68,8 @@ jobs:
             echo "channel=$channel"
           } >> "$GITHUB_OUTPUT"
 
-  # 純ロジック（APICommand / UpdateFeed / validate）の単体テスト。test.yml を
-  # reusable workflow として呼び出し、ビルド専用ジョブから分離する（テストの
-  # 結果だけを速く見たい・ci-debug 以外の経路で単体再実行したい、という理由）。
-  # build-mac はこのジョブに `needs` で従属するので、テストが落ちればビルド・
-  # リリースは走らない。
-  test:
-    needs: ctx
-    uses: ./.github/workflows/test.yml
-    with:
-      ref: ${{ needs.ctx.outputs.sha }}
-
   build-mac:
-    needs: [ctx, test]
+    needs: ctx
     # Apple Silicon ランナー（macos-14 以降は arm64）。
     runs-on: macos-15
 
