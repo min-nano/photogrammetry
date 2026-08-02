@@ -264,6 +264,34 @@ final class PhotoSorterTests: XCTestCase
 		XCTAssertEqual(manifest.statistics.inputCount, 60)
 	}
 
+	func testUnassignedPhotosArePlacedInTheirOwnFolder() throws
+	{
+		// どのグループにも入らなかった写真は黙って混ぜず、_unassigned/ に退避
+		// する（混ぜると「なぜこの写真がこのグループに？」が追えなくなる）。
+		let photos = SamplePhoto.sequence(start: 1, count: 12, startTime: 0, hashSeed: 0)
+			+ SamplePhoto.sequence(
+				start: 101, count: 2, startTime: 90000, hashSeed: 0xFFFF_FFFF_FFFF_FFFF)
+		for photo in photos
+		{
+			try Data("dummy".utf8).write(to: input.appendingPathComponent(photo.relativePath))
+		}
+		var request = makeRequest()
+		request.overlap = 0
+		request.maxPerGroup = 13
+		request.minPerGroup = 8
+		let manifest = try makeSorter(photos).run(request)
+
+		XCTAssertEqual(manifest.unassigned.count, 2)
+		for photo in manifest.unassigned
+		{
+			XCTAssertTrue(FileManager.default.fileExists(
+				atPath: output
+					.appendingPathComponent(SortLayout.unassignedFolder)
+					.appendingPathComponent(SortLayout.flattenedName(for: photo)).path))
+		}
+		XCTAssertTrue(manifest.diagnostics.contains { $0.code == "unassigned" })
+	}
+
 	func testSymlinkStrategyPointsAtTheOriginal() throws
 	{
 		let photos = try makePhotos()
