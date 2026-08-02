@@ -196,7 +196,7 @@ enum SamplePhoto
 			// そのまま撮影順の隔たりになるので、「隣は近く、離れるほど遠い」が
 			// 単調に成立する。剰余で折り返すと遠い写真が同一指紋になってしまう。
 			let drift = UInt64(min(offset, 63))
-			make(
+			return make(
 				index: start + offset,
 				folder: folder,
 				secondsFromEpoch: startTime + Double(offset) * interval,
