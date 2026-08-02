@@ -122,8 +122,10 @@ public struct PhotoSorter: Sendable
 			return manifest
 		}
 
+		// 配置元は「走査で見つかった全ファイル」から引く。読めなかったファイルも
+		// _excluded/unreadable/ へ残すため（除外した写真は捨てない）。
 		let sources = Dictionary(
-			inspected.photos.map { ($0.relativePath, $0.url) },
+			files.map { ($0.relativePath, $0.url) },
 			uniquingKeysWith: { first, _ in first })
 		try place(
 			plan: plan,
