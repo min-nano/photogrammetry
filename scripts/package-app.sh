@@ -63,6 +63,18 @@ CLI="${3:-$(dirname "$BIN")/photogrammetry-cli}"
 cp "$CLI" "$APP/Contents/MacOS/photogrammetry-cli"
 chmod +x "$APP/Contents/MacOS/photogrammetry-cli"
 
+# アプリアイコン。Info.plist の CFBundleIconFile（AppIcon）と対で、
+# Contents/Resources/AppIcon.icns という名前でなければ Finder / Dock は拾わない。
+# 実体は scripts/make-app-icon.py が生成してリポジトリに入っている（.icns は
+# バイナリなので、デザインを変えるときはスクリプト側を直して再生成する）。
+ICON="packaging/AppIcon.icns"
+[ -f "$ICON" ] || {
+	echo "error: アイコンがありません: $ICON" >&2
+	echo "       scripts/make-app-icon.py で生成してください。" >&2
+	exit 1
+}
+cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
+
 # 自動アップデートの差し替えスクリプトを同梱する（UpdaterService が
 # Contents/Resources/install-update.sh を探す）。
 cp scripts/install-update.sh "$APP/Contents/Resources/install-update.sh"

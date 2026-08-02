@@ -117,6 +117,15 @@ Sources/
   - ブランチ削除 → `cleanup-dev-release.yml` がプレリリースを掃除。
 - 自動アップデートは Info.plist のスタンプ（`GitCommit` / `GitBranch` /
   `BuildChannel`）とリリースを突き合わせる。スタンプは `package-app.sh` が書く。
+- **アプリアイコンは `scripts/make-app-icon.py` が唯一の原典**（寸法・色はすべて
+  スクリプト内）。生成物 `packaging/AppIcon.svg`（プレビュー）と
+  `packaging/AppIcon.icns`（同梱する実体）はリポジトリに入れてあるので、
+  デザインを変えるときはスクリプトを直して再生成し、両方を commit する。
+  `.icns` の書き出しは `iconutil`（macOS 専用）に頼らず自前実装なので、Linux の
+  リモートセッションでも再生成・確認できる（`pip install cairosvg`）。
+  名前 `AppIcon` は Info.plist の `CFBundleIconFile` / `package-app.sh` のコピー先
+  `Contents/Resources/AppIcon.icns` / `build.yml` の同梱チェックの**対**で、
+  片方を変えるときは必ず全部を揃える（欠けると「ビルドは通るが Dock に白紙」）。
 
 ## CI デバッグ（macOS が必要な調査は `ci-debug` を使う）
 
