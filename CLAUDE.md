@@ -143,6 +143,15 @@ Sources/
   - ブランチ削除 → `cleanup-dev-release.yml` がプレリリースを掃除。
 - 自動アップデートは Info.plist のスタンプ（`GitCommit` / `GitBranch` /
   `BuildChannel`）とリリースを突き合わせる。スタンプは `package-app.sh` が書く。
+- **アプリアイコンは `scripts/make-app-icon.py` が唯一の原典**（寸法・色はすべて
+  スクリプト内）。生成物 `packaging/AppIcon.svg`（プレビュー）と
+  `packaging/AppIcon.icns`（同梱する実体）はリポジトリに入れてあるので、
+  デザインを変えるときはスクリプトを直して再生成し、両方を commit する。
+  `.icns` の書き出しは `iconutil`（macOS 専用）に頼らず自前実装なので、Linux の
+  リモートセッションでも再生成・確認できる（`pip install cairosvg`）。
+  名前 `AppIcon` は Info.plist の `CFBundleIconFile` / `package-app.sh` のコピー先
+  `Contents/Resources/AppIcon.icns` / `build.yml` の同梱チェックの**対**で、
+  片方を変えるときは必ず全部を揃える（欠けると「ビルドは通るが Dock に白紙」）。
 
 ## CI デバッグ（macOS が必要な調査は `ci-debug` を使う）
 
@@ -224,3 +233,35 @@ scripts/ci-debug.sh run --mode test --args '--filter UpdateFeedTests'
 - **モードの追加・修正は `scripts/ci-debug-job.sh`（ランナー側）で行う。**
   ワークフロー本体は薄く保ってあるので、作業ブランチに push するだけで新しい
   モードを試せる。ワークフロー本体を変えると main へのマージが要る。
+
+## CI の完了待ち（`scripts/wait-pr-checks.sh`）
+
+PR やブランチの CI の完了を待つときは、待ち方を自作せず
+**`scripts/wait-pr-checks.sh` を使う**。完了した瞬間に exit するので、
+`ci-debug.sh wait` と同じく `run_in_background: true` で投げて別作業を続け、
+終了通知が来たら出力を `Read` すればよい。**`sleep` で待ってはいけない。**
+
+```
+Bash(run_in_background: true):
+  scripts/wait-pr-checks.sh --pr <番号> > /tmp/pr.log 2>&1
+```
+
+出力の最後は必ず 1 行の機械可読サマリで、終了ステータスと対になっている。
+
+```
+result=<success|failure|no-checks|timeout|pr-merged|pr-closed> sha=... total=N failed=N pending=N
+  0 = 完了・失敗なし / 1 = 失敗あり / 2 = 使い方・API エラー / 3 = 不明（timeout・no-checks）
+```
+
+**待ち方を自作してはならない理由**（実際に踏んだ）: 素朴に
+`GET /commits/{sha}/status`（combined status）の `.state` が `pending` の間ループ
+すると**永久に終わらない**。combined status は commit status API のステータスの
+集約で、GitHub Actions は commit status ではなく **check run** を作るため、この
+リポジトリでは `total_count: 0` / `state: "pending"` を返し続ける。PR #7 では全 5
+チェックが 2 分で success になったのに、待機コマンドは 27 分たっても exit しなかった。
+
+`wait-pr-checks.sh` は check runs・workflow runs・commit statuses の 3 経路を見る
+（`build.yml` の `release` のように**後から現れるジョブ**があるので workflow runs が
+要る）。そのうえで「全部完了」「チェックが現れない」「タイムアウト」の 3 つの出口を
+持ち、**どの経路でも必ず exit する**。パイプ（`| tail`）でつながず、ファイルへ
+リダイレクトして `Read` すること。
