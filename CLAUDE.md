@@ -56,14 +56,18 @@ Sources/
   （`isSupported` で弾かれるならその出力自体が調査結果）。
 - GUI（ViewModel）はロジックを持たないので専用テストは置かない。テストしたい
   判断が ViewModel に生えてきたら、それは Core / Updater へ下ろすサイン。
-- **カバレッジ**は `test.yml` の `coverage` ジョブが `swift test
-  --enable-code-coverage` + `llvm-cov` で計測し、PR に表（🟢/🟡/🔴、全体 +
-  この PR が変更した行だけの diff カバレッジ）を sticky コメントとして投稿し、
-  しきい値未満ならジョブを失敗させる（ゲート）。`PhotogrammetryEngine.swift`
-  （RealityKit/GPU 依存）と `UpdaterService.swift`（ネットワーク I/O）は
-  上記の「自動テストしない」方針どおり集計から除外している — 含めると分母が
-  常に薄まりしきい値が意味を失うため。しきい値・除外規則は `test.yml` の
-  `coverage` ジョブに 1 か所だけ定義されている。
+- **カバレッジ**は `test.yml` の `coverage` ジョブ（macOS）が `swift test
+  --enable-code-coverage` + `llvm-cov` で計測して lcov / JSON summary /
+  diff カバレッジをアーティファクトにし、`report` ジョブ（ubuntu-latest、
+  Swift 不要）がそれを読んで PR に表（🟢/🟡/🔴、全体 + この PR が変更した
+  行だけの diff カバレッジ）を sticky コメントとして投稿し、しきい値未満なら
+  `report` ジョブだけを失敗させる（ゲート）。生成とレポートを分けているのは
+  「llvm-cov/diff-cover が壊れた」のか「しきい値を下回った」のかを一目で
+  区別するため。`PhotogrammetryEngine.swift`（RealityKit/GPU 依存）と
+  `UpdaterService.swift`（ネットワーク I/O）は上記の「自動テストしない」
+  方針どおり集計から除外している — 含めると分母が常に薄まりしきい値が意味を
+  失うため。しきい値・除外規則は `test.yml` の `coverage`/`report` ジョブに
+  1 か所ずつだけ定義されている。
 
 ## Swift コード規約
 
@@ -84,8 +88,9 @@ Sources/
   互いに繋がず**並列に走る**（ビルドの結果を待たずにテストの結果が見え、
   テストの結果を待たずにビルドが進む）。テスト・ビルドの合否は branch
   protection の required checks 側で見る。
-  - `test.yml`: macos-15 ランナーで 2 ジョブ。`test`（`swift test`）→
-    `coverage`（`test` 通過後だけ、カバレッジ計測して PR にコメント・
+  - `test.yml`: 3 ジョブ。`test`（macos-15、`swift test`）→
+    `coverage`（macos-15、`test` 通過後だけカバレッジ計測してアーティファクト
+    化）→ `report`（ubuntu-latest、アーティファクトを PR にコメント・
     しきい値でゲート。テスト方針節を参照）。
   - `build.yml`: `ctx` ジョブで commit/ref/リリースチャンネルを解決し、
     `build-mac`（ユニバーサルビルド → `.app` 組み立て → ad-hoc 署名 → zip）
