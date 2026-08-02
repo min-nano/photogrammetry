@@ -208,9 +208,13 @@ Sources/
     UpdaterService         ネットワーク・ダウンロード・差し替え起動（Foundation のみ）
   photogrammetry-cli/      CLI フロントエンド（Core のみに依存）
   PhotogrammetryApp/       SwiftUI GUI（Core / Updater の薄いシェル）
-packaging/Info.plist       .app の Info.plist テンプレート
+packaging/
+  Info.plist               .app の Info.plist テンプレート
+  AppIcon.svg              アプリアイコン（プレビュー用・生成物）
+  AppIcon.icns             アプリアイコン（.app に同梱する実体・生成物）
 scripts/
   package-app.sh           SwiftPM 成果物 → Photogrammetry.app の組み立て
+  make-app-icon.py         アプリアイコンの生成（デザインの原典）
   install-update.sh        自動アップデートの差し替えスクリプト（.app に同梱）
   ci-debug.sh              CI debug ワークフローのクライアント
   ci-debug-job.sh          CI debug ワークフローのランナー側本体
@@ -238,6 +242,27 @@ open dist-app/Photogrammetry.app
 
 実際の 3D 再構成（品質・進捗挙動）は Object Capture 対応のローカル Mac で
 目視確認してください。CI は純ロジックのテストとビルド成立のみを保証します。
+
+### アプリアイコン
+
+アイコンは画像ファイルを手で描くのではなく、`scripts/make-app-icon.py` が
+ベクタ（SVG）から全サイズを焼いて `packaging/AppIcon.icns` を作ります。寸法と
+色はスクリプト内に集約してあるので、`.icns` がバイナリでも変更履歴が読めます。
+
+```bash
+pip install cairosvg
+scripts/make-app-icon.py      # packaging/AppIcon.svg と AppIcon.icns を更新
+```
+
+デザインは「同じものの 2 通りの表現」です。奥の写真（2D）に写った平面の六角形と、
+手前の立体（3D・等角投影の立方体）のシルエットが同じ六角形になっていて、
+「多数の写真 → 1 つの 3D モデル」という Object Capture の処理そのものを表します。
+被写体を特定の物にせず抽象的な立体にしているのは、用途を限定しないためと、
+16px でも 3 面の陰影だけで立体と読めるためです。背景は macOS 標準アイコンに
+合わせたスーパー楕円（squircle、1024px キャンバスの中央 824px）です。
+
+`.icns` は `iconutil`（macOS 専用）を使わず自前で書き出しているので、macOS が
+無い環境（Linux のリモートセッション）でも再生成できます。
 
 ## CI / リリース構成
 

@@ -14,6 +14,14 @@
 	<string>Photogrammetry</string>
 	<key>CFBundleExecutable</key>
 	<string>Photogrammetry</string>
+	<!-- アイコン。実体は packaging/AppIcon.icns（scripts/make-app-icon.py が生成）を
+	     package-app.sh が Contents/Resources/AppIcon.icns としてコピーする。
+	     CFBundleIconFile は拡張子なしの名前で書く決まり。CFBundleIconName は
+	     アセットカタログ用だが、Dock 以外の一部 API がこちらを見るので両方置く。 -->
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.minnano.photogrammetry</string>
 	<key>CFBundleInfoDictionaryVersion</key>
