@@ -71,8 +71,14 @@ Sources/
 
 - ローカル: `swift build` / `swift test`。`.app` の組み立ては
   `scripts/package-app.sh`（SwiftPM は .app を作れないため）。
-- CI（`build.yml`）: macos-15 ランナーで `swift test` → ユニバーサルビルド →
-  `.app` 組み立て → ad-hoc 署名 → zip → リリース公開。
+- CI はテストとビルドで別ワークフローに分離している。
+  - `test.yml`: macos-15 ランナーで `swift test` のみを行う。`workflow_call` /
+    `workflow_dispatch` で起動する reusable workflow で、単体では発火しない
+    （push / pull_request のトリガは `build.yml` 側にしか無い）。
+  - `build.yml`: `ctx` ジョブで commit/ref/リリースチャンネルを解決し、
+    `test`（`test.yml` を呼び出す）→ `build-mac`（ユニバーサルビルド →
+    `.app` 組み立て → ad-hoc 署名 → zip）→ `release` の順に `needs` で直列化
+    する。テストが落ちればビルド・リリースは走らない。
   - main への push → タグ `stable` のローリングリリース（削除して作り直し）。
   - PR への push → タグ `dev-<slug>` のプレリリース（同上）。fork PR は公開不可。
   - ブランチ削除 → `cleanup-dev-release.yml` がプレリリースを掃除。

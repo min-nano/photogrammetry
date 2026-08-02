@@ -1,0 +1,47 @@
+name: Test
+
+# swift test だけを行う独立ワークフロー。build.yml から reusable workflow として
+# 呼び出され、ビルド前にテストを直列化する（`needs: test`）ほか、
+# workflow_dispatch で単体でも起動できる（ci-debug の test モードとは別に、
+# 通常の CI 経路でテストだけを再実行したいときに使う）。
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "チェックアウトする commit/ref（省略時は github.sha）"
+        required: false
+        type: string
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "チェックアウトする commit/ref（省略時は github.sha）"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Select Xcode 16.2
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: "16.2"
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      # 純ロジック（APICommand / UpdateFeed / validate）の単体テスト。実際の
+      # 3D 再構成はランナーの GPU 要件次第なのでテストしない（ローカル確認）。
+      - name: Run tests
+        run: swift test
