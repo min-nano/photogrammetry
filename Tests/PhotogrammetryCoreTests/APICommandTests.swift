@@ -226,4 +226,41 @@ final class APICommandTests: XCTestCase
 				.invalidValue(parameter: "--detail", value: "gigantic"))
 		}
 	}
+
+	// -----------------------------------------------------------------
+	// 引数の組み立て（GUI → ヘルパープロセス）
+	// -----------------------------------------------------------------
+
+	func testArgumentsForRequest()
+	{
+		let request = ReconstructionRequest(
+			inputFolder: URL(fileURLWithPath: "/tmp/photos", isDirectory: true),
+			outputFile: URL(fileURLWithPath: "/tmp/model.usdz"),
+			detail: .full,
+			sampleOrdering: .sequential,
+			featureSensitivity: .high,
+			subject: .scene)
+		XCTAssertEqual(APICommand.arguments(for: request), [
+			"/tmp/photos", "/tmp/model.usdz",
+			"--detail", "full",
+			"--sample-ordering", "sequential",
+			"--feature-sensitivity", "high",
+			"--subject", "scene",
+		])
+	}
+
+	func testArgumentsRoundTrip() throws
+	{
+		// 組み立てた引数をヘルパー（CLI）が同じ Request に戻せること。ここが
+		// ずれると GUI と別プロセス実行で設定が食い違う。
+		let request = ReconstructionRequest(
+			inputFolder: URL(fileURLWithPath: "/tmp/photos", isDirectory: true),
+			outputFile: URL(fileURLWithPath: "/tmp/model.usdz"),
+			detail: .reduced,
+			sampleOrdering: .sequential,
+			featureSensitivity: .high,
+			subject: .scene)
+		let parsed = try APICommand.parse(arguments: APICommand.arguments(for: request))
+		XCTAssertEqual(parsed, request)
+	}
 }

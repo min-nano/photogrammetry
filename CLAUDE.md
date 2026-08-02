@@ -25,7 +25,12 @@ Sources/
   PhotogrammetryCore/      ロジック本体。SwiftUI / AppKit を import しない
     ReconstructionRequest  生成 1 回分の指示（自前 enum）と validate
     APICommand             URL スキーム / CLI 引数 → Request（外部連携 API の唯一の定義）
+    ReconstructionService  実行方式（別プロセス / 同一プロセス）を決める入口
     PhotogrammetryEngine   RealityKit PhotogrammetrySession の唯一のラッパー
+    HelperProcessEngine    生成を別プロセス（photogrammetry-cli）で実行する
+    HelperProtocol         ヘルパーの stdout 行の書式（CLI ↔ GUI の対）
+    InputInspection        入力フォルダの事前チェック（純ロジック）
+    ModelCache             ML モデルのキャッシュ破損の見分け・場所・削除
   PhotogrammetryUpdater/   自動アップデート
     UpdateFeed             Releases JSON → チャンネル一覧・更新判定（純ロジック・I/O なし）
     UpdaterService         ネットワーク・展開・差し替え起動（Foundation のみ）
@@ -41,6 +46,13 @@ Sources/
 - 外部連携のパラメータ語彙（`input` / `output` / `detail` / `ordering` /
   `sensitivity` / `subject`）は `APICommand` に **1 か所だけ**定義する。入口
   （URL / CLI）を増やす・変えるときは `APICommand` とそのテストを同時に更新する。
+- **GUI からの生成は必ず別プロセス（同梱 `photogrammetry-cli`）で行う。**
+  `CorePhotogrammetry` は内部エラーで `abort()` することがあり（実機で
+  `com.apple.CorePhotogrammetry.session.recon` キューの SIGABRT を確認）、
+  同一プロセスだと GUI ごと落ちる。Swift の `try` / `catch` では捕まえられない
+  ので、プロセス境界が唯一の防御線。ヘルパーの同梱（`package-app.sh`）と
+  同梱チェック（`build.yml`）、行の書式（`HelperProtocol`）と CLI の出力は
+  **対**で、片方を変えるときは必ず両方＋テストを更新する。
 - リリースの機械可読形式（アセット名 `Photogrammetry.app.zip`、notes の
   `channel=` / `branch=` / `commit=` / `built=` 行、タグ `stable` / `dev-<slug>`）は
   `UpdateFeed` と `build.yml` の**対**で定義されている。片方を変えるときは必ず
@@ -54,6 +66,11 @@ Sources/
   実行時間も長い。品質・進捗挙動は Object Capture 対応のローカル Mac で目視確認
   する。CI 上で挙動を見たいときは ci-debug の `run-cli` モードを使う
   （`isSupported` で弾かれるならその出力自体が調査結果）。
+- **別プロセス実行（`HelperProcessEngine`）はテストする**。ヘルパーを差し替え
+  られる設計（`helperURL` を受け取る）にしてあるので、シェルスクリプトで
+  「進捗を出す / SIGABRT で落ちる / エラー終了する / 中断する」を再現でき、
+  GPU も本物の CLI も要らない。クラッシュ時にアプリが道連れにならないことを
+  保証する唯一のテストなので消さないこと。
 - GUI（ViewModel）はロジックを持たないので専用テストは置かない。テストしたい
   判断が ViewModel に生えてきたら、それは Core / Updater へ下ろすサイン。
 - **カバレッジ**は `test.yml` の `test` ジョブ（macOS）が `swift test

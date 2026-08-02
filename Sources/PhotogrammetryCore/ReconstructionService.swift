@@ -1,0 +1,100 @@
+//
+//  ReconstructionService.swift
+//
+//  フロントエンド（GUI・組み込み先アプリ）が呼ぶ入口。「同一プロセスで動かすか、
+//  ヘルパープロセスへ出すか」の判断をここ 1 か所に置く。GUI にこの判断を書くと
+//  ロジックが GUI 側へ漏れるため（CLAUDE.md「ロジックと GUI の完全分離」）。
+//
+//  既定はヘルパープロセス。CorePhotogrammetry は内部エラーで abort() する
+//  ことがあり、同一プロセスだとアプリごと落ちるため（HelperProcessEngine の
+//  コメント参照）。ヘルパーが見つからない場合だけ同一プロセスで実行する。
+//
+//  CLI（photogrammetry-cli）自身はヘルパーの実体なので、ここではなく
+//  PhotogrammetryEngine を直接使う。
+//
+
+import Foundation
+
+public final class ReconstructionService
+{
+	/// 実行方式。
+	public enum Mode: Equatable, Sendable
+	{
+		/// 別プロセス（同梱ヘルパー）で実行する。
+		case helperProcess(URL)
+		/// 同一プロセスで実行する（ヘルパー未同梱の開発ビルドなど）。
+		case inProcess
+	}
+
+	/// この Mac が Object Capture に対応しているか（判定は RealityKit 側）。
+	public static var isSupported: Bool
+	{
+		PhotogrammetryEngine.isSupported
+	}
+
+	/// 同梱ヘルパーがあればそれを使う方式を返す。
+	public static func resolveMode(fileManager: FileManager = .default) -> Mode
+	{
+		guard let helper = HelperProcessEngine.bundledHelperURL(fileManager: fileManager)
+		else
+		{
+			return .inProcess
+		}
+		return .helperProcess(helper)
+	}
+
+	/// 実行方式をログへ残す 1 行。クラッシュ報告を読むとき「どちらで動いて
+	/// いたか」が分からないと切り分けられないので必ず出す。
+	public static func note(for mode: Mode) -> String
+	{
+		switch mode
+		{
+			case .helperProcess(let url):
+				return "実行方式: 別プロセス（\(url.path)）"
+			case .inProcess:
+				return "実行方式: 同一プロセス（ヘルパー \(HelperProcessEngine.executableName) が"
+					+ "見つかりません）。生成中の内部エラーではアプリごと終了する場合があります。"
+		}
+	}
+
+	public let mode: Mode
+
+	private let helperEngine: HelperProcessEngine?
+	private let engine: PhotogrammetryEngine?
+
+	public init(mode: Mode = ReconstructionService.resolveMode())
+	{
+		self.mode = mode
+		switch mode
+		{
+			case .helperProcess(let url):
+				helperEngine = HelperProcessEngine(helperURL: url)
+				engine = nil
+			case .inProcess:
+				helperEngine = nil
+				engine = PhotogrammetryEngine()
+		}
+	}
+
+	/// 写真フォルダから 3D モデルを生成する。完了（またはキャンセル・エラー）まで
+	/// 返らない。
+	public func process(
+		_ request: ReconstructionRequest,
+		onEvent: @escaping @Sendable (ReconstructionEvent) -> Void) async throws
+	{
+		onEvent(.note(Self.note(for: mode)))
+		if let helperEngine
+		{
+			try await helperEngine.process(request, onEvent: onEvent)
+			return
+		}
+		try await engine?.process(request, onEvent: onEvent)
+	}
+
+	/// 実行中の処理を中断する。
+	public func cancel()
+	{
+		helperEngine?.cancel()
+		engine?.cancel()
+	}
+}

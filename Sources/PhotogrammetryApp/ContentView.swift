@@ -18,7 +18,7 @@ struct ContentView: View
 	{
 		VStack(alignment: .leading, spacing: 12)
 		{
-			if !PhotogrammetryEngine.isSupported
+			if !ReconstructionService.isSupported
 			{
 				Label(
 					"この Mac は Object Capture に対応していません（モデル生成は実行できません）。",
@@ -129,6 +129,17 @@ struct ContentView: View
 				Text(model.statusText)
 					.font(.callout)
 					.foregroundColor(.secondary)
+			}
+
+			// ML モデルのキャッシュ破損で落ちたときだけ出す復旧ボタン。
+			// この失敗は消せば必ず直るので、ターミナルを使わせない。
+			if model.canPurgeModelCache
+			{
+				Button("ML モデルのキャッシュを削除")
+				{
+					model.purgeModelCache()
+				}
+				.disabled(model.isProcessing)
 			}
 
 			GroupBox("ログ")

@@ -7,7 +7,10 @@
 # 同じ手順で使えるよう、入力は引数と環境変数だけにしてある。
 #
 # 使い方:
-#   scripts/package-app.sh <ビルド済み実行ファイル> <出力ディレクトリ>
+#   scripts/package-app.sh <ビルド済み実行ファイル> <出力ディレクトリ> [<ヘルパー実行ファイル>]
+#
+# ヘルパー（photogrammetry-cli）は省略時、アプリ実行ファイルと同じディレクトリ
+# から拾う（swift build の成果物は同じ bin ディレクトリに並ぶ）。
 #
 # 環境変数（省略可。CI がリリースのスタンプとして渡す）:
 #   PG_COMMIT        ビルド元コミット（7 桁短縮）      → Info.plist :GitCommit
@@ -46,6 +49,19 @@ fi
 # 実行ファイル。CFBundleExecutable（Photogrammetry）に合わせてリネームして置く。
 cp "$BIN" "$APP/Contents/MacOS/Photogrammetry"
 chmod +x "$APP/Contents/MacOS/Photogrammetry"
+
+# 生成用ヘルパー（photogrammetry-cli）を同梱する。GUI は 3D 生成をこの子
+# プロセスで走らせる（CorePhotogrammetry は内部エラーで abort() することがあり、
+# 同一プロセスだとアプリごと落ちるため）。アプリ本体と同じディレクトリに置く
+# 決まりで、探すのは HelperProcessEngine.bundledHelperURL。
+CLI="${3:-$(dirname "$BIN")/photogrammetry-cli}"
+[ -f "$CLI" ] || {
+	echo "error: ヘルパー実行ファイルがありません: $CLI" >&2
+	echo "       swift build で photogrammetry-cli もビルドしてください。" >&2
+	exit 1
+}
+cp "$CLI" "$APP/Contents/MacOS/photogrammetry-cli"
+chmod +x "$APP/Contents/MacOS/photogrammetry-cli"
 
 # 自動アップデートの差し替えスクリプトを同梱する（UpdaterService が
 # Contents/Resources/install-update.sh を探す）。
