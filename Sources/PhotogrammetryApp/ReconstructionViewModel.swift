@@ -294,16 +294,16 @@ final class ReconstructionViewModel: ObservableObject
 				}
 				switch failure
 				{
-					case nil:
+					case .none:
 						self.statusText = request.dryRun
 							? "仕分けの確認が完了しました（ファイルは作成していません）"
 							: "仕分け完了"
 						self.appendLog("仕分け完了")
-					case SortError.cancelled?:
+					case .some(let error) where (error as? SortError) == .cancelled:
 						// 中断は失敗ではない。生成と同じ表現に揃える。
 						self.statusText = "キャンセルされました"
 						self.appendLog("キャンセルされました")
-					case let error?:
+					case .some(let error):
 						self.statusText = "エラー: \(Self.summary(of: error))"
 						self.appendLog("エラー: \(ErrorDetails.describe(error))")
 				}
