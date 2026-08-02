@@ -67,8 +67,14 @@ photogrammetry-cli <入力フォルダ> <出力ファイル.usdz> \
 ```
 
 stdout に機械可読な `key=value` 行を逐次出力します（`progress=0.42` /
-`note=…` / `output=/path/model.usdz` / 最後に `ok`）。エラーは stderr に
-`error: …`、終了コードは成功 0 / 失敗 1 / 使い方誤り 2 です。
+`stage=imageAlignment` / `eta=1830` / `note=…` / `output=/path/model.usdz` /
+最後に `ok`）。エラーは stderr に `error: …`、終了コードは成功 0 / 失敗 1 /
+使い方誤り 2 です。
+
+`stage=` は処理段階（`preProcessing` / `imageAlignment` / `pointCloudGeneration`
+/ `meshGeneration` / `textureMapping` / `optimization`）、`eta=` は残り時間の
+見積もり（秒）です。どちらも OS が返したときだけ出ます（macOS が値を返さない
+区間では出力されません）ので、受け側は欠けても動くようにしてください。
 
 ### URL スキーム（他アプリからの連携）
 
@@ -159,7 +165,10 @@ macOS の Object Capture 本体（`CorePhotogrammetry`）が内部エラーで�
 
 **エラーの詳細**
 失敗時はログ（GUI のログ欄 / CLI の stderr）にエラーの domain / code / userInfo が
-出ます。問い合わせ・調査の際はこの全文を添えてください。
+出ます。問い合わせ・調査の際はこの全文を添えてください。処理段階（GUI は
+プログレスバー下と「段階: …」のログ、CLI は `stage=`）も一緒に見ると、
+位置合わせ（`imageAlignment`）まで到達して落ちたのか、その前で落ちたのかを
+切り分けられます。
 
 **クラウド上のフォルダが遅い・見つからない**
 iCloud Drive・Google Drive などのストリーミングフォルダは、実体が未ダウンロード

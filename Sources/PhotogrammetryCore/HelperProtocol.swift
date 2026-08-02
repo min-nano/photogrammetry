@@ -33,6 +33,12 @@ public enum HelperProtocol
 		{
 			case .progress(let fraction):
 				return String(format: "progress=%.3f", fraction)
+			case .stage(let stage):
+				return "stage=\(stage.rawValue)"
+			case .estimatedRemainingTime(let remaining):
+				// 秒未満の精度は意味を持たない（OS の見積もり自体が揺れる）
+				// ので整数秒へ丸める。負の見積もりが来ることがあるので 0 で止める。
+				return "eta=\(Int(max(0, remaining).rounded()))"
 			case .note(let message):
 				return "note=\(singleLine(message))"
 			case .completed(let url):
@@ -76,6 +82,22 @@ public enum HelperProtocol
 					return nil
 				}
 				return .event(.progress(fraction))
+			case "stage":
+				// 知らない段階名（新しいヘルパーと古い GUI の組み合わせ）は
+				// 捨てる。表示できない段階を無理に通しても意味が無いため。
+				guard let stage = ProcessingStage(rawValue: value)
+				else
+				{
+					return nil
+				}
+				return .event(.stage(stage))
+			case "eta":
+				guard let remaining = TimeInterval(value)
+				else
+				{
+					return nil
+				}
+				return .event(.estimatedRemainingTime(remaining))
 			case "note":
 				return .event(.note(value))
 			case "output":

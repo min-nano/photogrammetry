@@ -24,6 +24,17 @@ final class HelperProtocolTests: XCTestCase
 			HelperProtocol.encode(.completed(URL(fileURLWithPath: "/tmp/model.usdz"))),
 			"output=/tmp/model.usdz")
 		XCTAssertEqual(HelperProtocol.encode(.cancelled), "cancelled")
+		XCTAssertEqual(HelperProtocol.encode(.stage(.imageAlignment)), "stage=imageAlignment")
+		XCTAssertEqual(HelperProtocol.encode(.estimatedRemainingTime(1830)), "eta=1830")
+	}
+
+	func testEstimatedRemainingTimeIsRoundedToWholeSeconds()
+	{
+		// 秒未満の精度は意味を持たない。負の見積もりが来ても 0 で止める
+		// （読み手が負の残り時間を表示しないため）。
+		XCTAssertEqual(HelperProtocol.encode(.estimatedRemainingTime(12.4)), "eta=12")
+		XCTAssertEqual(HelperProtocol.encode(.estimatedRemainingTime(12.6)), "eta=13")
+		XCTAssertEqual(HelperProtocol.encode(.estimatedRemainingTime(-5)), "eta=0")
 	}
 
 	func testRoundTrip()
@@ -34,6 +45,18 @@ final class HelperProtocolTests: XCTestCase
 		XCTAssertEqual(
 			roundTrip(.completed(URL(fileURLWithPath: "/tmp/a b.usdz"))),
 			.event(.completed(URL(fileURLWithPath: "/tmp/a b.usdz"))))
+		XCTAssertEqual(roundTrip(.stage(.textureMapping)), .event(.stage(.textureMapping)))
+		XCTAssertEqual(
+			roundTrip(.estimatedRemainingTime(90)),
+			.event(.estimatedRemainingTime(90)))
+	}
+
+	func testDecodeIgnoresUnknownStage()
+	{
+		// 新しいヘルパー + 古い GUI の組み合わせ。知らない段階名で
+		// 進捗表示が壊れないこと。
+		XCTAssertNil(HelperProtocol.decode(line: "stage=quantumRefinement"))
+		XCTAssertNil(HelperProtocol.decode(line: "eta=まだ"))
 	}
 
 	func testNoteIsFlattenedToOneLine()

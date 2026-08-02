@@ -29,7 +29,21 @@ final class ReconstructionViewModel: ObservableObject
 	/// 判断そのものは Core（HelperProcessError.isModelCacheFailure）が持つ。
 	@Published var canPurgeModelCache = false
 
+	/// 現在の処理段階と残り時間の見積もり。OS が返さないことがあるので Optional。
+	@Published var processingStage: ProcessingStage?
+	@Published var estimatedRemainingTime: TimeInterval?
+
 	private var service: ReconstructionService?
+	/// ログへ出した最後の段階。段階が変わったときだけ 1 行残すために持つ
+	/// （進捗イベントは頻繁に来るので、毎回書くとログが埋まる）。
+	private var loggedStage: ProcessingStage?
+
+	/// プログレスバーの下に出す 1 行（「画像の位置合わせ中 — 残り約 30 分」）。
+	/// 文言の組み立ては Core にあり、ここは受け渡すだけ。
+	var progressDetailText: String?
+	{
+		ProcessingStage.progressText(stage: processingStage, remaining: estimatedRemainingTime)
+	}
 
 	var canStart: Bool
 	{
@@ -126,6 +140,9 @@ final class ReconstructionViewModel: ObservableObject
 
 		isProcessing = true
 		progress = 0
+		processingStage = nil
+		estimatedRemainingTime = nil
+		loggedStage = nil
 		statusText = "処理中…"
 		canPurgeModelCache = false
 		appendLog("開始: \(request.inputFolder.path) → \(request.outputFile.path)")
@@ -222,6 +239,17 @@ final class ReconstructionViewModel: ObservableObject
 		{
 			case .progress(let fraction):
 				progress = fraction
+			case .stage(let stage):
+				processingStage = stage
+				// 段階の変わり目だけログに残す。失敗したときに「どの段階まで
+				// 進んだか」が分かると原因の切り分けができる。
+				if stage != loggedStage
+				{
+					loggedStage = stage
+					appendLog("段階: \(stage.displayName)")
+				}
+			case .estimatedRemainingTime(let remaining):
+				estimatedRemainingTime = remaining
 			case .note(let message):
 				appendLog(message)
 			case .completed(let url):
