@@ -200,18 +200,6 @@ private final class RunState: @unchecked Sendable
 	private var progress: Double?
 	private var cancelled = false
 
-	func reset()
-	{
-		lock.lock()
-		defer { lock.unlock() }
-		process = nil
-		cancelRequested = false
-		pendingOutput = Data()
-		errorData = Data()
-		progress = nil
-		cancelled = false
-	}
-
 	func setProcess(_ process: Process?)
 	{
 		lock.lock()
