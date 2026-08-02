@@ -127,8 +127,9 @@ public enum SortPlanner
 		settings: Settings = Settings()) -> SortPlan
 	{
 		let photos = grouping.photos
-		var sharedByGroup = [Int: Set<Int>](
-			uniqueKeysWithValues: grouping.groups.indices.map { ($0, Set<Int>()) })
+		// グループ添字で引く配列にしておく（辞書だと毎回 Optional の既定値を
+		// 書くことになり、決して評価されない分岐が残る）。
+		var sharedByGroup = [Set<Int>](repeating: [], count: grouping.groups.count)
 		var adjacency: [SortPlan.Adjacency] = []
 
 		for link in grouping.links
@@ -141,8 +142,8 @@ public enum SortPlanner
 			}
 			for index in selected
 			{
-				sharedByGroup[link.a]?.insert(index)
-				sharedByGroup[link.b]?.insert(index)
+				sharedByGroup[link.a].insert(index)
+				sharedByGroup[link.b].insert(index)
 			}
 			adjacency.append(SortPlan.Adjacency(
 				a: grouping.groups[link.a].id,
@@ -157,7 +158,7 @@ public enum SortPlanner
 			let own = Set(group.members)
 			// 自分の写真として既に入っているものは共有に数えない
 			// （同じファイルを 2 回入れることはできない）。
-			let shared = (sharedByGroup[index] ?? []).subtracting(own)
+			let shared = sharedByGroup[index].subtracting(own)
 			let all = (own.union(shared)).sorted()
 			let dates = group.members.compactMap { photos[$0].captureDate }.sorted()
 			return SortPlan.Group(

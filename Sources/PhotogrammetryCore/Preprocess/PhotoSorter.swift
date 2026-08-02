@@ -163,10 +163,13 @@ public struct PhotoSorter: Sendable
 
 		try checkCancellation()
 		// 配置元は「走査で見つかった全ファイル」から引く。読めなかったファイルも
-		// _excluded/unreadable/ へ残すため（除外した写真は捨てない）。
-		let sources = Dictionary(
-			files.map { ($0.relativePath, $0.url) },
-			uniquingKeysWith: { first, _ in first })
+		// _excluded/unreadable/ へ残すため（除外した写真は捨てない）。相対パスは
+		// 走査の時点で一意なので、重複の解決規則は要らない。
+		var sources: [String: URL] = [:]
+		for file in files
+		{
+			sources[file.relativePath] = file.url
+		}
 		try place(
 			plan: plan,
 			quality: quality,

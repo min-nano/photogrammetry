@@ -223,7 +223,7 @@ public enum QualityFilter
 		// 自動決定が外れたときの逃げ道なので、こちらが勝手に無効化しない。
 		if settings.minimumSharpness == nil, let candidate = threshold
 		{
-			let wouldDrop = survivors.filter { ($0.quality?.sharpness ?? .infinity) < candidate }
+			let wouldDrop = survivors.filter { isBlurred($0, below: candidate) }
 			// 大量に落ちるときは推定が外れている。判定ごと見送って診断で伝える。
 			if !survivors.isEmpty,
 				Double(wouldDrop.count) / Double(survivors.count) > settings.maximumBlurFraction
@@ -314,6 +314,18 @@ public enum QualityFilter
 			sharpnessThreshold: threshold,
 			sharpnessMedian: median,
 			blurFilterSuppressed: suppressed)
+	}
+
+	/// 閾値を下回っているか。**品質を測れていない写真は落とさない**
+	/// （測れないことは「悪い」ではない）。
+	static func isBlurred(_ photo: PhotoMetadata, below threshold: Double) -> Bool
+	{
+		guard let quality = photo.quality
+		else
+		{
+			return false
+		}
+		return quality.sharpness < threshold
 	}
 
 	/// 鮮鋭度。測れていない写真は 0 として扱う（重複の塊から残す 1 枚を選ぶ

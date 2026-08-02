@@ -113,8 +113,7 @@ public enum ThresholdEstimator
 			lowerFractions[index] = lowerWeight
 		}
 
-		let best = betweenVariance.max() ?? -1
-		guard best >= 0
+		guard let best = betweenVariance.max(), best >= 0
 		else
 		{
 			return nil
