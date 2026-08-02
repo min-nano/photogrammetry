@@ -166,6 +166,16 @@ final class SortDiagnosticsTests: XCTestCase
 		XCTAssertEqual(diagnostics.first?.severity, .error)
 	}
 
+	func testNextStepIsAlwaysShown()
+	{
+		// 仕分けただけでは何も出来上がっていない。次の一手を必ず示す。
+		let plan = SortPlan(groups: [group("group-01", count: 40)], adjacency: [], unassigned: [])
+		let message = evaluate(plan: plan).first { $0.code == "nextStep" }?.message ?? ""
+		XCTAssertTrue(message.contains("group-01"))
+		XCTAssertTrue(message.contains("--subject scene"))
+		XCTAssertTrue(message.contains("--sample-ordering sequential"))
+	}
+
 	func testSingleGroupNeedsNoMerge()
 	{
 		let plan = SortPlan(groups: [group("group-01", count: 40)], adjacency: [], unassigned: [])

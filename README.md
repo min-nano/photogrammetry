@@ -131,10 +131,15 @@ note=警告: group-05 ↔ group-06: 共有写真の視点がほぼ一直線で�
 note=警告: group-07 はどのグループとも共有写真がありません — …
 ```
 
-仕分けたあとは、グループごとに通常どおり生成します。
+仕分けたあとは、グループごとに通常どおり生成します。グループは**撮影順の連続
+区間**になるので `--sample-ordering sequential` が効きます。建物・部屋は
+`--subject scene`（オブジェクトマスキング無効）が必須です。
 
 ```bash
-photogrammetry-cli ~/Desktop/仕分け/group-01 ~/Desktop/group-01.usdz --subject scene
+for g in ~/Desktop/仕分け/group-*; do
+    photogrammetry-cli "$g" "$HOME/Desktop/$(basename "$g").usdz" \
+        --subject scene --sample-ordering sequential
+done
 ```
 
 複数モデルを 1 つの座標系へ合成する `merge` はフェーズ 3 で実装予定です

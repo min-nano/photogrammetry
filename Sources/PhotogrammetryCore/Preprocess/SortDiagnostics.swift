@@ -85,6 +85,17 @@ public enum SortDiagnostics
 			message: "\(quality.kept.count) 枚を \(plan.groups.count) グループに仕分けました"
 				+ "（除外 \(quality.excluded.count) 枚）。"))
 
+		// 次にやることを必ず 1 行で示す。仕分けただけでは何も出来上がっていないので、
+		// ここで手が止まると `sort` の価値が出ない。オプションの推奨には理由がある
+		// — グループは撮影順の連続区間になるので sequential が効き、建物・部屋は
+		// オブジェクトマスキングが破綻するので scene が要る（README「エラー 6」）。
+		diagnostics.append(SortDiagnostic(
+			severity: .info,
+			code: "nextStep",
+			message: "次はグループごとに再構成します。例: "
+				+ "photogrammetry-cli <仕分け先>/\(plan.groups[0].id) \(plan.groups[0].id).usdz"
+				+ " --subject scene --sample-ordering sequential"))
+
 		if plan.groups.count == 1
 		{
 			diagnostics.append(SortDiagnostic(
