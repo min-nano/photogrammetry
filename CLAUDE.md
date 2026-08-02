@@ -197,15 +197,3 @@ scripts/ci-debug.sh run --mode test --args '--filter UpdateFeedTests'
 - **モードの追加・修正は `scripts/ci-debug-job.sh`（ランナー側）で行う。**
   ワークフロー本体は薄く保ってあるので、作業ブランチに push するだけで新しい
   モードを試せる。ワークフロー本体を変えると main へのマージが要る。
-
-## 開発プロセス: PR 作成と監視
-
-姉妹リポジトリと同じ運用に従う。
-
-1. コード編集後、確認すべき疑義がなければ**自動的に PR を作成**する。方針を
-   ユーザーに確認中など未確定事項がある場合は PR を保留して先に確認する。
-2. PR 作成後は `subscribe_pr_activity` で CI・レビューを監視し、CI 失敗は原因を
-   診断して修正コミットを push、軽微なレビュー指摘は自動対応、大きな設計判断は
-   ユーザーに確認する。
-3. コミットメッセージに Claude セッション URL を付す
-   （`https://claude.ai/code/session_<SESSION_ID>`）。
