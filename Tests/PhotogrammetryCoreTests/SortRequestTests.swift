@@ -104,6 +104,24 @@ final class SortRequestTests: XCTestCase
 		XCTAssertThrowsError(try request.validate())
 	}
 
+	func testErrorDescriptions()
+	{
+		// エラーは「投げられること」しか確認していないケースが多いので、
+		// メッセージの中身自体をここで確かめる。
+		XCTAssertEqual(
+			SortRequestError.inputNotDirectory("/tmp/x").errorDescription,
+			"入力フォルダが見つかりません（フォルダを指定してください）: /tmp/x")
+		XCTAssertEqual(
+			SortRequestError.outputNotEmpty("/tmp/y").errorDescription,
+			"仕分け先フォルダが空ではありません（前回の結果と混ざるため中断しました）: /tmp/y")
+		XCTAssertEqual(
+			SortRequestError.outputInsideInput("/tmp/z").errorDescription,
+			"仕分け先に入力フォルダ自身は指定できません: /tmp/z")
+		XCTAssertEqual(
+			SortRequestError.invalidSetting("overlap", "0 以上").errorDescription,
+			"overlap の値が不正です（0 以上）。")
+	}
+
 	// -----------------------------------------------------------------
 	// 設定への翻訳
 	// -----------------------------------------------------------------

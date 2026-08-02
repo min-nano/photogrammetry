@@ -108,10 +108,13 @@ Sources/
   しきい値未満なら `coverage` ジョブだけを失敗させる（ゲート）。計測とレポート
   を分けているのは「テスト（または llvm-cov/diff-cover）が壊れた」のか
   「しきい値を下回った」のかを一目で区別するため。`PhotogrammetryEngine.swift`
-  （RealityKit/GPU 依存）と `UpdaterService.swift`（ネットワーク I/O）は上記の
-  「自動テストしない」方針どおり集計から除外している — 含めると分母が常に
-  薄まりしきい値が意味を失うため。しきい値・除外規則は `test.yml` の `test`/
-  `coverage` ジョブに 1 か所ずつだけ定義されている。
+  （RealityKit/GPU 依存）・`UpdaterService.swift`（ネットワーク I/O）・
+  `PhotoInspector.swift`（ImageIO/CoreGraphics 依存）は上記の「自動テスト
+  しない」方針どおり集計から除外している — 含めると分母が常に薄まりしきい値が
+  意味を失うため。**フレームワークを叩くラッパーを新しく足したら、除外にも
+  同時に足す**（除外を足すということは「その層に判断を置かない」という約束
+  でもある。判断は必ず純ロジック側へ下ろすこと）。しきい値・除外規則は
+  `test.yml` の `test`/`coverage` ジョブに 1 か所ずつだけ定義されている。
 
 ## Swift コード規約
 

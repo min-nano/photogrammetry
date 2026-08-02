@@ -263,4 +263,110 @@ final class PhotoSorterTests: XCTestCase
 		let manifest = try makeSorter(photos).run(request)
 		XCTAssertEqual(manifest.statistics.inputCount, 60)
 	}
+
+	func testSymlinkStrategyPointsAtTheOriginal() throws
+	{
+		let photos = try makePhotos()
+		var request = makeRequest()
+		request.link = .symlink
+		let manifest = try makeSorter(photos).run(request)
+		let group = try XCTUnwrap(manifest.groups.first)
+		let name = SortLayout.flattenedName(for: try XCTUnwrap(group.photos.first))
+		let placed = output.appendingPathComponent(group.id).appendingPathComponent(name)
+		let destination = try FileManager.default.destinationOfSymbolicLink(atPath: placed.path)
+		XCTAssertTrue(destination.hasPrefix(input.path))
+	}
+
+	func testPlacingOverAnExistingFileReplacesIt() throws
+	{
+		// 同じ写真が複数のグループへ入る（共有写真）ので、同名の残骸があっても
+		// 黙って上書きできる必要がある。
+		let source = input.appendingPathComponent("A.JPG")
+		let destination = root.appendingPathComponent("dest.JPG")
+		try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+		try Data("new".utf8).write(to: source)
+		try Data("old".utf8).write(to: destination)
+		try PhotoSorter.place(
+			source, at: destination, strategy: .copy, fileManager: .default)
+		XCTAssertEqual(try Data(contentsOf: destination), Data("new".utf8))
+	}
+
+	func testDiagnosticSeverityIsVisibleInTheLogLine()
+	{
+		// 深刻度が一目で分かること。ログは失敗の切り分けに使う。
+		let sorter = PhotoSorter()
+		XCTAssertEqual(
+			sorter.message(for: SortDiagnostic(severity: .info, code: "a", message: "普通")),
+			"普通")
+		XCTAssertEqual(
+			sorter.message(for: SortDiagnostic(severity: .warning, code: "b", message: "注意")),
+			"警告: 注意")
+		XCTAssertEqual(
+			sorter.message(for: SortDiagnostic(severity: .error, code: "c", message: "駄目")),
+			"問題: 駄目")
+	}
+
+	func testSortErrorDescriptions()
+	{
+		XCTAssertEqual(
+			SortError.noImages("/tmp/x").errorDescription,
+			"画像ファイルが見つかりません: /tmp/x")
+		XCTAssertEqual(SortError.cancelled.errorDescription, "仕分けを中断しました。")
+	}
+}
+
+/// 進捗の間引き。並行読みから届く報告を直列化して流す部品なので、単体で
+/// 「刻みを飛ばさない・後戻りしない」を固定しておく。
+final class ProgressThrottleTests: XCTestCase
+{
+	func testEmitsOnlyWhenTheRoundedFractionAdvances()
+	{
+		let log = ValueLog()
+		let throttle = ProgressThrottle(scale: 1) { log.append($0) }
+		// 同じ刻みの中では 1 回だけ。
+		throttle.record(0.001)
+		throttle.record(0.005)
+		throttle.record(0.02)
+		throttle.record(0.021)
+		XCTAssertEqual(log.all, [0.0, 0.02])
+	}
+
+	func testDoesNotGoBackwards()
+	{
+		let log = ValueLog()
+		let throttle = ProgressThrottle(scale: 1) { log.append($0) }
+		throttle.record(0.5)
+		throttle.record(0.1)
+		XCTAssertEqual(log.all, [0.5])
+	}
+
+	func testScaleMapsIntoTheGivenRange()
+	{
+		// 読み取りは全体の前半 50% を占める。
+		let log = ValueLog()
+		let throttle = ProgressThrottle(scale: 0.5) { log.append($0) }
+		throttle.record(1.0)
+		XCTAssertEqual(log.all, [0.5])
+	}
+}
+
+/// スレッドを跨いで届く値を溜める。
+final class ValueLog: @unchecked Sendable
+{
+	private let lock = NSLock()
+	private var values: [Double] = []
+
+	func append(_ value: Double)
+	{
+		lock.lock()
+		values.append(value)
+		lock.unlock()
+	}
+
+	var all: [Double]
+	{
+		lock.lock()
+		defer { lock.unlock() }
+		return values
+	}
 }

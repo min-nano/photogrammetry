@@ -164,6 +164,17 @@ final class QualityFilterTests: XCTestCase
 			["IMG_0007.HEIC", "IMG_0012.HEIC"])
 	}
 
+	func testEveryExclusionReasonHasADisplayName()
+	{
+		// 診断レポートに出る語彙。1 つでも欠けると「除外の内訳」が読めなくなる。
+		for reason in ExclusionReason.allCases
+		{
+			XCTAssertFalse(reason.displayName.isEmpty, "\(reason.rawValue) の表示名が空です")
+			XCTAssertNotEqual(reason.displayName, reason.rawValue)
+		}
+		XCTAssertEqual(ExclusionReason.unreadable.displayName, "読み取り失敗")
+	}
+
 	func testSequenceNumberParsing()
 	{
 		XCTAssertEqual(PhotoMetadata.sequenceNumber(fromName: "IMG_0123.HEIC"), 123)

@@ -54,7 +54,54 @@ public struct PhotoFile: Equatable, Sendable
 /// ある（PhotoSorter は実ファイルを読まずに検証できる）。
 public protocol PhotoMetadataReading: Sendable
 {
+	/// 1 枚読む。
 	func read(_ file: PhotoFile) throws -> PhotoMetadata
+
+	/// まとめて読む。**並行読みにするかどうかは読み手の都合**なので、呼び出し側
+	/// （PhotoSorter）が実装の種類で分岐しなくて済むようにここに置く。
+	///
+	/// - Parameters:
+	///   - isCancelled: true を返したら以降の読み取りを打ち切る。
+	///   - progress: 完了件数と総数。任意のスレッドから呼ばれうる。
+	/// - Returns: 読めた写真と、読めなかったファイルの相対パス。
+	func readAll(
+		_ files: [PhotoFile],
+		isCancelled: @Sendable () -> Bool,
+		progress: @Sendable (Int, Int) -> Void)
+		-> (photos: [PhotoMetadata], unreadable: [String])
+}
+
+public extension PhotoMetadataReading
+{
+	/// 既定の実装は 1 件ずつ順に読む素朴なもの。並行読みが要るのは実画像を
+	/// デコードする PhotoInspector だけなので、そちらで差し替える。
+	func readAll(
+		_ files: [PhotoFile],
+		isCancelled: @Sendable () -> Bool,
+		progress: @Sendable (Int, Int) -> Void)
+		-> (photos: [PhotoMetadata], unreadable: [String])
+	{
+		var photos: [PhotoMetadata] = []
+		var unreadable: [String] = []
+		for (index, file) in files.enumerated()
+		{
+			if isCancelled()
+			{
+				break
+			}
+			if let metadata = try? read(file)
+			{
+				photos.append(metadata)
+			}
+			else
+			{
+				unreadable.append(file.relativePath)
+			}
+			progress(index + 1, files.count)
+		}
+		// 並行読みの実装と順序を揃える（以降の処理を決定的にするため）。
+		return (photos.sorted { $0.relativePath < $1.relativePath }, unreadable.sorted())
+	}
 }
 
 public struct PhotoInspector: PhotoMetadataReading, Sendable
@@ -118,12 +165,10 @@ public struct PhotoInspector: PhotoMetadataReading, Sendable
 
 	/// 複数ファイルを並行して読む。数百〜数千枚を扱うので、1 枚ずつ読むと
 	/// 待ち時間が実用外になる（デコードが支配的なのでコア数だけ効く）。
-	///
-	/// - Returns: 読めた写真と、読めなかったファイルの相対パス。
-	public func inspectAll(
+	public func readAll(
 		_ files: [PhotoFile],
-		isCancelled: (@Sendable () -> Bool)? = nil,
-		progress: (@Sendable (Int, Int) -> Void)? = nil)
+		isCancelled: @Sendable () -> Bool,
+		progress: @Sendable (Int, Int) -> Void)
 		-> (photos: [PhotoMetadata], unreadable: [String])
 	{
 		guard !files.isEmpty
@@ -131,25 +176,27 @@ public struct PhotoInspector: PhotoMetadataReading, Sendable
 		{
 			return ([], [])
 		}
-		let collector = InspectionCollector(total: files.count, progress: progress)
+		let collector = InspectionCollector(capacity: files.count)
 		let inspector = self
 		DispatchQueue.concurrentPerform(iterations: files.count)
 		{ index in
 			// concurrentPerform 自体は途中で止められないので、残りの反復を
 			// 空振りさせる。1 枚のデコードぶんだけ待てば抜けられる。
-			if isCancelled?() == true
+			if isCancelled()
 			{
 				return
 			}
 			let file = files[index]
+			let done: Int
 			if let metadata = try? inspector.read(file)
 			{
-				collector.add(metadata)
+				done = collector.add(metadata)
 			}
 			else
 			{
-				collector.addFailure(file.relativePath)
+				done = collector.addFailure(file.relativePath)
 			}
+			progress(done, files.count)
 		}
 		return collector.finish()
 	}
@@ -407,34 +454,31 @@ final class InspectionCollector: @unchecked Sendable
 	private var photos: [PhotoMetadata] = []
 	private var failures: [String] = []
 	private var done = 0
-	private let total: Int
-	private let progress: (@Sendable (Int, Int) -> Void)?
 
-	init(total: Int, progress: (@Sendable (Int, Int) -> Void)?)
+	init(capacity: Int)
 	{
-		self.total = total
-		self.progress = progress
-		photos.reserveCapacity(total)
+		photos.reserveCapacity(capacity)
 	}
 
-	func add(_ metadata: PhotoMetadata)
+	/// 追加して、完了件数を返す。進捗を流すのは呼び出し側の仕事にしてある
+	/// （このクラスにクロージャを持たせると escaping になり、非 escaping で
+	/// 受けている読み手の引数をそのまま渡せなくなるため）。
+	func add(_ metadata: PhotoMetadata) -> Int
 	{
 		lock.lock()
+		defer { lock.unlock() }
 		photos.append(metadata)
 		done += 1
-		let current = done
-		lock.unlock()
-		progress?(current, total)
+		return done
 	}
 
-	func addFailure(_ path: String)
+	func addFailure(_ path: String) -> Int
 	{
 		lock.lock()
+		defer { lock.unlock() }
 		failures.append(path)
 		done += 1
-		let current = done
-		lock.unlock()
-		progress?(current, total)
+		return done
 	}
 
 	/// 並行に集めたので順序は不定。相対パスで安定した順序へ戻す

@@ -253,4 +253,58 @@ final class PhotoGroupingTests: XCTestCase
 		XCTAssertEqual(a.horizontalDistance(to: a), 0, accuracy: 1e-6)
 		XCTAssertNil(a.verticalDistance(to: b))
 	}
+
+	func testVerticalDistanceNeedsAltitudeOnBothSides()
+	{
+		// 階の分離に使う。片方でも高度が無ければ「判定できない」を返す。
+		let ground = GeoLocation(latitude: 35.0, longitude: 139.0, altitude: 12.0)
+		let upstairs = GeoLocation(latitude: 35.0, longitude: 139.0, altitude: 15.2)
+		XCTAssertEqual(ground.verticalDistance(to: upstairs) ?? 0, 3.2, accuracy: 1e-9)
+		XCTAssertNil(ground.verticalDistance(to: GeoLocation(latitude: 35.0, longitude: 139.0)))
+	}
+
+	func testAltitudeIsUsedWhenAvailable()
+	{
+		let photos = (0 ..< 20).map
+		{ index in
+			SamplePhoto.make(
+				index: index,
+				secondsFromEpoch: Double(index) * 3,
+				latitude: 35.0,
+				longitude: 139.0,
+				altitude: index < 10 ? 12.0 : 15.2,
+				accuracy: 5,
+				hash: UInt64(index) &* 0x9E37_79B9_7F4A_7C15)
+		}
+		let result = PhotoGrouping.group(photos: photos)
+		XCTAssertTrue(result.usedEvidence.contains(.altitude))
+		XCTAssertEqual(result.evidenceCoverage[.altitude], 1)
+	}
+
+	func testEveryEvidenceKindHasADisplayName()
+	{
+		// 診断で「使った手がかり」として並ぶ語彙。
+		for kind in EvidenceKind.allCases
+		{
+			XCTAssertFalse(kind.displayName.isEmpty, "\(kind.rawValue) の表示名が空です")
+			XCTAssertNotEqual(kind.displayName, kind.rawValue)
+		}
+		XCTAssertEqual(EvidenceKind.folder.displayName, "フォルダ分け")
+	}
+
+	func testUnassignedPhotosAreReportedWhenTheyCannotBeAbsorbed()
+	{
+		// 隣とまったく繋がらない小さな塊は、黙って他へ混ぜず _unassigned へ送る。
+		var settings = GroupingSettings()
+		settings.minPerGroup = 8
+		settings.maxPerGroup = 12
+		let photos = SamplePhoto.sequence(start: 1, count: 12, startTime: 0, hashSeed: 0)
+			+ SamplePhoto.sequence(
+				start: 101, count: 12, startTime: 4000, hashSeed: 0x0F0F_0F0F_0F0F_0F0F)
+			+ SamplePhoto.sequence(
+				start: 201, count: 2, startTime: 90000, hashSeed: 0xFFFF_FFFF_FFFF_FFFF)
+		let result = PhotoGrouping.group(photos: photos, settings: settings)
+		let assigned = result.groups.flatMap(\.members) + result.unassigned
+		XCTAssertEqual(Set(assigned).count, photos.count)
+	}
 }

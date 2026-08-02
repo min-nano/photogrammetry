@@ -186,52 +186,29 @@ public struct PhotoSorter: Sendable
 	// 各段
 	// -----------------------------------------------------------------
 
-	/// 読み取り。PhotoInspector なら並行読みの実装を使い、差し替えられた
-	/// 読み手（テスト）なら 1 件ずつ順に読む。
+	/// 読み取り。並行にするかどうかは読み手の都合なので、ここでは実装の種類で
+	/// 分岐しない（PhotoMetadataReading.readAll に任せる）。
+	///
+	/// 進捗は解析全体の前半 50% に割り当てる。数千枚のデコードが処理時間の
+	/// 大半を占めるため。
 	func readAll(
 		_ files: [PhotoFile],
 		cancellation: SortCancellation? = nil,
 		progress: @escaping @Sendable (ReconstructionEvent) -> Void)
 		-> (photos: [PhotoMetadata], unreadable: [String])
 	{
-		if let inspector = reader as? PhotoInspector
-		{
-			// 進捗はイベントの氾濫を避けるため 2% 刻みへ間引き、かつ
-			// 並行に届く報告をロックで直列化してから流す。
-			let throttle = ProgressThrottle(scale: 0.5)
-			{ fraction in
-				progress(.progress(fraction))
-			}
-			return inspector.inspectAll(
-				files,
-				isCancelled: { cancellation?.isCancelled == true })
-			{ done, total in
-				throttle.record(Double(done) / Double(total))
-			}
+		// 進捗はイベントの氾濫を避けるため間引き、かつ並行に届く報告を
+		// ロックで直列化してから流す。
+		let throttle = ProgressThrottle(scale: 0.5)
+		{ fraction in
+			progress(.progress(fraction))
 		}
-
-		var photos: [PhotoMetadata] = []
-		var unreadable: [String] = []
-		for (index, file) in files.enumerated()
-		{
-			if cancellation?.isCancelled == true
-			{
-				break
-			}
-			if let metadata = try? reader.read(file)
-			{
-				photos.append(metadata)
-			}
-			else
-			{
-				unreadable.append(file.relativePath)
-			}
-			if files.count > 0, index % 25 == 0
-			{
-				progress(.progress(Double(index) / Double(files.count) * 0.5))
-			}
+		return reader.readAll(
+			files,
+			isCancelled: { cancellation?.isCancelled == true })
+		{ done, total in
+			throttle.record(Double(done) / Double(total))
 		}
-		return (photos.sorted { $0.relativePath < $1.relativePath }, unreadable.sorted())
 	}
 
 	func makeManifest(
