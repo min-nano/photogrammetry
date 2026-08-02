@@ -108,7 +108,9 @@ final class ReconstructionViewModel: ObservableObject
 		panel.canChooseFiles = false
 		panel.canChooseDirectories = true
 		panel.allowsMultipleSelection = false
-		panel.message = "対象物を多方向から撮影した写真が入ったフォルダを選択してください"
+		panel.message = mode == .sort
+			? "仕分けたい写真が入ったフォルダを選択してください"
+			: "対象物を多方向から撮影した写真が入ったフォルダを選択してください"
 		panel.prompt = "選択"
 		if panel.runModal() == .OK
 		{
