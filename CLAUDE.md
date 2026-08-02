@@ -30,6 +30,7 @@ Sources/
     HelperProcessEngine    生成を別プロセス（photogrammetry-cli）で実行する
     HelperProtocol         ヘルパーの stdout 行の書式（CLI ↔ GUI の対）
     InputInspection        入力フォルダの事前チェック（純ロジック）
+    ModelCache             ML モデルのキャッシュ破損の見分け・場所・削除
   PhotogrammetryUpdater/   自動アップデート
     UpdateFeed             Releases JSON → チャンネル一覧・更新判定（純ロジック・I/O なし）
     UpdaterService         ネットワーク・展開・差し替え起動（Foundation のみ）

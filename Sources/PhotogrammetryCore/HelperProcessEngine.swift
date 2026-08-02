@@ -386,14 +386,18 @@ public enum HelperProcessError: Error, LocalizedError, Equatable
 					"これは macOS の Object Capture（CorePhotogrammetry）の内部で起きた"
 						+ "中断で、アプリ側では捕捉できません。別プロセスで実行しているため"
 						+ "アプリ自体は継続しています。",
-					"次を試してください:",
-					"  ・詳細度を下げる（プレビュー / 低）",
-					"  ・写真の枚数を減らす、または解像度の大きすぎる写真を外す",
-					"  ・入力フォルダを iCloud Drive などのクラウド上ではなく"
-						+ "ローカル（例: ~/Pictures）へコピーする",
-					"  ・対象の種類（物体 / シーン・建物）を撮影内容に合わせる",
-					"  ・他の重いアプリを閉じてメモリを空ける",
 				]
+				// 原因を特定できる失敗（ML モデルのキャッシュ破損）はそれと名指しする。
+				// 一般論を並べても直らない一方、消すべき場所さえ分かれば確実に直るため。
+				if ModelCache.isCompilationFailure(message)
+				{
+					lines.append(contentsOf: ModelCache.recoveryAdvice(
+						directory: ModelCache.directory()))
+				}
+				else
+				{
+					lines.append(contentsOf: Self.generalAdvice)
+				}
 				if !message.isEmpty
 				{
 					lines.append("ヘルパーの出力:")
@@ -408,6 +412,29 @@ public enum HelperProcessError: Error, LocalizedError, Equatable
 				}
 				return message
 		}
+	}
+
+	/// 原因を特定できないときの一般的な対処。上から効きやすい順に並べてある。
+	static let generalAdvice = [
+		"次を試してください:",
+		"  ・詳細度を下げる（プレビュー / 低）",
+		"  ・写真の枚数を減らす、または解像度の大きすぎる写真を外す",
+		"  ・入力フォルダを iCloud Drive などのクラウド上ではなく"
+			+ "ローカル（例: ~/Pictures）へコピーする",
+		"  ・対象の種類（物体 / シーン・建物）を撮影内容に合わせる",
+		"  ・他の重いアプリを閉じてメモリを空ける",
+	]
+
+	/// この異常終了が ML モデルのキャッシュ破損によるものか（GUI が復旧
+	/// ボタンを出すかどうかの判断に使う。判断はここ＝Core が持つ）。
+	public var isModelCacheFailure: Bool
+	{
+		guard case .crashed(_, _, let message) = self
+		else
+		{
+			return false
+		}
+		return ModelCache.isCompilationFailure(message)
 	}
 
 	/// クラッシュの読み解きに直結するので、番号ではなく名前と意味を出す。

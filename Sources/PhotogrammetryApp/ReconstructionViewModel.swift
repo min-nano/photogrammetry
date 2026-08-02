@@ -25,6 +25,9 @@ final class ReconstructionViewModel: ObservableObject
 	@Published var progress: Double = 0
 	@Published var statusText = ""
 	@Published var logLines: [String] = []
+	/// ML モデルのキャッシュ破損で失敗した直後だけ true（復旧ボタンの表示）。
+	/// 判断そのものは Core（HelperProcessError.isModelCacheFailure）が持つ。
+	@Published var canPurgeModelCache = false
 
 	private var service: ReconstructionService?
 
@@ -124,6 +127,7 @@ final class ReconstructionViewModel: ObservableObject
 		isProcessing = true
 		progress = 0
 		statusText = "処理中…"
+		canPurgeModelCache = false
 		appendLog("開始: \(request.inputFolder.path) → \(request.outputFile.path)")
 
 		// 実行方式（別プロセス / 同一プロセス）の判断は Core の
@@ -158,6 +162,8 @@ final class ReconstructionViewModel: ObservableObject
 				// 表示だけでは原因調査ができないため）。
 				self?.statusText = "エラー: \(Self.summary(of: error))"
 				self?.appendLog("エラー: \(ErrorDetails.describe(error))")
+				self?.canPurgeModelCache =
+					(error as? HelperProcessError)?.isModelCacheFailure ?? false
 			}
 			self?.isProcessing = false
 			self?.service = nil
@@ -168,6 +174,32 @@ final class ReconstructionViewModel: ObservableObject
 	{
 		appendLog("キャンセルを要求しました…")
 		service?.cancel()
+	}
+
+	/// 壊れた ML モデルのキャッシュを削除する（OS が次回作り直す）。
+	/// 削除する場所と可否の判断は Core の ModelCache が持つ。
+	func purgeModelCache()
+	{
+		do
+		{
+			let path = ModelCache.directory()?.path ?? ""
+			if try ModelCache.purge()
+			{
+				appendLog("ML モデルのキャッシュを削除しました: \(path)")
+				statusText = "キャッシュを削除しました。もう一度「3D モデルを生成」を実行してください。"
+			}
+			else
+			{
+				appendLog("ML モデルのキャッシュはありませんでした: \(path)")
+				statusText = "削除するキャッシュはありませんでした。"
+			}
+			canPurgeModelCache = false
+		}
+		catch
+		{
+			appendLog("ML モデルのキャッシュを削除できません: \(ErrorDetails.describe(error))")
+			statusText = "エラー: \(Self.summary(of: error))"
+		}
 	}
 
 	/// ステータス行は 1 行なので、複数行のエラー（ヘルパーの異常終了は対処方法

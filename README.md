@@ -119,7 +119,28 @@ try await engine.process(request) { event in
 入力枚数がこの Mac のハードウェア上限（`PhotogrammetrySession.limits`）を超えると
 ログに警告が出ます。失敗する場合は写真を減らしてください。
 
-**処理の途中で「生成処理が異常終了しました（シグナル 6: SIGABRT）」と出る**
+**毎回まったく同じ進捗で「生成処理が異常終了しました（シグナル 6: SIGABRT）」と出る**
+まずこれを疑ってください。**機械学習モデルのキャッシュ破損**です。Object Capture は
+再構成の途中で Apple Neural Engine 用の ML モデルを使いますが、その初回コンパイルが
+失敗するとキャッシュが不完全なまま残り、以降は**毎回同じ進捗で** abort します
+（写真・枚数・詳細度・フォルダの場所はいずれも無関係で、何を変えても直りません）。
+ログに次のような出力があればこれです。
+
+```
+ファイル"manifest.plist"は存在しないため、開けませんでした。
+Assert: in line 521
+E5RT encountered an STL exception. msg = MILCompilerForANE error: … ANECCompile() FAILED.
+```
+
+アプリはこの署名を見分けて、エラー表示に **「ML モデルのキャッシュを削除」ボタン**を
+出します。押してからもう一度実行すれば OS がキャッシュを作り直します。手動で消す
+場合は次のフォルダです（削除して安全なキャッシュです）。
+
+```bash
+rm -rf ~/Library/Caches/com.minnano.photogrammetry/com.apple.e5rt.e5bundlecache
+```
+
+**その他の理由で処理の途中に異常終了する**
 macOS の Object Capture 本体（`CorePhotogrammetry`）が内部エラーで処理を中断
 した状態です。アプリ側では捕捉できない中断なので、**生成は別プロセス
 （同梱の `photogrammetry-cli`）で実行**しており、アプリとログはそのまま残ります。
@@ -172,6 +193,7 @@ Sources/
     HelperProcessEngine    生成を別プロセス（photogrammetry-cli）で走らせる
     HelperProtocol         ヘルパーの stdout 行の書式（CLI と GUI の対）
     InputInspection        入力フォルダの事前チェック（枚数・iCloud の未ダウンロード）
+    ModelCache             ML モデルのキャッシュ破損の見分けと削除
   PhotogrammetryUpdater/   自動アップデート
     UpdateFeed             Releases JSON → チャンネル一覧・更新判定（純ロジック）
     UpdaterService         ネットワーク・ダウンロード・差し替え起動（Foundation のみ）
