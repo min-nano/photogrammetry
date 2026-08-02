@@ -80,12 +80,86 @@ def squircle_path(cx: float, cy: float, half: float, n: float = 5.0, steps: int 
 	return head + " ".join("L %.2f %.2f" % p for p in pts[1:]) + " Z"
 
 
-def hexagon(cx: float, cy: float, r: float) -> list[tuple[float, float]]:
-	"""頂点が上にある正六角形。等角投影した立方体のシルエットと同じ形。"""
-	return [
-		(cx + r * math.cos(math.radians(90 - 60 * k)), cy - r * math.sin(math.radians(90 - 60 * k)))
-		for k in range(6)
-	]
+def rotate(v: tuple[float, float, float], yaw: float, pitch: float) -> tuple[float, float, float]:
+	"""立方体を yaw（縦軸まわり）→ pitch（横軸まわり）の順に回す。
+
+	等角投影（yaw 45° / pitch 35.26°）だと左右の面が完全に対称になり、立体という
+	より平面的な記号に見える。yaw をずらして左右の面幅に差をつけると「少し角度を
+	つけて置いてある物」に見え、写真から起こした 3D モデルという主題に合う。
+
+	回した後の z は視線方向（+z が手前）で、可視面の判定に使う。
+	"""
+	x, y, z = v
+	a, b = math.radians(yaw), math.radians(pitch)
+	x, z = x * math.cos(a) + z * math.sin(a), -x * math.sin(a) + z * math.cos(a)
+	y, z = y * math.cos(b) - z * math.sin(b), y * math.sin(b) + z * math.cos(b)
+	return (x, y, z)
+
+
+def project(v: tuple[float, float, float], yaw: float, pitch: float) -> tuple[float, float]:
+	"""回した頂点を平行投影して画面座標（y は下向き）に落とす。"""
+	x, y, _ = rotate(v, yaw, pitch)
+	return (x, -y)
+
+
+def convex_hull(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
+	"""単調連鎖法。投影した 8 頂点から立方体のシルエット（6 角形）を取り出す。"""
+	pts = sorted(set(pts))
+	def half(seq: list[tuple[float, float]]) -> list[tuple[float, float]]:
+		out: list[tuple[float, float]] = []
+		for p in seq:
+			while len(out) >= 2:
+				(ox, oy), (px, py) = out[-2], out[-1]
+				if (px - ox) * (p[1] - oy) - (py - oy) * (p[0] - ox) > 1e-9:
+					break
+				out.pop()
+			out.append(p)
+		return out
+	return half(pts)[:-1] + half(pts[::-1])[:-1]
+
+
+def cube(cx: float, cy: float, r: float, yaw: float, pitch: float):
+	"""立方体の可視 3 面（上・左・右）とシルエットを返す。
+
+	返すシルエットは写真（2D）の中の平面図形にも使い回す。「同じものの 2 通りの
+	表現」という主題は 2 つの輪郭が一致してはじめて成立するので、角度を変えたら
+	平面側も自動で追従させる（手で合わせ直さない）。
+	"""
+	corners = {
+		(sx, sy, sz): project((sx, sy, sz), yaw, pitch)
+		for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)
+	}
+	# 投影は半径 1 の立方体基準なので、外接円が r になるよう一律に伸ばす。
+	scale = r / max(math.hypot(*p) for p in corners.values())
+	flat = {k: (cx + p[0] * scale, cy + p[1] * scale) for k, p in corners.items()}
+
+	# 可視面は回した法線の z（手前向き）で決める。yaw / pitch を変えるとどの面が
+	# 見えるかも変わるので、面を決め打ちにはしない。可視は必ず上面 + 側面 2 つ。
+	def face(axis: int, sign: int) -> list[tuple[float, float]]:
+		pts = [p for k, p in flat.items() if k[axis] == sign]
+		gx = sum(p[0] for p in pts) / 4
+		gy = sum(p[1] for p in pts) / 4
+		return sorted(pts, key=lambda p: math.atan2(p[1] - gy, p[0] - gx))
+
+	visible = []
+	for axis in (0, 1, 2):
+		for sign in (-1, 1):
+			normal = tuple(sign if i == axis else 0 for i in range(3))
+			if rotate(normal, yaw, pitch)[2] > 1e-9:
+				visible.append((axis, sign))
+	top = face(*next((a, s) for a, s in visible if a == 1))
+	sides = [face(a, s) for a, s in visible if a != 1]
+	sides.sort(key=lambda f: sum(p[0] for p in f) / 4)
+	silhouette = convex_hull(list(flat.values()))
+	return top, sides[0], sides[1], silhouette
+
+
+def resize_polygon(poly: list[tuple[float, float]], cx: float, cy: float, r: float) -> list[tuple[float, float]]:
+	"""多角形を重心基準で外接円 r に拡縮し、(cx, cy) へ移す。"""
+	gx = sum(p[0] for p in poly) / len(poly)
+	gy = sum(p[1] for p in poly) / len(poly)
+	scale = r / max(math.hypot(p[0] - gx, p[1] - gy) for p in poly)
+	return [(cx + (p[0] - gx) * scale, cy + (p[1] - gy) * scale) for p in poly]
 
 
 def points(pts: list[tuple[float, float]]) -> str:
@@ -101,14 +175,15 @@ def build_svg() -> str:
 	card_w, card_h = 420.0, 340.0
 	card_rot, back_rot = -8.0, -17.0
 
-	# 写真の中身は平面の六角形。立体のシルエットと同寸にして「同じもの」と読ませる。
-	flat = hexagon(card_cx, card_cy, 122.0)
+	# オブジェクト（3D）: 少し角度をつけて置いた立方体。3 面の明度差だけで立体に見せる。
+	# yaw を等角投影の 45° からずらしてあるので左右の面幅が揃わず、記号ではなく
+	# 「置いてある物」に見える。ここを変えると写真側の平面図形も自動で追従する。
+	cube_cx, cube_cy, cube_r = 660.0, 628.0, 186.0
+	top, left, right, silhouette = cube(cube_cx, cube_cy, cube_r, yaw=32.0, pitch=30.0)
 
-	# オブジェクト（3D）: 等角投影の立方体。3 面の明度差だけで立体に見せる。
-	cube_cx, cube_cy, cube_r = 663.0, 632.0, 168.0
-	v = hexagon(cube_cx, cube_cy, cube_r)
-	c = (cube_cx, cube_cy)
-	top, right, left = [v[0], v[1], c, v[5]], [v[1], v[2], v[3], c], [v[5], c, v[3], v[4]]
+	# 写真の中身は、その立方体のシルエットそのもの（塗りつぶした平面図形）。
+	# 輪郭が一致することで「同じものの 2 通りの表現」と読める。
+	flat = resize_polygon(silhouette, card_cx, card_cy, 132.0)
 
 	return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
 <!-- 自動生成: scripts/make-app-icon.py（直接編集しないこと） -->
