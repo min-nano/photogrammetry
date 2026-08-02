@@ -124,6 +124,15 @@ struct ContentView: View
 				}
 			}
 
+			// 段階・残り時間はプログレスバーの下に出す。建築規模では 1 回の
+			// 生成に数時間かかるので、割合だけでは進んでいるのか分からない。
+			if model.isProcessing, let detail = model.progressDetailText
+			{
+				Text(detail)
+					.font(.callout)
+					.foregroundColor(.secondary)
+			}
+
 			if !model.statusText.isEmpty
 			{
 				Text(model.statusText)

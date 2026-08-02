@@ -8,6 +8,8 @@
 //
 //  stdout には機械可読な key=value 行を出す（他アプリ・スクリプトからの連携用）:
 //    progress=0.123    進捗（0.0〜1.0）
+//    stage=imageAlignment  処理段階（OS が返したときだけ）
+//    eta=1830          残り時間の見積もり（秒。OS が返したときだけ）
 //    note=...          注意情報（スキップされた写真など）
 //    output=<パス>     生成されたモデルファイル
 //    cancelled         SIGINT / SIGTERM で中断した（終了コード 0）

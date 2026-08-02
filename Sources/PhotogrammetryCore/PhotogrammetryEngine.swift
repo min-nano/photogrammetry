@@ -91,6 +91,19 @@ public final class PhotogrammetryEngine
 			{
 				case .requestProgress(_, let fractionComplete):
 					onEvent(.progress(fractionComplete))
+				case .requestProgressInfo(_, let info):
+					// 残り時間・段階は OS が返せるときだけ入る。片方だけ返る
+					// こともあるので、あるものだけを別々のイベントとして流す
+					// （ヘルパープロトコルが 1 イベント = 1 行のため）。
+					// 未知の段階（将来 OS が増やすもの）は段階なしとして扱う。
+					if let stage = info.processingStage.flatMap(ProcessingStage.init)
+					{
+						onEvent(.stage(stage))
+					}
+					if let remaining = info.estimatedRemainingTime
+					{
+						onEvent(.estimatedRemainingTime(remaining))
+					}
 				case .requestComplete(_, let result):
 					if case .modelFile(let url) = result
 					{
@@ -159,6 +172,33 @@ private extension ReconstructionRequest.SampleOrdering
 				return .unordered
 			case .sequential:
 				return .sequential
+		}
+	}
+}
+
+private extension ProcessingStage
+{
+	/// RealityKit の処理段階 → 自前 enum。他の変換と向きが逆（OS から受け取る
+	/// 側）なので init? にしてある。未知の段階は nil にして黙って捨てる
+	/// （表示できない段階名を外へ出すより、段階なしとして扱うほうが安全）。
+	init?(_ stage: PhotogrammetrySession.Output.ProcessingStage)
+	{
+		switch stage
+		{
+			case .preProcessing:
+				self = .preProcessing
+			case .imageAlignment:
+				self = .imageAlignment
+			case .pointCloudGeneration:
+				self = .pointCloudGeneration
+			case .meshGeneration:
+				self = .meshGeneration
+			case .textureMapping:
+				self = .textureMapping
+			case .optimization:
+				self = .optimization
+			default:
+				return nil
 		}
 	}
 }

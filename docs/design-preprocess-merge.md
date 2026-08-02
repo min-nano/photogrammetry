@@ -1,7 +1,9 @@
 # 設計メモ: 建築物・外構向けのプリ／ポストプロセッシング
 
-**状態: 設計確定・未実装。** 設計上の未解決事項（§10 の 1〜4）はすべて解消済みで、
-フェーズ 0 から順に着手できる。残る項目は実装しながら実データを見て詰めるもの。
+**状態: 設計確定。フェーズ 0（§11 進捗表示）のみ実装済み、本パイプライン
+（`sort` / `merge`）は未実装。** 設計上の未解決事項（§10 の 1〜4）はすべて解消
+済みで、フェーズ 1 以降へ順に着手できる。残る項目は実装しながら実データを見て
+詰めるもの。
 
 ## 1. 背景
 
@@ -634,10 +636,13 @@ CLAUDE.md のテスト方針をそのまま適用する。**純ロジックを `
      ci-debug の `GITHUB_TOKEN` が別リポジトリを読めない（PAT の登録が要る）こと、
      Git LFS 無しに大量の写真を git へ入れるのが非現実的なこと、の 3 点による。
 
-## 11. 進捗表示の改善（フェーズ 0・先行実装）
+## 11. 進捗表示の改善（フェーズ 0・実装済み）
 
-**本パイプラインと独立に、先に実装する。** 既存の `Event` に case を足すだけで、
-仕分け・合成のどちらにも依存しない。
+**本パイプラインと独立に先行実装した。** 既存のイベントに case を足すだけで、
+仕分け・合成のどちらにも依存しない。以下は実装の設計であり、現状のコード
+（`ProcessingStage.swift` / `ReconstructionEvent.swift` / `HelperProtocol.swift` /
+`PhotogrammetryEngine.swift` / `ReconstructionViewModel.swift`）がこのとおりに
+なっている。
 
 現状の進捗は `requestProgress` の 0.0〜1.0 だけ。建築規模では 1 グループでも数時間、
 さらにそれをグループ数だけ繰り返すので、**「全体の何割か」だけでは足りない**。
@@ -667,17 +672,30 @@ public enum ProcessingStage {
 
 設計:
 
-- `PhotogrammetryEngine.Event` に
-  `.progressInfo(remaining: TimeInterval?, stage: Stage?)` を追加する。
-- `Stage` は**自前 enum**にする。RealityKit の型を外へ漏らさない規約に従い、変換表は
-  `PhotogrammetryEngine.swift` 内に 1 つだけ置く（`Detail` / `SampleOrdering` と同じ扱い）。
-  rawValue は CLI 出力の語彙になるので `imageAlignment` 等をそのまま使う。
-- CLI: 既存の `progress=` はそのままに、`stage=imageAlignment` と `eta=1830` を追加する。
-  key=value 1 行という既存の約束を崩さない。
+- `ReconstructionEvent` に `.stage(ProcessingStage)` と
+  `.estimatedRemainingTime(TimeInterval)` を**別々の case として**追加する。
+  当初案は 1 つの `.progressInfo(remaining:stage:)`（どちらも Optional）だったが、
+  生成が別プロセス化されて `HelperProtocol` が**1 イベント = 1 行**を約束に
+  なったため分けた。OS は片方だけ返すこともあるので、あるものだけを流す
+  （欠けたときは「そのイベントが来ない」という形になり、表示は前の値を保つ）。
+- `ProcessingStage` は**自前 enum**にする。RealityKit の型を外へ漏らさない規約に従い、
+  変換表は `PhotogrammetryEngine.swift` 内に 1 つだけ置く（`Detail` / `SampleOrdering`
+  と同じ扱い。ただし向きは OS → 自前なので `init?` にし、未知の段階は nil で捨てる）。
+  rawValue は CLI 出力の語彙になるので `imageAlignment` 等をそのまま使う。enum 自体は
+  RealityKit を import しない `ProcessingStage.swift` に置き、表示文言の組み立てを
+  `swift test` で回せるようにする。
+- 行の書式は `HelperProtocol` に追加する（`stage=imageAlignment` / `eta=1830`）。
+  CLI の出力と GUI の読み戻しはこの 1 か所で対になっているので、CLI 側に個別の
+  整形は書かない。`eta` は整数秒へ丸める（秒未満の精度は OS の見積もり自体が
+  揺れるので意味を持たない）。知らない段階名（新しいヘルパー + 古い GUI）は
+  decode 側で捨てる。
 - GUI: プログレスバーの下に「画像の位置合わせ中 — 残り約 30 分」。`ViewModel` は
-  イベントを表示へ写すだけで、判断は持たない（既存の方針どおり）。
-- `estimatedRemainingTime` も `processingStage` も **Optional**。OS が返さないことが
-  あるので、欠けたときに表示が崩れないようにする。
+  イベントを表示へ写すだけで、判断は持たない（既存の方針どおり）。文言の組み立ては
+  `ProcessingStage.progressText(stage:remaining:)` に置き、段階が変わったときだけ
+  ログにも 1 行残す（失敗時にどこまで進んだかを残すため）。
+- OS 側の `estimatedRemainingTime` も `processingStage` も **Optional**。どちらが
+  欠けても表示が崩れないようにする（`progressText` は片方だけでも 1 行を作り、
+  両方無ければ nil を返す）。
 
 将来（フェーズ 3 以降）: 複数グループを順に処理するようになったら
 「グループ 3/8・全体の残り時間」まで出す。グループ単位の進捗は `merge` の導入後。
