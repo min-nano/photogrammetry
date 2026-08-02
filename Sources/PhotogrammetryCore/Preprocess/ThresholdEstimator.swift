@@ -94,9 +94,10 @@ public enum ThresholdEstimator
 			return nil
 		}
 
+		var betweenVariance = [Double](repeating: -1, count: binCount)
+		var lowerFractions = [Double](repeating: 0, count: binCount)
 		var lowerWeight = 0.0
 		var lowerSum = 0.0
-		var best = (betweenVariance: -1.0, index: 0, fraction: 0.0)
 		for index in 0 ..< (binCount - 1)
 		{
 			lowerWeight += Double(histogram[index]) / total
@@ -110,21 +111,25 @@ public enum ThresholdEstimator
 			let lowerMean = lowerSum / lowerWeight
 			let upperMean = (grandMean - lowerSum) / upperWeight
 			let difference = lowerMean - upperMean
-			let betweenVariance = lowerWeight * upperWeight * difference * difference
-			if betweenVariance > best.betweenVariance
-			{
-				best = (betweenVariance, index, lowerWeight)
-			}
+			betweenVariance[index] = lowerWeight * upperWeight * difference * difference
+			lowerFractions[index] = lowerWeight
 		}
-		guard best.betweenVariance >= 0
+
+		let best = betweenVariance.max() ?? -1
+		guard best >= 0
 		else
 		{
 			return nil
 		}
+		// 空のビンが続く「谷」では、どこで切っても同じ答えになる。端に寄せると
+		// 閾値が山のすぐ脇に張り付き、少しでも裾が広い分布で判定が急に厳しく
+		// なるので、**同点の範囲の真ん中**を採る（＝谷の中央で切る）。
+		let tied = betweenVariance.indices.filter { betweenVariance[$0] >= best - 1e-12 }
+		let chosen = tied[tied.count / 2]
 		return Estimate(
-			threshold: minimum + Double(best.index + 1) * width,
-			separability: min(1, best.betweenVariance / variance),
-			lowerFraction: best.fraction)
+			threshold: minimum + Double(chosen + 1) * width,
+			separability: min(1, best / variance),
+			lowerFraction: lowerFractions[chosen])
 	}
 
 	/// 昇順に並べた値の p 分位点（0.0〜1.0）。分布の裾を掴むのに使う。

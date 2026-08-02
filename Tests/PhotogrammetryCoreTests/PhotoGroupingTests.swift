@@ -1,0 +1,256 @@
+//
+//  PhotoGroupingTests.swift
+//
+//  グルーピング（設計メモ §4.1〜§4.3）を合成メタデータで固定する。
+//
+//  確かめたいのは「特定の手がかりに依存しない」こと。時刻がある現場・無い現場・
+//  GPS が信用できない現場（屋内）を並べて、**あるものだけで成立する**ことを
+//  見る。実写真も GPU もネットワークも要らないので CI で常時回る。
+//
+
+import XCTest
+
+@testable import PhotogrammetryCore
+
+final class PhotoGroupingTests: XCTestCase
+{
+	/// 「部屋 A を 30 枚 → 10 分移動 → 部屋 B を 30 枚」。
+	func makeTwoRooms() -> [PhotoMetadata]
+	{
+		SamplePhoto.sequence(start: 1, count: 30, startTime: 0, hashSeed: 0)
+			+ SamplePhoto.sequence(
+				start: 101, count: 30, startTime: 700, hashSeed: 0xFFFF_FFFF_0000_0000)
+	}
+
+	// -----------------------------------------------------------------
+	// 基本
+	// -----------------------------------------------------------------
+
+	func testTimeAndVisualEvidenceSeparateTwoRooms()
+	{
+		let result = PhotoGrouping.group(photos: makeTwoRooms())
+		XCTAssertEqual(result.groups.count, 2)
+		XCTAssertEqual(result.groups.map { $0.members.count }, [30, 30])
+		XCTAssertEqual(result.groups.map(\.id), ["group-01", "group-02"])
+		XCTAssertTrue(result.usedEvidence.contains(.time))
+		XCTAssertTrue(result.usedEvidence.contains(.visual))
+		// 時刻が使えるなら連番は混ぜない（情報の少ない代役なので）。
+		XCTAssertFalse(result.usedEvidence.contains(.sequence))
+	}
+
+	func testAdjacentGroupsAreLinked()
+	{
+		// **隣接が作られること自体が合成の前提。** 切ったエッジが隣接の証拠。
+		let result = PhotoGrouping.group(photos: makeTwoRooms())
+		XCTAssertEqual(result.links.count, 1)
+		let link = try? XCTUnwrap(result.links.first)
+		XCTAssertEqual(link?.a, 0)
+		XCTAssertEqual(link?.b, 1)
+		XCTAssertFalse(link?.candidates.isEmpty ?? true)
+		// 候補は「a 側の写真, b 側の写真」の順に揃えてある。
+		for candidate in link?.candidates ?? []
+		{
+			XCTAssertTrue(result.groups[0].members.contains(candidate.i))
+			XCTAssertTrue(result.groups[1].members.contains(candidate.j))
+		}
+	}
+
+	func testEveryPhotoEndsUpSomewhere()
+	{
+		let photos = makeTwoRooms()
+		let result = PhotoGrouping.group(photos: photos)
+		let assigned = result.groups.flatMap(\.members) + result.unassigned
+		XCTAssertEqual(Set(assigned).count, photos.count)
+	}
+
+	func testSinglePhotoAndEmptyInput()
+	{
+		XCTAssertTrue(PhotoGrouping.group(photos: []).groups.isEmpty)
+		let single = PhotoGrouping.group(photos: [SamplePhoto.make(index: 1, hash: 0)])
+		XCTAssertEqual(single.groups.count, 1)
+		XCTAssertEqual(single.groups.first?.members, [0])
+	}
+
+	// -----------------------------------------------------------------
+	// 上限による分割
+	// -----------------------------------------------------------------
+
+	func testOversizedGroupIsSplitAtWeakestSeam()
+	{
+		// 一続きの撮影 100 枚。時刻の切れ目が無くても、上限で必ず割れる。
+		let photos = SamplePhoto.sequence(start: 1, count: 100, startTime: 0, hashSeed: 0)
+		var settings = GroupingSettings()
+		settings.maxPerGroup = 30
+		settings.minPerGroup = 10
+		let result = PhotoGrouping.group(photos: photos, settings: settings)
+		XCTAssertGreaterThanOrEqual(result.groups.count, 4)
+		for group in result.groups
+		{
+			XCTAssertLessThanOrEqual(group.members.count, 30)
+		}
+		XCTAssertEqual(result.groups.reduce(0) { $0 + $1.members.count }, 100)
+		// 分割は撮影順の連続した区間になる（合成の足がかりを残すため）。
+		for group in result.groups
+		{
+			let members = group.members
+			XCTAssertEqual(members, Array(members.sorted()))
+			XCTAssertEqual(members.last! - members.first!, members.count - 1)
+		}
+	}
+
+	func testSplitGroupsRemainLinked()
+	{
+		let photos = SamplePhoto.sequence(start: 1, count: 100, startTime: 0, hashSeed: 0)
+		var settings = GroupingSettings()
+		settings.maxPerGroup = 30
+		settings.minPerGroup = 10
+		let result = PhotoGrouping.group(photos: photos, settings: settings)
+		// 分割で生まれた境界には必ず隣接がある（＝あとで合成できる）。
+		XCTAssertGreaterThanOrEqual(result.links.count, result.groups.count - 1)
+	}
+
+	func testSmallGroupIsAbsorbedIntoStrongestNeighbour()
+	{
+		// 30 枚 + 3 枚。3 枚では再構成が成立しないので隣へ吸収される。
+		let photos = SamplePhoto.sequence(start: 1, count: 30, startTime: 0, hashSeed: 0)
+			+ SamplePhoto.sequence(
+				start: 101, count: 3, startTime: 700, hashSeed: 0xFFFF_FFFF_0000_0000)
+		let result = PhotoGrouping.group(photos: photos)
+		XCTAssertEqual(result.groups.count, 1)
+		XCTAssertEqual(result.groups.first?.members.count, 33)
+		XCTAssertTrue(result.unassigned.isEmpty)
+	}
+
+	// -----------------------------------------------------------------
+	// 証拠の取捨
+	// -----------------------------------------------------------------
+
+	func testUntrustworthyLocationIsNotUsed()
+	{
+		// 屋内で撮ると、直前の屋外の測位が誤差つきで残る。**位置が付いている
+		// ことを信用の根拠にしない。**
+		let photos = (0 ..< 20).map
+		{ index in
+			SamplePhoto.make(
+				index: index,
+				secondsFromEpoch: Double(index) * 3,
+				latitude: 35.0,
+				longitude: 139.0,
+				accuracy: 500,
+				hash: UInt64(index))
+		}
+		let result = PhotoGrouping.group(photos: photos)
+		XCTAssertFalse(result.usedEvidence.contains(.gps))
+		XCTAssertEqual(result.evidenceCoverage[.gps], 0)
+	}
+
+	func testAccurateLocationIsUsed()
+	{
+		let photos = (0 ..< 20).map
+		{ index in
+			SamplePhoto.make(
+				index: index,
+				secondsFromEpoch: Double(index) * 3,
+				latitude: 35.0 + Double(index) * 0.00001,
+				longitude: 139.0,
+				accuracy: 5,
+				hash: UInt64(index))
+		}
+		let result = PhotoGrouping.group(photos: photos)
+		XCTAssertTrue(result.usedEvidence.contains(.gps))
+	}
+
+	func testVisualEvidenceAloneCanGroupPhotosWithoutExif()
+	{
+		// 転送アプリで EXIF が剥がれた写真（時刻も位置も無い）。見た目と
+		// ファイル名の連番だけで塊になる。
+		let photos = (0 ..< 20).map
+		{ index in
+			SamplePhoto.make(index: index, hash: index < 10 ? 0x0F : 0xFFFF_FFFF_FF00)
+		}
+		let result = PhotoGrouping.group(photos: photos)
+		XCTAssertTrue(result.usedEvidence.contains(.visual))
+		XCTAssertTrue(result.usedEvidence.contains(.sequence))
+		XCTAssertFalse(result.usedEvidence.contains(.time))
+	}
+
+	func testFolderStructureIsUsedWhenPresent()
+	{
+		// 撮影者が階ごとにフォルダを分けている＝最も信頼できる区切り。
+		let photos = SamplePhoto.sequence(
+			start: 1, count: 20, startTime: 0, hashSeed: 0, folder: "1F")
+			+ SamplePhoto.sequence(
+				start: 101, count: 20, startTime: 60, hashSeed: 0xFFFF_0000_0000_0000,
+				folder: "2F")
+		let result = PhotoGrouping.group(photos: photos)
+		XCTAssertTrue(result.usedEvidence.contains(.folder))
+		XCTAssertEqual(result.groups.count, 2)
+	}
+
+	func testEvidenceCoverageIsReported()
+	{
+		// 診断で「なぜ GPS を使わなかったか」を説明するための材料。
+		let result = PhotoGrouping.group(photos: makeTwoRooms())
+		XCTAssertEqual(result.evidenceCoverage[.time], 1)
+		XCTAssertEqual(result.evidenceCoverage[.visual], 1)
+		XCTAssertEqual(result.evidenceCoverage[.gps], 0)
+		XCTAssertEqual(result.evidenceCoverage[.heading], 0)
+	}
+
+	// -----------------------------------------------------------------
+	// 閾値と統計
+	// -----------------------------------------------------------------
+
+	func testExplicitThresholdIsRecorded()
+	{
+		var settings = GroupingSettings()
+		settings.threshold = 0.42
+		let result = PhotoGrouping.group(photos: makeTwoRooms(), settings: settings)
+		XCTAssertEqual(result.threshold, 0.42)
+		XCTAssertFalse(result.thresholdWasAutomatic)
+	}
+
+	func testAutomaticThresholdStaysInRange()
+	{
+		let result = PhotoGrouping.group(photos: makeTwoRooms())
+		XCTAssertTrue(result.thresholdWasAutomatic)
+		XCTAssertGreaterThanOrEqual(result.threshold, 0.15)
+		XCTAssertLessThanOrEqual(result.threshold, 0.8)
+	}
+
+	func testScoreHistogramIsProduced()
+	{
+		// 写真を含まない統計だけで閾値を検討できるようにするため（§10-10）。
+		let result = PhotoGrouping.group(photos: makeTwoRooms())
+		XCTAssertEqual(result.scoreHistogram.count, PhotoGrouping.histogramBins)
+		XCTAssertGreaterThan(result.scoreHistogram.reduce(0, +), 0)
+	}
+
+	// -----------------------------------------------------------------
+	// 部品
+	// -----------------------------------------------------------------
+
+	func testIdentifierFormat()
+	{
+		XCTAssertEqual(PhotoGrouping.identifier(0), "group-01")
+		XCTAssertEqual(PhotoGrouping.identifier(9), "group-10")
+		XCTAssertEqual(PhotoGrouping.identifier(99), "group-100")
+	}
+
+	func testAngleDifferenceWrapsAround()
+	{
+		XCTAssertEqual(PhotoGrouping.angleDifference(10, 350), 20, accuracy: 1e-9)
+		XCTAssertEqual(PhotoGrouping.angleDifference(0, 180), 180, accuracy: 1e-9)
+		XCTAssertEqual(PhotoGrouping.angleDifference(90, 90), 0, accuracy: 1e-9)
+	}
+
+	func testGeoDistanceIsMetric()
+	{
+		// 緯度 0.001 度 ≒ 111 m。
+		let a = GeoLocation(latitude: 35.0, longitude: 139.0)
+		let b = GeoLocation(latitude: 35.001, longitude: 139.0)
+		XCTAssertEqual(a.horizontalDistance(to: b), 111, accuracy: 2)
+		XCTAssertEqual(a.horizontalDistance(to: a), 0, accuracy: 1e-6)
+		XCTAssertNil(a.verticalDistance(to: b))
+	}
+}

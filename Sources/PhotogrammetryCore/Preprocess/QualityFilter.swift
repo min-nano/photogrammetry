@@ -219,7 +219,9 @@ public enum QualityFilter
 			?? estimateSharpnessThreshold(values: sharpnessValues)
 		var suppressed = false
 
-		if let candidate = threshold
+		// 安全弁は自動決定にだけ掛ける。明示された閾値（--min-sharpness）は
+		// 自動決定が外れたときの逃げ道なので、こちらが勝手に無効化しない。
+		if settings.minimumSharpness == nil, let candidate = threshold
 		{
 			let wouldDrop = survivors.filter { ($0.quality?.sharpness ?? .infinity) < candidate }
 			// 大量に落ちるときは推定が外れている。判定ごと見送って診断で伝える。
