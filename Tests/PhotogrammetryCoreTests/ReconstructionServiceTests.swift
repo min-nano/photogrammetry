@@ -36,6 +36,21 @@ final class ReconstructionServiceTests: XCTestCase
 	// 実行方式の解決とログ
 	// -----------------------------------------------------------------
 
+	func testMaximumImageCountFollowsSupport()
+	{
+		// 仕分けの診断が「グループが上限を超えていないか」を見るのに使う。
+		// 対応していない Mac（CI ランナー）では nil になる — どちらの環境でも
+		// 成立する関係だけを固定する。
+		if ReconstructionService.isSupported
+		{
+			XCTAssertGreaterThan(ReconstructionService.maximumImageCount ?? 0, 0)
+		}
+		else
+		{
+			XCTAssertNil(ReconstructionService.maximumImageCount)
+		}
+	}
+
 	func testNoteForHelperProcessShowsPath()
 	{
 		let note = ReconstructionService.note(

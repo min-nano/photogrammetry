@@ -1,9 +1,12 @@
 # 設計メモ: 建築物・外構向けのプリ／ポストプロセッシング
 
-**状態: 設計確定。フェーズ 0（§11 進捗表示）のみ実装済み、本パイプライン
-（`sort` / `merge`）は未実装。** 設計上の未解決事項（§10 の 1〜4）はすべて解消
-済みで、フェーズ 1 以降へ順に着手できる。残る項目は実装しながら実データを見て
-詰めるもの。
+**状態: 設計確定。フェーズ 0（§11 進捗表示）とフェーズ 1（`sort`）を実装済み。
+`merge`（フェーズ 3）は未実装。** 設計上の未解決事項（§10 の 1〜4）はすべて解消
+済み。残る項目は実装しながら実データを見て詰めるもの。
+
+実装が設計から動いた点は本文中に「実装」として注記してある（主なもの: §4.1 の
+証拠に「フォルダ分け」「露出」を追加、§4.3 の分割を撮影順の最弱シームに確定、
+§4.5 の manifest に統計・診断を追加してキー名を `groupThreshold` に変更）。
 
 ## 1. 背景
 
@@ -124,6 +127,26 @@ public struct Pose {
 | 視覚的類似 | Vision feature print | 常に使える（最後の砦） | なし |
 | 実際の重なり | Vision 画像レジストレーション | 強（ただし高コスト） | 候補ペアにのみ適用 |
 
+**実装（フェーズ 1）では、上表に加えて次の 2 つを証拠に加えた。** どちらも
+ImageIO だけで取れて Vision が要らず、屋内撮影で実際に効くため。
+
+| 証拠 | 取得元 | 強さ | 使えない条件 |
+| --- | --- | --- | --- |
+| サブフォルダ | 入力フォルダの構成 | 強（撮影者が既に分けている） | 1 つしか無い |
+| 露出値 EV | EXIF 絞り・シャッター速度・ISO | 中 | 露出情報が無い |
+| 知覚ハッシュ | 縮小画像の dHash（自前計算） | 中（Vision の代役） | なし |
+
+露出は「屋外 → 床下・小屋裏」のような環境の切れ目を捉える。数段変わるので、
+時刻も位置も無い写真群でも区切りの手がかりになる。知覚ハッシュはフェーズ 2 の
+feature print までの代役だが、**ほぼ同一の重複検出には feature print より安く
+確実**なのでフェーズ 2 以降も残す。
+
+また GPS は「付いていること」を信用の根拠にしない。**水平誤差
+（`GPSHPositioningError`）と測位時刻の古さで足切りする**（`PhotoMetadata
+.hasTrustworthyLocation`）。iPhone は屋内で直前の屋外の測位をそのまま書き込む
+ので、これをしないと床下と 2 階を同じ場所と判定しうる。測位時刻の比較は、撮影
+時刻の UTC が確定できるとき（EXIF に `OffsetTimeOriginal` があるとき）だけ行う。
+
 実装上は、写真ペア (i, j) ごとに証拠を重み付きで合算した**結合スコア**を作り、
 利用できない証拠は重みを 0 にして正規化し直す。「時刻が使える現場では時刻が主導し、
 使えない現場では視覚が主導する」が自動的に成立する。
@@ -140,15 +163,42 @@ public struct Pose {
 
 除外した写真は捨てず `_excluded/` へ理由付きで退避する（判断を後から見直せるように）。
 
+**実装での確定事項:**
+
+- **ブレの閾値は分布から自動決定し、かつ二重の歯止めを掛ける。** 判別分析で
+  谷が見つかっても「中央値の 60% より鮮鋭な写真は決して落とさない」。谷が
+  無ければ（＝ブレた写真がほとんど無い現場）「中央値の 20% 未満」だけを落とす。
+  さらに**全体の 40% を超えて落ちるなら判定ごと見送り**、診断でそう伝える
+  （全体的に手ブレしている現場で写真を大量に失わないため）。`--min-sharpness`
+  を明示した場合は歯止めを掛けない（明示は自動決定が外れたときの逃げ道なので）。
+- 「ほぼ同一」は知覚ハッシュ（dHash）で判定し、**撮影順に連続する塊の中から
+  最も鮮鋭な 1 枚だけ残す**。指紋が取れない写真は塊にしない（消さない側へ倒す）。
+- 露出破綻に加えて**パノラマ（極端な縦横比）と画素数不足**も落とす。iPhone の
+  パノラマやスクリーンショットが紛れ込むと Object Capture が扱いを誤るため。
+
 ### 4.3 段階 2: グルーピング
 
 1. 4.1 の結合スコアで**重み付き無向グラフ**を作る。
 2. 閾値でエッジを切り、**連結成分**を粗グループとする。
 3. 粗グループが大きすぎる（`maxPerGroup` 超え）なら、その中で再帰的に分割する。
-   分割の切り口は、使える証拠の中で最も強いもの（時刻があれば時刻順の等分割、
-   無ければグラフの正規化カット）。
 4. 小さすぎるグループ（再構成が成立しない枚数）は、最も結合の強い隣接グループへ
    吸収するか `_unassigned/` へ送る。
+
+**実装での確定事項:**
+
+- **3 の切り口は「撮影順に並べたときの最弱シーム」に一本化した。** 位置 p と p+1
+  をまたぐエッジの重みの合計が最小になる場所で二分し、上限以下になるまで繰り返す
+  （差分配列で全 p を一度に求めるので O(エッジ数 + 枚数)）。正規化カットを
+  持ち出さずに済むうえ、**分割結果が撮影順の連続区間になる**という利点が大きい
+  — 境界が 1 か所に定まるので、そこに共有写真を置けば必ず隣接が作れる。部屋を
+  移るときに立ち止まれば（撮影ガイド §12-2）そこが自動的に最小になり、守られて
+  いなくてもどこかで必ず切れる。
+- **2 の閾値は「切りすぎない側」へ倒す。** 判別分析で谷が見つかればそこで切るが、
+  1 つの山しか無いとき（一続きの撮影）は低め（20 パーセンタイル）にする。
+  大きすぎるグループは 3 で必ず割れるが、**切ってしまった隣接は取り戻せない**ため。
+- **1 の候補ペアは「撮影順の窓（既定 60）＋ 知覚ハッシュの近傍上位 12 件」**に
+  絞る。後者は「一度離れた場所へ行って戻ってきた撮影」を繋ぐために要る。
+  ハッシュ距離の全ペア走査は 64 bit の XOR なので数千枚でも軽い。
 
 **グループサイズの上限は設計上の制約として明示する。** 上限は
 `PhotogrammetrySession.limits.maximumNumberOfInputImages` と、実用域（〜200 枚程度）の
@@ -186,17 +236,46 @@ public struct Pose {
 ```jsonc
 {
   "version": 1,
+  "generatedAt": "2026-08-02T09:00:00Z",
   "source": "/Users/me/現場写真",
-  "settings": { "overlap": 15, "maxPerGroup": 150, "timeGap": 300, "visualThreshold": 0.35 },
+  "settings": {
+    "overlap": 15, "maxPerGroup": 150, "minPerGroup": 20, "timeGap": 300,
+    // 結合スコアの閾値。自動決定した実際の値をここに残す（再現のため）
+    "groupThreshold": 0.38, "groupThresholdWasAutomatic": true,
+    "sharpnessThreshold": 12.5, "duplicateDistance": 4, "link": "hardlink"
+  },
+  // どの手がかりを使い、どれをなぜ使わなかったか
+  "evidence": { "used": ["time", "visual"], "coverage": { "time": 1.0, "gps": 0.0 } },
+  // 写真そのものを含まない統計（実写真を共有せずに閾値を検討するため。§10-10）
+  "statistics": {
+    "inputCount": 812, "keptCount": 770, "groupCount": 8,
+    "excludedByReason": { "blur": 30, "duplicate": 12 },
+    "scoreHistogram": [0, 3, 17, "…"], "sharpnessMedian": 40.2
+  },
   "groups": [
-    { "id": "group-01", "photos": ["IMG_0001.HEIC", "…"], "evidence": ["time", "visual"] }
+    // photos はフォルダの中身そのもの（共有写真を含む）。shared はそのうち借りたぶん
+    { "id": "group-01", "photos": ["IMG_0001.HEIC", "…"], "shared": ["IMG_0118.HEIC"],
+      "evidence": ["time", "visual"],
+      "captureStart": "2026-08-02T01:00:00Z", "captureEnd": "2026-08-02T01:12:00Z" }
   ],
   "adjacency": [
-    { "a": "group-01", "b": "group-02", "sharedPhotos": ["IMG_0118.HEIC", "…"], "confidence": 0.82 }
+    { "a": "group-01", "b": "group-02", "sharedPhotos": ["IMG_0118.HEIC", "…"],
+      "confidence": 0.82, "viewpointSpread": 0.31 }
   ],
-  "excluded": [ { "photo": "IMG_0044.HEIC", "reason": "blur", "score": 0.12 } ]
+  "excluded": [ { "photo": "IMG_0044.HEIC", "reason": "blur", "score": 0.12 } ],
+  "unassigned": ["IMG_0500.HEIC"],
+  "diagnostics": [
+    { "severity": "warning", "code": "sharedPhotosTooFew", "message": "group-03 ↔ group-04: …" }
+  ]
 }
 ```
+
+**実装での変更点**: 設計時の `visualThreshold` は `groupThreshold` に改めた。
+フェーズ 1 で閾値が掛かるのは「見た目の距離」ではなく**結合スコア**（全証拠の
+重み付き平均）だからで、名前と意味を一致させた。`visualThreshold`（feature print
+の閾値）はフェーズ 2 で別途必要になれば追加する。`statistics` / `diagnostics` /
+`evidence` は設計時に無かったが、§4.6 の診断と §10-10 の「写真を共有せずに調整
+する」を成立させるために必須なので加えた。
 
 `adjacency` は③がそのまま読む。**`sort` と `merge` の契約はこの manifest 1 つ**で、
 `UpdateFeed` と `build.yml` が機械可読形式で対になっているのと同じ関係になる。
@@ -222,6 +301,42 @@ public struct Pose {
 **これが §4.0 の原則を実際に機能させる仕組み。** 撮影者のスキルではなく、現場で回る
 フィードバックループで品質を担保する。撮影者が不慣れでも、「group-03 と 04 の間を
 数枚撮り足してください」という指示は誰でも実行できる。
+
+**実装**: 診断は常に出力し（manifest の `diagnostics` と CLI の `note=` 行の
+両方）、ファイルを作らない `--dry-run` を用意した。上記に加えて次も報告する。
+
+- **どの手がかりを使ったか / 使わなかったか**（「位置情報は手がかりに使いません
+  でした。屋内・床下・小屋裏では通常の結果です」のように理由まで書く）
+- **撮影時刻が読めない**（転送アプリで EXIF が失われた可能性を指摘する）
+- **焦点距離の混在**（iPhone は寄ると超広角へ自動で切り替わる）と機材の混在
+- **グループ全体が複数の島に分かれている**（1 つの座標系にまとめられない = error）
+
+これらはいずれも**統計と名前だけで、写真そのものを含まない**（§10-10）。
+
+### 4.7 読み取り経路の確認（ci-debug）
+
+純ロジックは `swift test` が合成メタデータで押さえているが、**EXIF のキーを実際に
+読めているか**だけは画像ファイルを通さないと分からない（`PhotoInspector` は
+`PhotogrammetryEngine` と同じくテスト対象外の層）。そこで
+`scripts/make-sort-samples.swift` で **EXIF 付きの合成写真**を生成し、実 CLI で
+仕分けて確認した。
+
+- run: <https://github.com/min-nano/photogrammetry/actions/runs/30742799841>
+
+入力は「部屋 A 24 枚 → 12 分の移動 → 部屋 B 24 枚」、A には濃淡のほとんど無い
+（＝ブレ相当の）写真を 3 枚混ぜてある。結果は次のとおりで、設計どおりに動いた。
+
+| 確認項目 | 期待 | 結果 |
+| --- | --- | --- |
+| EXIF の読み取り | 時刻・GPS・高度・方位・露出がすべて使える | **OK**（coverage すべて 1.0） |
+| ブレの自動判定 | 濃淡の無い 3 枚だけ落ちる | **OK**（中央値 516 に対し閾値 230） |
+| 時刻ギャップでの分割 | 2 グループ | **OK**（21 枚 + 24 枚） |
+| 重複付き分割 | 隣接に共有写真が入る | **OK**（共有 15 枚が両方のフォルダに実在） |
+| 視点の散らばり | 方位が変わるので高い | **OK**（`viewpointSpread` = 1.0） |
+| `--dry-run` | ファイルを作らない | **OK**（出力フォルダ自体が作られない） |
+
+このスクリプトはローカルでも同じ手順で使える（実写真を用意せずに仕分けの挙動を
+確かめられる）。
 
 ## 5. ポストプロセス（`merge`）
 
@@ -499,14 +614,22 @@ Sources/PhotogrammetryCore/
   ReconstructionRequest.swift        既存
   APICommand.swift                   既存（7 で拡張）
   PhotogrammetryEngine.swift         既存（poses 出力を追加）
-  Preprocess/
-    PhotoMetadata.swift        1 枚分のメタ + 特徴ベクトル（値型・Sendable）
-    PhotoInspector.swift       Vision / ImageIO / vImage を叩く唯一の層  ← ラッパー
+  Preprocess/                  ← フェーズ 1 で実装済み
+    PhotoMetadata.swift        1 枚分のメタ + 指紋 + 品質（値型・Sendable）
+    PhotoInspector.swift       ImageIO / CoreGraphics を叩く唯一の層     ← ラッパー
+    ImageStatistics.swift      画素 → ブレ・露出・知覚ハッシュ           ← 純ロジック
+    ThresholdEstimator.swift   分布 → 閾値（判別分析・分位点）           ← 純ロジック
+    QualityFilter.swift        寄与しない写真の除外                      ← 純ロジック
     PhotoGrouping.swift        メタ + 距離 → グループ + 隣接             ← 純ロジック
     SortPlan.swift             グループ → フォルダ構成と重複の割り当て   ← 純ロジック
+    SortDiagnostics.swift      不足の指摘（§4.6）                        ← 純ロジック
     SortManifest.swift         manifest.json の Codable 定義            ← 純ロジック
     PhotoSorter.swift          計画の実行（FileManager・リンク／コピー）
     SortRequest.swift          仕分け 1 回分の指示 + validate           ← 純ロジック
+
+画素統計を `ImageStatistics`（純ロジック）として `PhotoInspector` から切り離した
+のは設計時に無かった分割。**ブレ判定・ハッシュの性質を実写真なしでテストできる**
+（§10-10 の制約への答え）。`PhotoInspector` に残るのは「読み取り」だけになる。
   Merge/
     SimilarityTransform.swift  相似変換・合成・逆変換（simd）           ← 純ロジック
     PointSetAlignment.swift    Umeyama + RANSAC + 退化検出              ← 純ロジック
@@ -541,9 +664,13 @@ CLI（サブコマンド名が無ければ従来どおり `process` として扱
 後方互換を壊さない**）:
 
 ```bash
-photogrammetry-cli sort  <入力フォルダ> <出力フォルダ> \
-    [--overlap N] [--max-per-group N] [--time-gap 秒] \
-    [--visual-threshold f] [--min-quality f] [--link copy|hardlink|symlink]
+# 実装したオプション（設計時の --visual-threshold / --min-quality から改名。
+# 前者は結合スコアの閾値なので --group-threshold、後者は鮮鋭度なので
+# --min-sharpness。--dry-run / --no-recursive は実装で追加した）
+photogrammetry-cli sort  <入力フォルダ> <仕分け先フォルダ> \
+    [--overlap N] [--max-per-group N] [--min-per-group N] [--time-gap 秒] \
+    [--group-threshold f] [--min-sharpness f] [--duplicate-distance N] \
+    [--link copy|hardlink|symlink] [--no-recursive] [--dry-run]
 
 photogrammetry-cli merge <グループ出力フォルダ> <出力.usda|出力.usdz> \
     [--method poses|points] [--points 対応点.json] [--scale-reference "3.6"]
@@ -554,9 +681,16 @@ photogrammetry-cli <入力> <出力.usdz> [既存のオプション] [--emit-pos
 URL スキーム（語彙は CLI と共通）:
 
 ```
-photogrammetry://sort?input=…&output=…&overlap=15&maxPerGroup=150
+photogrammetry://sort?input=…&output=…&overlap=15&maxPerGroup=150&dryRun=true
 photogrammetry://merge?input=…&output=…&method=poses
 ```
+
+**実装での確定事項**: `APICommand.parse(arguments:)` は、先頭がサブコマンド名
+（`process` / `sort`）でなければ従来どおり `process` として解釈する。したがって
+既存の `photogrammetry-cli <入力> <出力.usdz>` はそのまま動く。GUI 側では
+`sort` を**同一プロセスで**実行する（別プロセス化が要るのは `abort()` しうる
+`CorePhotogrammetry` を使う生成だけで、仕分けは ImageIO / CoreGraphics しか
+使わない）。
 
 `APICommand.parse` の返り値型が変わるのは破壊的変更だが、呼び出し元は CLI と
 ViewModel だけで影響は閉じる。README のライブラリ利用例は
@@ -571,7 +705,12 @@ CLAUDE.md のテスト方針をそのまま適用する。**純ロジックを `
 
 | 対象 | テスト内容 |
 | --- | --- |
+| `ImageStatistics` | 合成画素 → 鮮鋭度の大小関係、明るさを変えてもハッシュが不変、縮小の平均 |
+| `ThresholdEstimator` | 2 山の分布で谷を当てる。**1 山の分布では分離度が低くなる**（＝切らない判断ができる） |
+| `QualityFilter` | ブレ・露出・パノラマ・ほぼ同一の除外。**ブレが無い現場で良品を落とさない**。安全弁 |
 | `PhotoGrouping` | 合成メタデータ（時刻・GPS・距離行列）→ 期待するグループと隣接。証拠が欠けた場合のフォールバック |
+| `SortDiagnostics` | 共有不足・視点の退化・孤立・非連結・機材混在を必ず報告する |
+| `PhotoSorter` | 読み手を差し替えて、実画像なしで配置・`_excluded`・manifest 書き出しを検証 |
 | `SortPlan` | グループ + `overlap` → フォルダ計画。**共有写真が両側に入ること**。上限超えの再分割 |
 | `SortManifest` | Codable の往復 |
 | `SimilarityTransform` | 合成・逆変換・恒等、行列との相互変換 |
@@ -587,8 +726,8 @@ CLAUDE.md のテスト方針をそのまま適用する。**純ロジックを `
 
 | フェーズ | 内容 | 前提 |
 | --- | --- | --- |
-| **0** | 進捗表示の改善（残り時間・処理段階）。§11 | 本パイプラインと独立。単独で先行実装できる |
-| **1** | 品質フィルタ、時刻／GPS による分割、重複付きチャンク、manifest、診断モード、CLI `sort` | Vision 不要。単独で「枚数上限超え」を解決する |
+| **0** | 進捗表示の改善（残り時間・処理段階）。§11 | **実装済み** |
+| **1** | 品質フィルタ、時刻／GPS／露出／知覚ハッシュ／フォルダによる分割、重複付きチャンク、manifest、診断モード、CLI `sort`、URL スキーム `sort` | **実装済み**（Vision 不要。単独で「枚数上限超え」を解決する） |
 | **2** | Vision feature print による視覚クラスタリングを証拠として統合 | 1 |
 | **3** | `--emit-poses`、`SimilarityTransform` / `PointSetAlignment` / `PoseGraph` / `SceneAssembler`、CLI `merge` | 1（重複付き分割が前提） |
 | **4** | 手動対応点の GUI、実寸スケール指定、ICP による精密化、ループ最適化 | 3 |
@@ -611,12 +750,15 @@ CLAUDE.md のテスト方針をそのまま適用する。**純ロジックを `
 4. **Object Capture が書いた usdz なら外部参照でもテクスチャが解決されるか。**
    §5.5.2 のテクスチャ欠落は SceneKit が書いた資産パスに起因する可能性がある。
    (b) を退避先として復活させたい場合のみ確かめればよく、優先度は低い。
-5. **feature print の閾値に万能な既定値は無い。** 写真依存。**固定の既定値を持たず、
-   距離のヒストグラムから自動決定する**設計にする（分布の谷を探す。大津の二値化に
-   相当）。現場ごとの違いに適応でき、かつ**実写真を見なくても実装できる**。手動での
-   上書き（`--visual-threshold`）は逃げ道として残す。
-6. **n が数千を超えたときの O(n²) 距離計算。** ブロック化の設計は 4.3 に書いたが、
-   実データの規模を見てから詰める。
+5. ~~feature print の閾値に万能な既定値は無い~~ → **フェーズ 1 で方針どおり実装。**
+   固定の既定値を持たず、判別分析（大津の二値化）で分布の谷を探す
+   （`ThresholdEstimator`）。加えて**山が 1 つのときは切らない**判断ができるよう
+   分離度を返す — これが無いと、ブレた写真が無い現場で良品を捨ててしまう。手動
+   での上書きは `--group-threshold` / `--min-sharpness` として残した。
+6. **n が数千を超えたときの O(n²) 距離計算。** フェーズ 1 では候補ペアを
+   「撮影順の窓 + ハッシュ近傍上位」に絞ることで実質 O(n·k) にした（ハッシュ距離
+   の全ペア走査だけは O(n²) だが 64 bit の XOR なので軽い）。Vision の feature
+   print を入れるフェーズ 2 では計算量が桁で変わるので、そこで改めて詰める。
 7. **共有写真の共線退化。** 廊下の直進区間など。4.4 の選び方ヒューリスティクスと
    5.3 の退化検出の両方で守る。
 8. **あるグループの再構成が失敗すると、そのノードがポーズグラフから欠ける。**

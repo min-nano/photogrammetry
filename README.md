@@ -26,6 +26,9 @@ GUI から実行したときの 3D 生成は、**同梱の `photogrammetry-cli` 
 - Object Capture 対応 Mac（Apple Silicon、または 4GB 以上の GPU を積んだ Intel Mac。
   非対応機ではアプリが起動時に警告を出し、生成は実行できません）
 - 写真は 20〜200 枚程度、対象物を全方向から重なりを持たせて撮影したもの
+  （建物 1 棟・現場全体のようにこの枚数を大きく超える場合は、
+  `photogrammetry-cli sort` で仕分けてからグループごとに生成します。
+  仕分け自体は Object Capture 非対応の Mac でも実行できます）
 
 ## インストール
 
@@ -56,6 +59,20 @@ xattr -dr com.apple.quarantine /Applications/Photogrammetry.app
 「物体」、建物・部屋・現場全体のようなシーンを撮った写真なら「シーン・建物」を
 選んでください（下記「うまくいかないとき」参照）。
 
+写真が多すぎて 1 回で扱えない場合は、画面上部で**「写真を仕分ける」**に切り替え
+ます。
+
+1. 「入力」で現場の写真フォルダを選択
+2. 「仕分け先」で空のフォルダを選択
+3. 共有枚数・グループの上下限・区切りの撮影間隔などを確認して「写真を仕分ける」
+
+**「確認のみ」を入れて実行すると、ファイルを作らずに診断だけ**を出します
+（数分で終わります）。共有写真の不足・視点の偏り・繋がらないグループがログに
+出るので、**現場を離れる前に撮り直しの要否を判断できます**。仕分けが終わったら
+「Finder で表示」で group-01 … を開き、グループごとに「3D モデルを生成」へ
+戻ってください。仕分けは Object Capture 非対応の Mac でも実行できます
+（詳細は下記「大量の写真を仕分ける」）。
+
 ### CLI
 
 ```bash
@@ -76,6 +93,81 @@ stdout に機械可読な `key=value` 行を逐次出力します（`progress=0.
 見積もり（秒）です。どちらも OS が返したときだけ出ます（macOS が値を返さない
 区間では出力されません）ので、受け側は欠けても動くようにしてください。
 
+### 大量の写真を仕分ける（`sort`）
+
+建物 1 棟・現場全体を記録すると写真は数百〜数千枚になり、**1 回のセッションでは
+解けません**（ハードウェア上限を超えるうえ、部屋・階が変わると視点の連続性が
+途切れて位置合わせに失敗します）。`sort` は写真をグループへ仕分け、あとで
+1 つの座標系へ合成できる形で書き出します。
+
+GUI（画面上部で「写真を仕分ける」に切り替え）・CLI・URL スキームのどれからでも
+実行できます。仕分けは RealityKit を使わない（ImageIO / CoreGraphics のみ）ので、
+**Object Capture 非対応の Mac でも動きます**。
+
+```bash
+photogrammetry-cli sort <入力フォルダ> <仕分け先フォルダ> \
+    [--overlap 15] [--max-per-group 150] [--min-per-group 20] \
+    [--time-gap 300] [--group-threshold 0.4] [--min-sharpness 12] \
+    [--duplicate-distance 4] [--link hardlink|copy|symlink] \
+    [--no-recursive] [--dry-run]
+```
+
+```
+仕分け先/
+  group-01/       写真（ハードリンク。同一ボリューム外ならコピーへ自動で切り替え）
+  group-02/
+  _excluded/      品質フィルタで落とした写真（理由別のサブフォルダ）
+  _unassigned/    どのグループにも入らなかった写真
+  manifest.json   グループ・隣接・除外・診断の記録
+```
+
+仕分けの要点は 3 つです。
+
+1. **手がかりに依存しない。** 撮影時刻・GPS（水平誤差と測位時刻で足切り）・
+   高度・方位・露出・知覚ハッシュ・サブフォルダ分けを**並列の証拠**として扱い、
+   その現場で使えるものだけを重み付けして合算します。EXIF が失われた写真でも
+   見た目とファイル名の連番だけで仕分きます。屋内（床下・小屋裏）では GPS が
+   直前の屋外の測位のまま残るので、**位置が付いていること自体は信用しません**。
+2. **隣り合うグループに同じ写真を重複させる**（`--overlap`、既定 15 枚）。この
+   共有写真が、各グループを再構成したあとに 1 つの座標系へ合成するときの
+   手がかりになります。選ぶときは視点が散らばるようにします（同じ場所から
+   向きだけ変えた写真ばかりだと、変換の推定が退化するため）。
+3. **閾値を固定しない。** ブレ判定もグループ分けの閾値も、その現場の分布から
+   自動決定します（分布の山が 1 つのときは切らないので、ブレた写真が無い現場で
+   良品を捨てません）。`--min-sharpness` / `--group-threshold` は逃げ道です。
+
+`--dry-run` はファイルを作らず解析と診断だけを行います。**再構成は建築規模なら
+数時間かかりますが、`sort` は数分で終わります。**現場を出る前にこれを回せば、
+撮り直しが必要かどうかをその場で判断できます。
+
+```
+$ photogrammetry-cli sort ~/Pictures/現場 ~/Desktop/仕分け --dry-run
+note=770 枚を 8 グループに仕分けました（除外 42 枚）。
+note=使った手がかり: 撮影時刻・見た目の近さ（結合スコアの閾値 0.38・自動決定）
+note=警告: group-03 ↔ group-04: 共有 4 枚（推奨 10 枚以上） — 合成が不安定になります。…
+note=警告: group-05 ↔ group-06: 共有写真の視点がほぼ一直線です — …
+note=警告: group-07 はどのグループとも共有写真がありません — …
+```
+
+仕分けたあとは、グループごとに通常どおり生成します。グループは**撮影順の連続
+区間**になるので `--sample-ordering sequential` が効きます。建物・部屋は
+`--subject scene`（オブジェクトマスキング無効）が必須です。
+
+```bash
+for g in ~/Desktop/仕分け/group-*; do
+    photogrammetry-cli "$g" "$HOME/Desktop/$(basename "$g").usdz" \
+        --subject scene --sample-ordering sequential
+done
+```
+
+複数モデルを 1 つの座標系へ合成する `merge` はフェーズ 3 で実装予定です
+（`manifest.json` の `adjacency` がそのための契約です）。設計は
+[`docs/design-preprocess-merge.md`](docs/design-preprocess-merge.md) を参照。
+
+**撮影のコツ**（守れなくても `sort` が不足を検出して指摘しますが、守ると精度が
+上がります）: 部屋を出る前に**出口付近から次に入る先の方向を数枚**撮り、その
+数枚は**2〜3 歩ずつ立ち位置を変えて**撮ってください。合成の精度に最も効きます。
+
 ### URL スキーム（他アプリからの連携）
 
 GUI アプリは `photogrammetry://` スキームを宣言しています。パスはパーセント
@@ -85,9 +177,20 @@ GUI アプリは `photogrammetry://` スキームを宣言しています。パ�
 open "photogrammetry://process?input=/Users/me/photos&output=/Users/me/model.usdz&detail=full"
 ```
 
-パラメータ: `input`（必須）/ `output`（必須）/ `detail` / `ordering` /
-`sensitivity` / `subject`。語彙は CLI と共通で、解釈は `PhotogrammetryCore` の
-`APICommand` に一元化されています。
+```bash
+open "photogrammetry://sort?input=/Users/me/現場&output=/Users/me/仕分け&overlap=15"
+```
+
+パラメータ:
+
+- `process`: `input`（必須）/ `output`（必須）/ `detail` / `ordering` /
+  `sensitivity` / `subject`
+- `sort`: `input`（必須）/ `output`（必須）/ `overlap` / `maxPerGroup` /
+  `minPerGroup` / `timeGap` / `groupThreshold` / `minSharpness` /
+  `duplicateDistance` / `link` / `recursive` / `dryRun`
+
+語彙は CLI と共通で、解釈は `PhotogrammetryCore` の `APICommand` に一元化されて
+います。
 
 ### Swift ライブラリ
 
@@ -121,9 +224,14 @@ try await engine.process(request) { event in
    写真と 70% 程度重なるように 20〜200 枚」。記録用に歩き回って撮った写真の
    寄せ集めでは、視点のつながりが復元できず失敗します。
 
+建物 1 棟・現場全体のように**そもそも 1 回で解けない量**を撮った場合は、
+`photogrammetry-cli sort` で仕分けてからグループごとに生成してください
+（上記「大量の写真を仕分ける」）。`--dry-run` を付ければ、どこが繋がらないかを
+数分で確認できます。
+
 **枚数の上限**
 入力枚数がこの Mac のハードウェア上限（`PhotogrammetrySession.limits`）を超えると
-ログに警告が出ます。失敗する場合は写真を減らしてください。
+ログに警告が出ます。失敗する場合は写真を減らすか、`sort` で分割してください。
 
 **毎回まったく同じ進捗で「生成処理が異常終了しました（シグナル 6: SIGABRT）」と出る**
 まずこれを疑ってください。**機械学習モデルのキャッシュ破損**です。Object Capture は
@@ -203,6 +311,18 @@ Sources/
     HelperProtocol         ヘルパーの stdout 行の書式（CLI と GUI の対）
     InputInspection        入力フォルダの事前チェック（枚数・iCloud の未ダウンロード）
     ModelCache             ML モデルのキャッシュ破損の見分けと削除
+    Preprocess/            大量の写真の仕分け（sort）
+      PhotoMetadata        写真 1 枚分の事実（時刻・位置・露出・指紋・品質）
+      PhotoInspector       ImageIO / CoreGraphics の唯一のラッパー
+      ImageStatistics      ブレ・露出・知覚ハッシュの計算（純ロジック）
+      ThresholdEstimator   分布から閾値を決める判別分析（純ロジック）
+      QualityFilter        寄与しない写真の除外（純ロジック）
+      PhotoGrouping        証拠の合算 → グループと隣接（純ロジック）
+      SortPlan             重複付き分割の計画（純ロジック）
+      SortDiagnostics      撮り直しの判断材料（純ロジック）
+      SortManifest         manifest.json の定義（sort と merge の契約）
+      SortRequest          仕分け 1 回分の指示と検証
+      PhotoSorter          計画の実行（走査・配置・書き出し）
   PhotogrammetryUpdater/   自動アップデート
     UpdateFeed             Releases JSON → チャンネル一覧・更新判定（純ロジック）
     UpdaterService         ネットワーク・ダウンロード・差し替え起動（Foundation のみ）

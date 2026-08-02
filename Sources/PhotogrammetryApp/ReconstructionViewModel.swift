@@ -14,12 +14,49 @@ import UniformTypeIdentifiers
 @MainActor
 final class ReconstructionViewModel: ObservableObject
 {
+	/// 画面のモード。生成と仕分けは出力も設定も別物なので、フォームごと切り替える
+	/// （入力の写真フォルダだけは共通）。
+	enum Mode: String, CaseIterable, Identifiable
+	{
+		/// 写真フォルダ 1 つ → 3D モデル。
+		case reconstruct
+		/// 大量の写真 → グループへ仕分け。
+		case sort
+
+		var id: String { rawValue }
+
+		var displayName: String
+		{
+			switch self
+			{
+				case .reconstruct:
+					return "3D モデルを生成"
+				case .sort:
+					return "写真を仕分ける"
+			}
+		}
+	}
+
+	@Published var mode: Mode = .reconstruct
+
 	@Published var inputFolder: URL?
 	@Published var outputFile: URL?
 	@Published var detail: ReconstructionRequest.Detail = .medium
 	@Published var sampleOrdering: ReconstructionRequest.SampleOrdering = .unordered
 	@Published var featureSensitivity: ReconstructionRequest.FeatureSensitivity = .normal
 	@Published var subject: ReconstructionRequest.SubjectKind = .object
+
+	// 仕分け（sort）のフォーム。既定値は SortRequest と揃える（食い違うと
+	// GUI と CLI で結果が変わってしまう）。閾値は既定の「分布から自動決定」の
+	// ままにしてあり、上書きは CLI / URL スキームの逃げ道に任せる。
+	@Published var sortOutputFolder: URL?
+	@Published var overlap = 15
+	@Published var maxPerGroup = 150
+	@Published var minPerGroup = 20
+	@Published var timeGap: Double = 300
+	@Published var linkStrategy: LinkStrategy = .hardlink
+	@Published var sortRecursive = true
+	@Published var sortDryRun = false
 
 	@Published var isProcessing = false
 	@Published var progress: Double = 0
@@ -33,7 +70,13 @@ final class ReconstructionViewModel: ObservableObject
 	@Published var processingStage: ProcessingStage?
 	@Published var estimatedRemainingTime: TimeInterval?
 
+	/// 直前に書き出したもの（モデルファイル / manifest.json）。仕分けの結果は
+	/// フォルダを開いて中身を見に行くことになるので、そこまで案内する。
+	@Published var lastOutput: URL?
+
 	private var service: ReconstructionService?
+	/// 実行中の仕分けの中断フラグ。
+	private var sortCancellation: SortCancellation?
 	/// ログへ出した最後の段階。段階が変わったときだけ 1 行残すために持つ
 	/// （進捗イベントは頻繁に来るので、毎回書くとログが埋まる）。
 	private var loggedStage: ProcessingStage?
@@ -50,6 +93,11 @@ final class ReconstructionViewModel: ObservableObject
 		inputFolder != nil && outputFile != nil && !isProcessing
 	}
 
+	var canStartSort: Bool
+	{
+		inputFolder != nil && sortOutputFolder != nil && !isProcessing
+	}
+
 	// -----------------------------------------------------------------
 	// ファイル選択
 	// -----------------------------------------------------------------
@@ -60,7 +108,9 @@ final class ReconstructionViewModel: ObservableObject
 		panel.canChooseFiles = false
 		panel.canChooseDirectories = true
 		panel.allowsMultipleSelection = false
-		panel.message = "対象物を多方向から撮影した写真が入ったフォルダを選択してください"
+		panel.message = mode == .sort
+			? "仕分けたい写真が入ったフォルダを選択してください"
+			: "対象物を多方向から撮影した写真が入ったフォルダを選択してください"
 		panel.prompt = "選択"
 		if panel.runModal() == .OK
 		{
@@ -79,6 +129,33 @@ final class ReconstructionViewModel: ObservableObject
 		{
 			outputFile = panel.url
 		}
+	}
+
+	func chooseSortOutputFolder()
+	{
+		let panel = NSOpenPanel()
+		panel.canChooseFiles = false
+		panel.canChooseDirectories = true
+		panel.canCreateDirectories = true
+		panel.allowsMultipleSelection = false
+		panel.message = "仕分け結果（group-01 … と manifest.json）を作るフォルダを選択してください"
+		panel.prompt = "選択"
+		if panel.runModal() == .OK
+		{
+			sortOutputFolder = panel.url
+		}
+	}
+
+	/// 直前の出力を Finder で表示する。仕分けの結果はフォルダを開いて
+	/// group-NN を見に行くことになるので、そこまで繋いでおく。
+	func revealLastOutput()
+	{
+		guard let url = lastOutput
+		else
+		{
+			return
+		}
+		NSWorkspace.shared.activateFileViewerSelecting([url])
 	}
 
 	// -----------------------------------------------------------------
@@ -101,25 +178,140 @@ final class ReconstructionViewModel: ObservableObject
 			subject: subject))
 	}
 
-	/// URL スキーム（photogrammetry://process?...）からの起動。解釈は Core の
-	/// APICommand に委譲し、成功したらフォームへ反映してそのまま実行する。
+	/// フォームの内容で仕分けを実行する。組み立てるのは SortRequest 1 つだけで、
+	/// 妥当性の判断も各段の設定への翻訳も Core（SortRequest）が持つ。
+	func startSort()
+	{
+		guard let input = inputFolder, let output = sortOutputFolder
+		else
+		{
+			return
+		}
+		runSort(SortRequest(
+			inputFolder: input,
+			outputFolder: output,
+			overlap: overlap,
+			maxPerGroup: maxPerGroup,
+			minPerGroup: minPerGroup,
+			timeGap: timeGap,
+			link: linkStrategy,
+			recursive: sortRecursive,
+			dryRun: sortDryRun))
+	}
+
+	/// URL スキーム（photogrammetry://process?... / photogrammetry://sort?...）
+	/// からの起動。解釈は Core の APICommand に委譲し、成功したらフォームへ
+	/// 反映してそのまま実行する。
 	func handle(url: URL)
 	{
 		do
 		{
-			let request = try APICommand.parse(url: url)
-			inputFolder = request.inputFolder
-			outputFile = request.outputFile
-			detail = request.detail
-			sampleOrdering = request.sampleOrdering
-			featureSensitivity = request.featureSensitivity
-			subject = request.subject
+			let command = try APICommand.parse(url: url)
 			appendLog("URL コマンドを受信: \(url.absoluteString)")
-			run(request)
+			switch command
+			{
+				case .process(let request):
+					inputFolder = request.inputFolder
+					outputFile = request.outputFile
+					detail = request.detail
+					sampleOrdering = request.sampleOrdering
+					featureSensitivity = request.featureSensitivity
+					subject = request.subject
+					run(request)
+				case .sort(let request):
+					// フォームにも反映する（何が実行されたのか画面で分かるように）。
+					mode = .sort
+					inputFolder = request.inputFolder
+					sortOutputFolder = request.outputFolder
+					overlap = request.overlap
+					maxPerGroup = request.maxPerGroup
+					minPerGroup = request.minPerGroup
+					timeGap = request.timeGap
+					linkStrategy = request.link
+					sortRecursive = request.recursive
+					sortDryRun = request.dryRun
+					runSort(request)
+			}
 		}
 		catch
 		{
 			appendLog("URL コマンドを解釈できません: \(error.localizedDescription)")
+		}
+	}
+
+	/// 写真の仕分け。再構成と違って RealityKit を使わないため
+	/// `CorePhotogrammetry` の異常終了に巻き込まれる恐れがなく、別プロセスに
+	/// する必要がない（別プロセス化が要るのは生成だけ。CLAUDE.md 参照）。
+	/// 判断はすべて Core の PhotoSorter にあり、ここは進捗を映すだけ。
+	func runSort(_ request: SortRequest)
+	{
+		guard !isProcessing
+		else
+		{
+			appendLog("すでに処理中です。")
+			return
+		}
+
+		isProcessing = true
+		progress = 0
+		processingStage = nil
+		estimatedRemainingTime = nil
+		loggedStage = nil
+		canPurgeModelCache = false
+		lastOutput = nil
+		statusText = "写真を仕分けています…"
+		appendLog("仕分け開始: \(request.inputFolder.path) → \(request.outputFolder.path)")
+
+		let sink: @Sendable (ReconstructionEvent) -> Void =
+		{ [weak self] event in
+			Task
+			{ @MainActor in
+				self?.handle(event: event)
+			}
+		}
+		let sorter = PhotoSorter(hardwareLimit: ReconstructionService.maximumImageCount)
+		let cancellation = SortCancellation()
+		sortCancellation = cancellation
+
+		// 解析は数百〜数千枚のデコードで数分かかる。メインアクターを塞がない
+		// ように裏で走らせる。
+		Task.detached(priority: .userInitiated)
+		{
+			let failure: Error?
+			do
+			{
+				try sorter.run(request, cancellation: cancellation, progress: sink)
+				failure = nil
+			}
+			catch
+			{
+				failure = error
+			}
+			await MainActor.run
+			{ [weak self] in
+				guard let self
+				else
+				{
+					return
+				}
+				switch failure
+				{
+					case .none:
+						self.statusText = request.dryRun
+							? "仕分けの確認が完了しました（ファイルは作成していません）"
+							: "仕分け完了"
+						self.appendLog("仕分け完了")
+					case .some(let error) where (error as? SortError) == .cancelled:
+						// 中断は失敗ではない。生成と同じ表現に揃える。
+						self.statusText = "キャンセルされました"
+						self.appendLog("キャンセルされました")
+					case .some(let error):
+						self.statusText = "エラー: \(Self.summary(of: error))"
+						self.appendLog("エラー: \(ErrorDetails.describe(error))")
+				}
+				self.isProcessing = false
+				self.sortCancellation = nil
+			}
 		}
 	}
 
@@ -145,6 +337,7 @@ final class ReconstructionViewModel: ObservableObject
 		loggedStage = nil
 		statusText = "処理中…"
 		canPurgeModelCache = false
+		lastOutput = nil
 		appendLog("開始: \(request.inputFolder.path) → \(request.outputFile.path)")
 
 		// 実行方式（別プロセス / 同一プロセス）の判断は Core の
@@ -190,7 +383,9 @@ final class ReconstructionViewModel: ObservableObject
 	func cancel()
 	{
 		appendLog("キャンセルを要求しました…")
+		// 走っているのは生成か仕分けのどちらか一方（isProcessing で排他）。
 		service?.cancel()
+		sortCancellation?.cancel()
 	}
 
 	/// 壊れた ML モデルのキャッシュを削除する（OS が次回作り直す）。
@@ -254,6 +449,7 @@ final class ReconstructionViewModel: ObservableObject
 				appendLog(message)
 			case .completed(let url):
 				appendLog("出力: \(url.path)")
+				lastOutput = url
 			case .cancelled:
 				statusText = "キャンセルされました"
 				appendLog("キャンセルされました")

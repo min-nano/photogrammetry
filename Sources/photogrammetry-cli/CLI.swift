@@ -27,23 +27,47 @@ import PhotogrammetryCore
 struct PhotogrammetryCLI
 {
 	static let usage = """
-		使い方: photogrammetry-cli <入力フォルダ> <出力ファイル.usdz> [オプション]
+		使い方:
+		  photogrammetry-cli <入力フォルダ> <出力ファイル.usdz> [オプション]
+		  photogrammetry-cli sort <入力フォルダ> <仕分け先フォルダ> [オプション]
 
+		生成（サブコマンド省略時）:
 		  <入力フォルダ>            対象物を多方向から撮影した写真が入ったフォルダ
 		  <出力ファイル.usdz>       生成する 3D モデルの出力先
 
-		オプション:
 		  -d, --detail <値>               preview | reduced | medium | full | raw（既定: medium）
 		  -o, --sample-ordering <値>      unordered | sequential（既定: unordered）
 		  -s, --feature-sensitivity <値>  normal | high（既定: normal）
 		      --subject <値>              object | scene（既定: object）
 		                                  建物・部屋などシーン全体の写真は scene を指定
 		                                  （オブジェクトマスキングを無効化）
+
+		sort — 大量の写真をグループへ仕分ける:
+		  建物 1 棟ぶんの写真は 1 回のセッションでは解けない（枚数の上限を超え、
+		  部屋が変わると位置合わせが途切れる）。撮影時刻・位置・見た目などの
+		  手がかりから写真を塊に分け、**隣り合う塊に同じ写真を重複させて**
+		  出力する。この共有写真が、あとで各モデルを 1 つの座標系へ合成する
+		  ときの手がかりになる。
+
+		      --overlap <n>               隣接グループ間で共有する枚数（既定: 15）
+		      --max-per-group <n>         1 グループの上限枚数（既定: 150）
+		      --min-per-group <n>         1 グループの下限枚数（既定: 20）
+		      --time-gap <秒>             区切りとみなす撮影間隔（既定: 300）
+		      --group-threshold <値>      結合スコアの閾値（既定: 分布から自動決定）
+		      --min-sharpness <値>        ブレ判定の閾値（既定: 分布から自動決定）
+		      --duplicate-distance <n>    ほぼ同一とみなす距離 0〜64（既定: 4）
+		      --link <値>                 hardlink | copy | symlink（既定: hardlink）
+		      --no-recursive              サブフォルダを走査しない
+		      --dry-run                   ファイルを作らず診断だけ出す
+
+		共通:
 		  -h, --help                      このヘルプを表示
 
 		例:
 		  photogrammetry-cli ~/Pictures/chair ~/Desktop/chair.usdz --detail full
 		  photogrammetry-cli ~/Pictures/house ~/Desktop/house.usdz --subject scene
+		  photogrammetry-cli sort ~/Pictures/現場 ~/Desktop/現場-仕分け --dry-run
+		  photogrammetry-cli ~/Desktop/現場-仕分け/group-01 ~/Desktop/group-01.usdz --subject scene
 		"""
 
 	static func main() async
@@ -61,16 +85,58 @@ struct PhotogrammetryCLI
 			exit(0)
 		}
 
-		let request: ReconstructionRequest
+		let command: APICommand
 		do
 		{
-			request = try APICommand.parse(arguments: arguments)
+			command = try APICommand.parse(arguments: arguments)
 		}
 		catch
 		{
 			fail(error.localizedDescription, code: 2)
 		}
 
+		switch command
+		{
+			case .process(let request):
+				await process(request)
+			case .sort(let request):
+				sort(request)
+		}
+	}
+
+	/// 仕分け。再構成を伴わないので GPU 要件は無く、Object Capture 非対応の
+	/// Mac でも実行できる（現場で撮り直しを判断するための経路）。
+	static func sort(_ request: SortRequest) -> Never
+	{
+		do
+		{
+			// 上限は「この Mac のハードウェア上限」と設定値の小さいほうで
+			// 診断する。上限を知っているのは RealityKit だけなので Core から渡す。
+			let sorter = PhotoSorter(hardwareLimit: ReconstructionService.maximumImageCount)
+			let cancellation = SortCancellation()
+			installSignalHandler { cancellation.cancel() }
+			try sorter.run(request, cancellation: cancellation)
+			{ event in
+				emit(HelperProtocol.encode(event))
+			}
+			emit(HelperProtocol.finishedLine)
+			exit(0)
+		}
+		catch SortError.cancelled
+		{
+			// 中断は失敗ではない。生成と同じ約束（cancelled + 終了コード 0）で返す。
+			emit(HelperProtocol.encode(.cancelled))
+			exit(0)
+		}
+		catch
+		{
+			fail(ErrorDetails.describe(error), code: 1)
+		}
+	}
+
+	/// 3D モデルの生成。
+	static func process(_ request: ReconstructionRequest) async
+	{
 		guard PhotogrammetryEngine.isSupported
 		else
 		{
@@ -109,15 +175,18 @@ struct PhotogrammetryCLI
 	/// 親プロセス（GUI）からは「異常終了」と区別が付かないため。
 	static func installCancelHandler(engine: PhotogrammetryEngine)
 	{
+		installSignalHandler { engine.cancel() }
+	}
+
+	/// SIGINT / SIGTERM を任意の後始末へ振り替える（生成と仕分けで共用）。
+	static func installSignalHandler(_ handler: @escaping @Sendable () -> Void)
+	{
 		for number in [SIGINT, SIGTERM]
 		{
 			// DispatchSource で扱うので既定ハンドラは無効化する。
 			signal(number, SIG_IGN)
 			let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
-			source.setEventHandler
-			{
-				engine.cancel()
-			}
+			source.setEventHandler(handler: handler)
 			source.resume()
 			// ソースは解放されると監視も止まるので、プロセスが終わるまで保持する。
 			signalSources.append(source)

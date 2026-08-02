@@ -18,7 +18,7 @@ final class APICommandTests: XCTestCase
 	func testParseURLMinimal() throws
 	{
 		let url = URL(string: "photogrammetry://process?input=/tmp/photos&output=/tmp/model.usdz")!
-		let request = try APICommand.parse(url: url)
+		let request = try parseProcess(url: url)
 		XCTAssertEqual(request.inputFolder.path, "/tmp/photos")
 		XCTAssertEqual(request.outputFile.path, "/tmp/model.usdz")
 		// 省略時は既定値。
@@ -33,7 +33,7 @@ final class APICommandTests: XCTestCase
 		let url = URL(
 			string: "photogrammetry://process?input=/a&output=/b.usdz"
 				+ "&detail=full&ordering=sequential&sensitivity=high&subject=scene")!
-		let request = try APICommand.parse(url: url)
+		let request = try parseProcess(url: url)
 		XCTAssertEqual(request.detail, .full)
 		XCTAssertEqual(request.sampleOrdering, .sequential)
 		XCTAssertEqual(request.featureSensitivity, .high)
@@ -44,7 +44,7 @@ final class APICommandTests: XCTestCase
 	{
 		let url = URL(
 			string: "photogrammetry://process?input=/a&output=/b.usdz&subject=person")!
-		XCTAssertThrowsError(try APICommand.parse(url: url))
+		XCTAssertThrowsError(try parseProcess(url: url))
 		{ error in
 			XCTAssertEqual(
 				error as? APICommandError, .invalidValue(parameter: "subject", value: "person"))
@@ -56,14 +56,14 @@ final class APICommandTests: XCTestCase
 		// スペースを含むパスはパーセントエンコードされて届く。
 		let url = URL(
 			string: "photogrammetry://process?input=/tmp/my%20photos&output=/tmp/out.usdz")!
-		let request = try APICommand.parse(url: url)
+		let request = try parseProcess(url: url)
 		XCTAssertEqual(request.inputFolder.path, "/tmp/my photos")
 	}
 
 	func testParseURLMissingInput()
 	{
 		let url = URL(string: "photogrammetry://process?output=/tmp/model.usdz")!
-		XCTAssertThrowsError(try APICommand.parse(url: url))
+		XCTAssertThrowsError(try parseProcess(url: url))
 		{ error in
 			XCTAssertEqual(error as? APICommandError, .missingParameter("input"))
 		}
@@ -72,7 +72,7 @@ final class APICommandTests: XCTestCase
 	func testParseURLUnknownCommand()
 	{
 		let url = URL(string: "photogrammetry://export?input=/a&output=/b.usdz")!
-		XCTAssertThrowsError(try APICommand.parse(url: url))
+		XCTAssertThrowsError(try parseProcess(url: url))
 		{ error in
 			XCTAssertEqual(error as? APICommandError, .unsupportedCommand("export"))
 		}
@@ -82,7 +82,7 @@ final class APICommandTests: XCTestCase
 	{
 		let url = URL(
 			string: "photogrammetry://process?input=/a&output=/b.usdz&detail=ultra")!
-		XCTAssertThrowsError(try APICommand.parse(url: url))
+		XCTAssertThrowsError(try parseProcess(url: url))
 		{ error in
 			XCTAssertEqual(
 				error as? APICommandError, .invalidValue(parameter: "detail", value: "ultra"))
@@ -95,7 +95,7 @@ final class APICommandTests: XCTestCase
 		// host が nil になる。呼び出し元がスキームを誤って組み立てた場合に
 		// 実際に起こりうる形なので、空文字へのフォールバックごと確かめる。
 		let url = URL(string: "photogrammetry:process?input=/a&output=/b.usdz")!
-		XCTAssertThrowsError(try APICommand.parse(url: url))
+		XCTAssertThrowsError(try parseProcess(url: url))
 		{ error in
 			XCTAssertEqual(error as? APICommandError, .unsupportedCommand(""))
 		}
@@ -105,7 +105,7 @@ final class APICommandTests: XCTestCase
 	{
 		// "?" 自体が無ければ queryItems は nil（空配列とは区別される）。
 		let url = URL(string: "photogrammetry://process")!
-		XCTAssertThrowsError(try APICommand.parse(url: url))
+		XCTAssertThrowsError(try parseProcess(url: url))
 		{ error in
 			XCTAssertEqual(error as? APICommandError, .missingParameter("input"))
 		}
@@ -116,7 +116,7 @@ final class APICommandTests: XCTestCase
 		// "input" だけで "=" が無いクエリ項目は value が nil になる
 		// （空文字と区別される）。
 		let url = URL(string: "photogrammetry://process?input&output=/b.usdz")!
-		XCTAssertThrowsError(try APICommand.parse(url: url))
+		XCTAssertThrowsError(try parseProcess(url: url))
 		{ error in
 			XCTAssertEqual(error as? APICommandError, .missingParameter("input"))
 		}
@@ -141,6 +141,9 @@ final class APICommandTests: XCTestCase
 		XCTAssertEqual(
 			APICommandError.missingArguments.errorDescription,
 			"引数が不足しています（<入力フォルダ> <出力ファイル.usdz> が必要です）。")
+		XCTAssertEqual(
+			APICommandError.missingSortArguments.errorDescription,
+			"引数が不足しています（sort <入力フォルダ> <仕分け先フォルダ> が必要です）。")
 	}
 
 	// -----------------------------------------------------------------
@@ -149,7 +152,7 @@ final class APICommandTests: XCTestCase
 
 	func testParseArgumentsMinimal() throws
 	{
-		let request = try APICommand.parse(arguments: ["/tmp/photos", "/tmp/model.usdz"])
+		let request = try parseProcess(arguments: ["/tmp/photos", "/tmp/model.usdz"])
 		XCTAssertEqual(request.inputFolder.path, "/tmp/photos")
 		XCTAssertEqual(request.outputFile.path, "/tmp/model.usdz")
 		XCTAssertEqual(request.detail, .medium)
@@ -157,7 +160,7 @@ final class APICommandTests: XCTestCase
 
 	func testParseArgumentsWithOptions() throws
 	{
-		let request = try APICommand.parse(arguments: [
+		let request = try parseProcess(arguments: [
 			"/tmp/photos", "/tmp/model.usdz",
 			"--detail", "raw",
 			"--sample-ordering", "sequential",
@@ -173,7 +176,7 @@ final class APICommandTests: XCTestCase
 	func testParseArgumentsInvalidSubject()
 	{
 		XCTAssertThrowsError(
-			try APICommand.parse(arguments: ["/a", "/b.usdz", "--subject", "person"]))
+			try parseProcess(arguments: ["/a", "/b.usdz", "--subject", "person"]))
 		{ error in
 			XCTAssertEqual(
 				error as? APICommandError,
@@ -184,7 +187,7 @@ final class APICommandTests: XCTestCase
 	func testParseArgumentsShortOptionsAndOrder() throws
 	{
 		// オプションは位置引数の前後どちらでもよい。
-		let request = try APICommand.parse(arguments: [
+		let request = try parseProcess(arguments: [
 			"-d", "preview", "/tmp/photos", "/tmp/model.usdz",
 		])
 		XCTAssertEqual(request.detail, .preview)
@@ -193,7 +196,7 @@ final class APICommandTests: XCTestCase
 	func testParseArgumentsUnknownOption()
 	{
 		XCTAssertThrowsError(
-			try APICommand.parse(arguments: ["/a", "/b.usdz", "--turbo"]))
+			try parseProcess(arguments: ["/a", "/b.usdz", "--turbo"]))
 		{ error in
 			XCTAssertEqual(error as? APICommandError, .unknownOption("--turbo"))
 		}
@@ -201,7 +204,7 @@ final class APICommandTests: XCTestCase
 
 	func testParseArgumentsMissingPositional()
 	{
-		XCTAssertThrowsError(try APICommand.parse(arguments: ["/a"]))
+		XCTAssertThrowsError(try parseProcess(arguments: ["/a"]))
 		{ error in
 			XCTAssertEqual(error as? APICommandError, .missingArguments)
 		}
@@ -210,7 +213,7 @@ final class APICommandTests: XCTestCase
 	func testParseArgumentsMissingOptionValue()
 	{
 		XCTAssertThrowsError(
-			try APICommand.parse(arguments: ["/a", "/b.usdz", "--detail"]))
+			try parseProcess(arguments: ["/a", "/b.usdz", "--detail"]))
 		{ error in
 			XCTAssertEqual(error as? APICommandError, .missingParameter("--detail"))
 		}
@@ -219,7 +222,7 @@ final class APICommandTests: XCTestCase
 	func testParseArgumentsInvalidValue()
 	{
 		XCTAssertThrowsError(
-			try APICommand.parse(arguments: ["/a", "/b.usdz", "--detail", "gigantic"]))
+			try parseProcess(arguments: ["/a", "/b.usdz", "--detail", "gigantic"]))
 		{ error in
 			XCTAssertEqual(
 				error as? APICommandError,
@@ -249,6 +252,156 @@ final class APICommandTests: XCTestCase
 		])
 	}
 
+	// -----------------------------------------------------------------
+	// sort コマンド
+	//
+	// 外部連携の語彙は APICommand に 1 か所だけ、というルールを守るため、
+	// URL と CLI で同じ意味になることをここで固定する。
+	// -----------------------------------------------------------------
+
+	func testParseSortURL() throws
+	{
+		let url = URL(
+			string: "photogrammetry://sort?input=/tmp/photos&output=/tmp/sorted"
+				+ "&overlap=8&maxPerGroup=120&minPerGroup=15&timeGap=120"
+				+ "&groupThreshold=0.4&minSharpness=12.5&duplicateDistance=6"
+				+ "&link=copy&recursive=false&dryRun=true")!
+		let request = try parseSort(url: url)
+		XCTAssertEqual(request.inputFolder.path, "/tmp/photos")
+		XCTAssertEqual(request.outputFolder.path, "/tmp/sorted")
+		XCTAssertEqual(request.overlap, 8)
+		XCTAssertEqual(request.maxPerGroup, 120)
+		XCTAssertEqual(request.minPerGroup, 15)
+		XCTAssertEqual(request.timeGap, 120)
+		XCTAssertEqual(request.groupThreshold, 0.4)
+		XCTAssertEqual(request.minimumSharpness, 12.5)
+		XCTAssertEqual(request.duplicateDistance, 6)
+		XCTAssertEqual(request.link, .copy)
+		XCTAssertFalse(request.recursive)
+		XCTAssertTrue(request.dryRun)
+	}
+
+	func testParseSortURLMinimalUsesDefaults() throws
+	{
+		let url = URL(string: "photogrammetry://sort?input=/tmp/photos&output=/tmp/sorted")!
+		let request = try parseSort(url: url)
+		XCTAssertEqual(request.overlap, 15)
+		XCTAssertEqual(request.maxPerGroup, 150)
+		// 閾値は既定で「分布から自動決定」。固定値を持たない（設計メモ §10-5）。
+		XCTAssertNil(request.groupThreshold)
+		XCTAssertNil(request.minimumSharpness)
+		XCTAssertTrue(request.recursive)
+		XCTAssertFalse(request.dryRun)
+	}
+
+	func testParseSortURLInvalidNumber()
+	{
+		let url = URL(
+			string: "photogrammetry://sort?input=/a&output=/b&overlap=many")!
+		XCTAssertThrowsError(try APICommand.parse(url: url))
+		{ error in
+			XCTAssertEqual(
+				error as? APICommandError, .invalidValue(parameter: "overlap", value: "many"))
+		}
+	}
+
+	func testParseSortURLBooleanForms() throws
+	{
+		for (text, expected) in [("true", true), ("1", true), ("yes", true),
+			("false", false), ("0", false), ("no", false)]
+		{
+			let url = URL(
+				string: "photogrammetry://sort?input=/a&output=/b&dryRun=\(text)")!
+			XCTAssertEqual(try parseSort(url: url).dryRun, expected)
+		}
+		let bad = URL(string: "photogrammetry://sort?input=/a&output=/b&dryRun=maybe")!
+		XCTAssertThrowsError(try APICommand.parse(url: bad))
+	}
+
+	func testParseSortArguments() throws
+	{
+		let request = try parseSort(arguments: [
+			"sort", "/tmp/photos", "/tmp/sorted",
+			"--overlap", "8",
+			"--max-per-group", "120",
+			"--min-per-group", "15",
+			"--time-gap", "120",
+			"--group-threshold", "0.4",
+			"--min-sharpness", "12.5",
+			"--duplicate-distance", "6",
+			"--link", "symlink",
+			"--no-recursive",
+			"--dry-run",
+		])
+		XCTAssertEqual(request.inputFolder.path, "/tmp/photos")
+		XCTAssertEqual(request.outputFolder.path, "/tmp/sorted")
+		XCTAssertEqual(request.overlap, 8)
+		XCTAssertEqual(request.link, .symlink)
+		XCTAssertFalse(request.recursive)
+		XCTAssertTrue(request.dryRun)
+	}
+
+	func testParseSortArgumentsMissingPositional()
+	{
+		XCTAssertThrowsError(try APICommand.parse(arguments: ["sort", "/tmp/photos"]))
+		{ error in
+			XCTAssertEqual(error as? APICommandError, .missingSortArguments)
+		}
+	}
+
+	func testParseSortArgumentsUnknownOption()
+	{
+		XCTAssertThrowsError(
+			try APICommand.parse(arguments: ["sort", "/a", "/b", "--turbo"]))
+		{ error in
+			XCTAssertEqual(error as? APICommandError, .unknownOption("--turbo"))
+		}
+	}
+
+	func testProcessSubcommandIsAccepted() throws
+	{
+		// 明示的な process も受ける（URL スキームと語彙を揃えるため）。
+		let request = try parseProcess(arguments: ["process", "/tmp/photos", "/tmp/model.usdz"])
+		XCTAssertEqual(request.inputFolder.path, "/tmp/photos")
+	}
+
+	func testExistingPositionalFormStaysBackwardCompatible() throws
+	{
+		// サブコマンド名が無ければ従来どおり生成。既存のスクリプトを壊さない。
+		let command = try APICommand.parse(arguments: ["/tmp/photos", "/tmp/model.usdz"])
+		guard case .process = command
+		else
+		{
+			return XCTFail("サブコマンド省略時は process になりません")
+		}
+	}
+
+	func testSortArgumentsRoundTrip() throws
+	{
+		var request = SortRequest(
+			inputFolder: URL(fileURLWithPath: "/tmp/photos", isDirectory: true),
+			outputFolder: URL(fileURLWithPath: "/tmp/sorted", isDirectory: true),
+			overlap: 9,
+			maxPerGroup: 90,
+			minPerGroup: 12,
+			timeGap: 240,
+			groupThreshold: 0.35,
+			minimumSharpness: 8,
+			duplicateDistance: 5,
+			link: .copy,
+			recursive: false,
+			dryRun: true)
+		XCTAssertEqual(try parseSort(arguments: APICommand.arguments(for: request)), request)
+
+		// 自動決定に任せた項目は引数に出さない（出すと「自動」が失われる）。
+		request.groupThreshold = nil
+		request.minimumSharpness = nil
+		let arguments = APICommand.arguments(for: request)
+		XCTAssertFalse(arguments.contains("--group-threshold"))
+		XCTAssertFalse(arguments.contains("--min-sharpness"))
+		XCTAssertEqual(try parseSort(arguments: arguments), request)
+	}
+
 	func testArgumentsRoundTrip() throws
 	{
 		// 組み立てた引数をヘルパー（CLI）が同じ Request に戻せること。ここが
@@ -260,7 +413,7 @@ final class APICommandTests: XCTestCase
 			sampleOrdering: .sequential,
 			featureSensitivity: .high,
 			subject: .scene)
-		let parsed = try APICommand.parse(arguments: APICommand.arguments(for: request))
+		let parsed = try parseProcess(arguments: APICommand.arguments(for: request))
 		XCTAssertEqual(parsed, request)
 	}
 }
