@@ -67,6 +67,11 @@ Sources/
 - **仕分けは別プロセスにしなくてよい。** 別プロセス化が要るのは
   `CorePhotogrammetry` が `abort()` しうる生成だけで、`sort` は RealityKit を
   使わない（ImageIO / CoreGraphics のみ）。GUI からは同一プロセスで実行する。
+  ただし数千枚のデコードは数分かかるので、中断（`SortCancellation`）は用意する
+  — GUI に「キャンセル」を出す以上、効かないボタンにはしない。
+- **Core に機能を足したら GUI の入口も同時に足す。** ライブラリ / CLI / URL
+  スキームが GUI と同じ機能に届くことを保証する設計なので、逆に GUI だけ届かない
+  機能があってもいけない（`sort` は GUI 上部のモード切り替えから実行できる）。
 - **GUI からの生成は必ず別プロセス（同梱 `photogrammetry-cli`）で行う。**
   `CorePhotogrammetry` は内部エラーで `abort()` することがあり（実機で
   `com.apple.CorePhotogrammetry.session.recon` キューの SIGABRT を確認）、
