@@ -30,7 +30,17 @@ public final class HelperProcessEngine
 	/// 自分自身の実行ファイルと同じディレクトリに置かれる。
 	public static func bundledHelperURL(fileManager: FileManager = .default) -> URL?
 	{
-		guard let executable = Bundle.main.executableURL
+		helperURL(besideExecutable: Bundle.main.executableURL, fileManager: fileManager)
+	}
+
+	/// 指定した実行ファイルの隣にあるヘルパーを返す（無ければ nil）。
+	/// 実行ファイルの位置を引数に取るのは、探索規則をテストできるようにするため
+	/// （Bundle.main はテスト実行時には xctest を指し、差し替えられない）。
+	public static func helperURL(
+		besideExecutable executable: URL?,
+		fileManager: FileManager = .default) -> URL?
+	{
+		guard let executable
 		else
 		{
 			return nil
@@ -57,6 +67,9 @@ public final class HelperProcessEngine
 
 	/// ヘルパープロセスを起動して完了まで待つ。進捗は onEvent へ随時通知される。
 	/// ヘルパーが異常終了した場合は HelperProcessError.crashed を throw する。
+	///
+	/// インスタンスは 1 回の生成につき 1 つ（使い回さない）。起動前に届いた
+	/// cancel を取りこぼさないよう、状態はインスタンスの寿命と揃えてある。
 	public func process(
 		_ request: ReconstructionRequest,
 		onEvent: @escaping @Sendable (ReconstructionEvent) -> Void) async throws
@@ -75,7 +88,6 @@ public final class HelperProcessEngine
 		process.standardError = standardError
 
 		let state = self.state
-		state.reset()
 
 		standardOutput.fileHandleForReading.readabilityHandler =
 		{ handle in
@@ -324,7 +336,9 @@ private final class RunState: @unchecked Sendable
 }
 
 /// terminationHandler（任意のスレッド）から async な待ち側へ 1 回だけ合図する。
-private final class ExitSignal: @unchecked Sendable
+/// 合図が待ち始めるより先に来る場合（プロセスが即終了）と後から来る場合の
+/// 両方があるので、internal にしてどちらの順序も単体テストで確かめている。
+final class ExitSignal: @unchecked Sendable
 {
 	private let lock = NSLock()
 	private var hasExited = false
