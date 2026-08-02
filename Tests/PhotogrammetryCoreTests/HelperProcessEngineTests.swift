@@ -164,6 +164,36 @@ final class HelperProcessEngineTests: XCTestCase
 		XCTAssertEqual(events.all, [.progress(0.75)])
 	}
 
+	func testManyLinesAreDeliveredInOrder() async throws
+	{
+		// 大量の行が**順序どおり・取りこぼし無く**届くこと。読み取りは
+		// パイプから届いたぶんを溜めて改行で切り出すので、行がチャンクの
+		// 境界にまたがっても崩れないことをここで押さえる。
+		//
+		// なお終了直前の取りこぼし（`.completed` が消える競合）を確実に
+		// 踏ませるのは、行数を増やすほうではなく**書いてすぐ終了する**ほう
+		// （testProcessRunsHelperAndLogsMode がその形）。このテストは
+		// その競合の再現手段ではない。
+		let helper = try makeHelper(
+			"""
+			i=1
+			while [ $i -le 50 ]; do
+				printf 'progress=0.%03d\\n' "$i"
+				i=$((i + 1))
+			done
+			echo "output=$2"
+			echo "ok"
+			""")
+		let engine = HelperProcessEngine(helperURL: helper)
+		let events = EventLog()
+
+		try await engine.process(request) { events.append($0) }
+
+		let expected: [ReconstructionEvent] =
+			(1 ... 50).map { .progress(Double($0) / 1000) } + [.completed(request.outputFile)]
+		XCTAssertEqual(events.all, expected)
+	}
+
 	func testFailedExitWithoutMessage() async throws
 	{
 		let helper = try makeHelper("exit 3")
