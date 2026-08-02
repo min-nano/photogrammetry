@@ -218,6 +218,7 @@ scripts/
   install-update.sh        自動アップデートの差し替えスクリプト（.app に同梱）
   ci-debug.sh              CI debug ワークフローのクライアント
   ci-debug-job.sh          CI debug ワークフローのランナー側本体
+  wait-pr-checks.sh        PR / ブランチの CI 完了待ち（完了した瞬間に exit する）
 ```
 
 依存の向き: `PhotogrammetryCore` / `PhotogrammetryUpdater` は GUI（SwiftUI /
@@ -295,3 +296,24 @@ scripts/ci-debug.sh run --mode shell --script 'sw_vers; xcrun simctl list device
 トークンが読み取り専用の環境（Claude Code のリモートセッション等）では、起動を
 GitHub MCP（`actions_run_trigger`）で行い、`scripts/ci-debug.sh wait --label <label>`
 で合流します（詳細は `CLAUDE.md`「CI デバッグ」節）。
+
+### CI の完了待ち
+
+PR やブランチの CI が終わるのを待つには `scripts/wait-pr-checks.sh` を使います。
+完了した瞬間に exit するので、バックグラウンドに置いて別作業を続けられます
+（読み取り権限のトークンだけで動きます）。
+
+```bash
+scripts/wait-pr-checks.sh --pr 7
+scripts/wait-pr-checks.sh --ref claude/my-branch
+```
+
+出力の最後は `result=<success|failure|no-checks|timeout|pr-merged|pr-closed> …` の
+1 行で、終了ステータスは 0=成功 / 1=失敗 / 2=使い方・API エラー / 3=不明
+（タイムアウト・チェックなし）です。
+
+GitHub Actions は commit status ではなく check run を作るため、`GET
+/commits/{sha}/status`（combined status）は `total_count: 0` / `state: "pending"` を
+返し続けます。これを見て待つと CI が終わっても永久に待ち続けるので、このスクリプトは
+check runs・workflow runs・commit statuses の 3 経路を見たうえで、必ず有限時間で
+exit するようにしています（詳しい理由はスクリプト冒頭のコメント）。
