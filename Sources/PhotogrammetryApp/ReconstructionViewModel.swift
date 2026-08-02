@@ -131,20 +131,24 @@ final class ReconstructionViewModel: ObservableObject
 		let service = ReconstructionService()
 		self.service = service
 
+		// イベントはエンジンのスレッド（別プロセス実行なら読み取りスレッド）から
+		// 届くので、メインアクターへ持ち上げてから UI に反映する。self の弱参照は
+		// このクロージャで 1 回だけ捕らえる（入れ子で捕らえ直さない）。
+		let sink: @Sendable (ReconstructionEvent) -> Void =
+		{ [weak self] event in
+			Task
+			{ @MainActor in
+				self?.handle(event: event)
+			}
+		}
+
 		// self は @MainActor なので、この Task の本体はメインアクター上で走る。
-		// process の await 中だけ裏へ hop し、イベントは Task { @MainActor }
-		// で持ち上げる。
+		// process の await 中だけ裏へ hop する。
 		Task
 		{ [weak self] in
 			do
 			{
-				try await service.process(request)
-				{ event in
-					Task
-					{ @MainActor [weak self] in
-						self?.handle(event: event)
-					}
-				}
+				try await service.process(request, onEvent: sink)
 				self?.statusText = "完了"
 				self?.appendLog("完了")
 			}

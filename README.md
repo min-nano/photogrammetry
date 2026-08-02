@@ -14,6 +14,12 @@ macOS の **Object Capture**（RealityKit の `PhotogrammetrySession`）を使�
 ロジック（解析・生成・アップデート判定）は GUI から完全に分離されており、
 GUI はその薄いシェルにすぎません（下記「アーキテクチャ」）。
 
+GUI から実行したときの 3D 生成は、**同梱の `photogrammetry-cli` を子プロセスとして
+起動**して行います。macOS の Object Capture 本体（`CorePhotogrammetry`）は内部
+エラーで `abort()` することがあり、同一プロセスで動かしているとアプリごと落ちて
+しまうためです（この中断は Swift の `try` / `catch` では捕まえられません）。子
+プロセスなら落ちるのは子だけで、アプリは原因と対処方法をログとエラーに残します。
+
 ## 動作要件
 
 - macOS 14 以降
@@ -113,14 +119,33 @@ try await engine.process(request) { event in
 入力枚数がこの Mac のハードウェア上限（`PhotogrammetrySession.limits`）を超えると
 ログに警告が出ます。失敗する場合は写真を減らしてください。
 
+**処理の途中で「生成処理が異常終了しました（シグナル 6: SIGABRT）」と出る**
+macOS の Object Capture 本体（`CorePhotogrammetry`）が内部エラーで処理を中断
+した状態です。アプリ側では捕捉できない中断なので、**生成は別プロセス
+（同梱の `photogrammetry-cli`）で実行**しており、アプリとログはそのまま残ります。
+発生したときは次を試してください。
+
+1. 詳細度を下げる（プレビュー / 低）
+2. 写真の枚数を減らす、解像度の大きすぎる写真を外す
+3. 入力フォルダをクラウド（iCloud Drive / Google Drive）ではなく
+   ローカル（例: `~/Pictures`）へコピーする
+4. 対象の種類（物体 / シーン・建物）を撮影内容に合わせる
+5. 他の重いアプリを閉じてメモリを空ける
+
+毎回ほぼ同じ進捗で落ちる場合は、特定の写真や写真の組み合わせが原因である
+可能性が高いです（枚数を半分ずつに分けて試すと切り分けられます）。
+なお `シグナル 9: SIGKILL` で終わる場合はメモリ不足が疑われます。
+
 **エラーの詳細**
 失敗時はログ（GUI のログ欄 / CLI の stderr）にエラーの domain / code / userInfo が
 出ます。問い合わせ・調査の際はこの全文を添えてください。
 
 **クラウド上のフォルダが遅い・見つからない**
-Google Drive などのストリーミングフォルダは、実体が未ダウンロードだと読めない・
-非常に遅いことがあります。写真をローカル（例: `~/Pictures`）へコピーしてから
-実行するのが確実です。
+iCloud Drive・Google Drive などのストリーミングフォルダは、実体が未ダウンロード
+だと読めない・非常に遅いことがあります。処理の途中で実体が読めなくなると異常
+終了の原因にもなります。未ダウンロードのファイル（`.icloud`）があるとログに警告が
+出るので、Finder で「今すぐダウンロード」するか、写真をローカル（例: `~/Pictures`）
+へコピーしてから実行してください。
 
 ## 自動アップデート
 
@@ -142,7 +167,11 @@ Sources/
   PhotogrammetryCore/      ロジック本体（SwiftUI / AppKit 非依存）
     ReconstructionRequest  生成 1 回分の指示と検証
     APICommand             URL スキーム / CLI 引数 → Request（外部連携 API の唯一の定義）
+    ReconstructionService  実行方式（別プロセス / 同一プロセス）を決める入口
     PhotogrammetryEngine   RealityKit PhotogrammetrySession の唯一のラッパー
+    HelperProcessEngine    生成を別プロセス（photogrammetry-cli）で走らせる
+    HelperProtocol         ヘルパーの stdout 行の書式（CLI と GUI の対）
+    InputInspection        入力フォルダの事前チェック（枚数・iCloud の未ダウンロード）
   PhotogrammetryUpdater/   自動アップデート
     UpdateFeed             Releases JSON → チャンネル一覧・更新判定（純ロジック）
     UpdaterService         ネットワーク・ダウンロード・差し替え起動（Foundation のみ）
