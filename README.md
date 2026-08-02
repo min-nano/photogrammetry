@@ -26,6 +26,9 @@ GUI から実行したときの 3D 生成は、**同梱の `photogrammetry-cli` 
 - Object Capture 対応 Mac（Apple Silicon、または 4GB 以上の GPU を積んだ Intel Mac。
   非対応機ではアプリが起動時に警告を出し、生成は実行できません）
 - 写真は 20〜200 枚程度、対象物を全方向から重なりを持たせて撮影したもの
+  （建物 1 棟・現場全体のようにこの枚数を大きく超える場合は、
+  `photogrammetry-cli sort` で仕分けてからグループごとに生成します。
+  仕分け自体は Object Capture 非対応の Mac でも実行できます）
 
 ## インストール
 
@@ -151,9 +154,20 @@ GUI アプリは `photogrammetry://` スキームを宣言しています。パ�
 open "photogrammetry://process?input=/Users/me/photos&output=/Users/me/model.usdz&detail=full"
 ```
 
-パラメータ: `input`（必須）/ `output`（必須）/ `detail` / `ordering` /
-`sensitivity` / `subject`。語彙は CLI と共通で、解釈は `PhotogrammetryCore` の
-`APICommand` に一元化されています。
+```bash
+open "photogrammetry://sort?input=/Users/me/現場&output=/Users/me/仕分け&overlap=15"
+```
+
+パラメータ:
+
+- `process`: `input`（必須）/ `output`（必須）/ `detail` / `ordering` /
+  `sensitivity` / `subject`
+- `sort`: `input`（必須）/ `output`（必須）/ `overlap` / `maxPerGroup` /
+  `minPerGroup` / `timeGap` / `groupThreshold` / `minSharpness` /
+  `duplicateDistance` / `link` / `recursive` / `dryRun`
+
+語彙は CLI と共通で、解釈は `PhotogrammetryCore` の `APICommand` に一元化されて
+います。
 
 ### Swift ライブラリ
 
@@ -187,9 +201,14 @@ try await engine.process(request) { event in
    写真と 70% 程度重なるように 20〜200 枚」。記録用に歩き回って撮った写真の
    寄せ集めでは、視点のつながりが復元できず失敗します。
 
+建物 1 棟・現場全体のように**そもそも 1 回で解けない量**を撮った場合は、
+`photogrammetry-cli sort` で仕分けてからグループごとに生成してください
+（上記「大量の写真を仕分ける」）。`--dry-run` を付ければ、どこが繋がらないかを
+数分で確認できます。
+
 **枚数の上限**
 入力枚数がこの Mac のハードウェア上限（`PhotogrammetrySession.limits`）を超えると
-ログに警告が出ます。失敗する場合は写真を減らしてください。
+ログに警告が出ます。失敗する場合は写真を減らすか、`sort` で分割してください。
 
 **毎回まったく同じ進捗で「生成処理が異常終了しました（シグナル 6: SIGABRT）」と出る**
 まずこれを疑ってください。**機械学習モデルのキャッシュ破損**です。Object Capture は
@@ -269,6 +288,18 @@ Sources/
     HelperProtocol         ヘルパーの stdout 行の書式（CLI と GUI の対）
     InputInspection        入力フォルダの事前チェック（枚数・iCloud の未ダウンロード）
     ModelCache             ML モデルのキャッシュ破損の見分けと削除
+    Preprocess/            大量の写真の仕分け（sort）
+      PhotoMetadata        写真 1 枚分の事実（時刻・位置・露出・指紋・品質）
+      PhotoInspector       ImageIO / CoreGraphics の唯一のラッパー
+      ImageStatistics      ブレ・露出・知覚ハッシュの計算（純ロジック）
+      ThresholdEstimator   分布から閾値を決める判別分析（純ロジック）
+      QualityFilter        寄与しない写真の除外（純ロジック）
+      PhotoGrouping        証拠の合算 → グループと隣接（純ロジック）
+      SortPlan             重複付き分割の計画（純ロジック）
+      SortDiagnostics      撮り直しの判断材料（純ロジック）
+      SortManifest         manifest.json の定義（sort と merge の契約）
+      SortRequest          仕分け 1 回分の指示と検証
+      PhotoSorter          計画の実行（走査・配置・書き出し）
   PhotogrammetryUpdater/   自動アップデート
     UpdateFeed             Releases JSON → チャンネル一覧・更新判定（純ロジック）
     UpdaterService         ネットワーク・ダウンロード・差し替え起動（Foundation のみ）

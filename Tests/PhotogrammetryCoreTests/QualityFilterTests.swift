@@ -12,7 +12,8 @@ import XCTest
 
 final class QualityFilterTests: XCTestCase
 {
-	/// 鮮鋭度だけを変えた n 枚。
+	/// 鮮鋭度だけを変えた n 枚。指紋は互いに大きく離す（ここで見たいのはブレの
+	/// 判定であって、ほぼ同一の除去ではないため）。
 	func photos(sharpness values: [Double]) -> [PhotoMetadata]
 	{
 		values.enumerated().map
@@ -20,7 +21,7 @@ final class QualityFilterTests: XCTestCase
 			SamplePhoto.make(
 				index: index,
 				secondsFromEpoch: Double(index) * 5,
-				hash: UInt64(index) << 8,
+				hash: UInt64(index) &* 0x9E37_79B9_7F4A_7C15,
 				sharpness: value)
 		}
 	}

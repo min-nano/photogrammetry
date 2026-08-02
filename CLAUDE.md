@@ -31,6 +31,18 @@ Sources/
     HelperProtocol         ヘルパーの stdout 行の書式（CLI ↔ GUI の対）
     InputInspection        入力フォルダの事前チェック（純ロジック）
     ModelCache             ML モデルのキャッシュ破損の見分け・場所・削除
+    Preprocess/            大量の写真の仕分け（sort。docs/design-preprocess-merge.md）
+      PhotoMetadata        写真 1 枚分の事実（値型・Sendable）
+      PhotoInspector       ImageIO / CoreGraphics を叩く唯一の層  ← ラッパー
+      ImageStatistics      画素 → ブレ・露出・知覚ハッシュ        ← 純ロジック
+      ThresholdEstimator   分布 → 閾値（判別分析）               ← 純ロジック
+      QualityFilter        寄与しない写真の除外                  ← 純ロジック
+      PhotoGrouping        証拠の合算 → グループ + 隣接           ← 純ロジック
+      SortPlan             重複付き分割の計画                    ← 純ロジック
+      SortDiagnostics      不足の指摘（撮り直しの判断材料）      ← 純ロジック
+      SortManifest         manifest.json の Codable 定義         ← 純ロジック
+      SortRequest          仕分け 1 回分の指示 + validate        ← 純ロジック
+      PhotoSorter          計画の実行（FileManager・配置）
   PhotogrammetryUpdater/   自動アップデート
     UpdateFeed             Releases JSON → チャンネル一覧・更新判定（純ロジック・I/O なし）
     UpdaterService         ネットワーク・展開・差し替え起動（Foundation のみ）
@@ -44,8 +56,17 @@ Sources/
 - RealityKit の型は `PhotogrammetryEngine.swift` の外に漏らさない
   （API 表現は `ReconstructionRequest` の自前 enum。変換表はエンジン内に 1 つだけ）。
 - 外部連携のパラメータ語彙（`input` / `output` / `detail` / `ordering` /
-  `sensitivity` / `subject`）は `APICommand` に **1 か所だけ**定義する。入口
-  （URL / CLI）を増やす・変えるときは `APICommand` とそのテストを同時に更新する。
+  `sensitivity` / `subject` / `overlap` / `maxPerGroup` / …）は `APICommand` に
+  **1 か所だけ**定義する。入口（URL / CLI）やコマンド（`process` / `sort`）を
+  増やす・変えるときは `APICommand` とそのテストを同時に更新する。CLI は
+  サブコマンド名が無ければ `process` として解釈する（既存呼び出しの後方互換）。
+- 仕分け（`sort`）の出力 `manifest.json`（`SortManifest`）は、フェーズ 3 の
+  `merge` との**唯一の契約**。`adjacency`（どのグループがどの写真を共有して
+  いるか）が合成の対応点の在処になる。`UpdateFeed` と `build.yml` の関係と同じで、
+  片方を変えるときは必ず両方＋テストを更新する。
+- **仕分けは別プロセスにしなくてよい。** 別プロセス化が要るのは
+  `CorePhotogrammetry` が `abort()` しうる生成だけで、`sort` は RealityKit を
+  使わない（ImageIO / CoreGraphics のみ）。GUI からは同一プロセスで実行する。
 - **GUI からの生成は必ず別プロセス（同梱 `photogrammetry-cli`）で行う。**
   `CorePhotogrammetry` は内部エラーで `abort()` することがあり（実機で
   `com.apple.CorePhotogrammetry.session.recon` キューの SIGABRT を確認）、
