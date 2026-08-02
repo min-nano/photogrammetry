@@ -56,6 +56,14 @@ Sources/
   （`isSupported` で弾かれるならその出力自体が調査結果）。
 - GUI（ViewModel）はロジックを持たないので専用テストは置かない。テストしたい
   判断が ViewModel に生えてきたら、それは Core / Updater へ下ろすサイン。
+- **カバレッジ**は `test.yml` の `coverage` ジョブが `swift test
+  --enable-code-coverage` + `llvm-cov` で計測し、PR に表（🟢/🟡/🔴、全体 +
+  この PR が変更した行だけの diff カバレッジ）を sticky コメントとして投稿し、
+  しきい値未満ならジョブを失敗させる（ゲート）。`PhotogrammetryEngine.swift`
+  （RealityKit/GPU 依存）と `UpdaterService.swift`（ネットワーク I/O）は
+  上記の「自動テストしない」方針どおり集計から除外している — 含めると分母が
+  常に薄まりしきい値が意味を失うため。しきい値・除外規則は `test.yml` の
+  `coverage` ジョブに 1 か所だけ定義されている。
 
 ## Swift コード規約
 
@@ -71,14 +79,17 @@ Sources/
 
 - ローカル: `swift build` / `swift test`。`.app` の組み立ては
   `scripts/package-app.sh`（SwiftPM は .app を作れないため）。
-- CI はテストとビルドで別ワークフローに分離している。
-  - `test.yml`: macos-15 ランナーで `swift test` のみを行う。`workflow_call` /
-    `workflow_dispatch` で起動する reusable workflow で、単体では発火しない
-    （push / pull_request のトリガは `build.yml` 側にしか無い）。
+- CI はテストとビルドで完全に独立した 2 本のワークフローに分かれている。
+  同じ push（main）/ pull_request イベントで起動するが、`needs` などでは
+  互いに繋がず**並列に走る**（ビルドの結果を待たずにテストの結果が見え、
+  テストの結果を待たずにビルドが進む）。テスト・ビルドの合否は branch
+  protection の required checks 側で見る。
+  - `test.yml`: macos-15 ランナーで 2 ジョブ。`test`（`swift test`）→
+    `coverage`（`test` 通過後だけ、カバレッジ計測して PR にコメント・
+    しきい値でゲート。テスト方針節を参照）。
   - `build.yml`: `ctx` ジョブで commit/ref/リリースチャンネルを解決し、
-    `test`（`test.yml` を呼び出す）→ `build-mac`（ユニバーサルビルド →
-    `.app` 組み立て → ad-hoc 署名 → zip）→ `release` の順に `needs` で直列化
-    する。テストが落ちればビルド・リリースは走らない。
+    `build-mac`（ユニバーサルビルド → `.app` 組み立て → ad-hoc 署名 → zip）
+    → `release` の順に `needs` で直列化する。
   - main への push → タグ `stable` のローリングリリース（削除して作り直し）。
   - PR への push → タグ `dev-<slug>` のプレリリース（同上）。fork PR は公開不可。
   - ブランチ削除 → `cleanup-dev-release.yml` がプレリリースを掃除。
