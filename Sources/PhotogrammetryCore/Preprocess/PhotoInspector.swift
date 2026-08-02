@@ -122,6 +122,7 @@ public struct PhotoInspector: PhotoMetadataReading, Sendable
 	/// - Returns: 読めた写真と、読めなかったファイルの相対パス。
 	public func inspectAll(
 		_ files: [PhotoFile],
+		isCancelled: (@Sendable () -> Bool)? = nil,
 		progress: (@Sendable (Int, Int) -> Void)? = nil)
 		-> (photos: [PhotoMetadata], unreadable: [String])
 	{
@@ -134,6 +135,12 @@ public struct PhotoInspector: PhotoMetadataReading, Sendable
 		let inspector = self
 		DispatchQueue.concurrentPerform(iterations: files.count)
 		{ index in
+			// concurrentPerform 自体は途中で止められないので、残りの反復を
+			// 空振りさせる。1 枚のデコードぶんだけ待てば抜けられる。
+			if isCancelled?() == true
+			{
+				return
+			}
 			let file = files[index]
 			if let metadata = try? inspector.read(file)
 			{

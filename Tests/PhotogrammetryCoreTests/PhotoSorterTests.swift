@@ -205,6 +205,22 @@ final class PhotoSorterTests: XCTestCase
 		XCTAssertTrue(names.allSatisfy { $0.hasPrefix("1F_") || $0.hasPrefix("2F_") })
 	}
 
+	func testCancellationStopsBeforeWritingAnything() throws
+	{
+		// 数千枚のデコードは数分かかる。フォルダを選び間違えたときに待たされ
+		// ないための逃げ道で、**途中まで作ったフォルダを残さない**ことが要点
+		// （残すと次回「仕分け先が空でない」で止まる）。
+		let photos = try makePhotos()
+		let cancellation = SortCancellation()
+		cancellation.cancel()
+		XCTAssertThrowsError(
+			try makeSorter(photos).run(makeRequest(), cancellation: cancellation))
+		{ error in
+			XCTAssertEqual(error as? SortError, .cancelled)
+		}
+		XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+	}
+
 	func testEmptyInputIsAnError() throws
 	{
 		XCTAssertThrowsError(try makeSorter([]).run(makeRequest()))

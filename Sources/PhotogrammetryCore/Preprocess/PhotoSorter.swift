@@ -34,6 +34,33 @@ public enum SortLayout
 	}
 }
 
+/// 仕分けの中断フラグ。数千枚のデコードは数分かかることがあるので、フォルダを
+/// 選び間違えたときに待たされないための逃げ道を用意する。
+///
+/// 生成（`PhotogrammetryEngine.cancel`）と違ってセッションを持たないため、
+/// 「各段の切れ目で見る真偽値」で足りる。スレッドを跨ぐのでロックで守る。
+public final class SortCancellation: @unchecked Sendable
+{
+	private let lock = NSLock()
+	private var cancelled = false
+
+	public init() {}
+
+	public func cancel()
+	{
+		lock.lock()
+		cancelled = true
+		lock.unlock()
+	}
+
+	public var isCancelled: Bool
+	{
+		lock.lock()
+		defer { lock.unlock() }
+		return cancelled
+	}
+}
+
 public struct PhotoSorter: Sendable
 {
 	/// 写真からメタデータを読む役。
@@ -53,10 +80,21 @@ public struct PhotoSorter: Sendable
 	public func run(
 		_ request: SortRequest,
 		fileManager: FileManager = .default,
+		cancellation: SortCancellation? = nil,
 		progress: @escaping @Sendable (ReconstructionEvent) -> Void = { _ in }) throws
 		-> SortManifest
 	{
 		try request.validate(fileManager: fileManager)
+
+		// 中断は各段の切れ目で見る。途中まで作ったフォルダを残すと「前回の結果と
+		// 混ざる」ので、配置を始める前に必ず抜ける。
+		func checkCancellation() throws
+		{
+			if cancellation?.isCancelled == true
+			{
+				throw SortError.cancelled
+			}
+		}
 
 		// --- 走査 ---
 		let outputPath = request.outputFolder.standardizedFileURL.path
@@ -74,7 +112,8 @@ public struct PhotoSorter: Sendable
 		progress(.note("写真 \(files.count) 枚を解析します…"))
 
 		// --- 解析（時間の大半はここ） ---
-		let inspected = readAll(files, progress: progress)
+		let inspected = readAll(files, cancellation: cancellation, progress: progress)
+		try checkCancellation()
 		if !inspected.unreadable.isEmpty
 		{
 			progress(.note("読み取れなかったファイル: \(inspected.unreadable.count) 件"))
@@ -122,6 +161,7 @@ public struct PhotoSorter: Sendable
 			return manifest
 		}
 
+		try checkCancellation()
 		// 配置元は「走査で見つかった全ファイル」から引く。読めなかったファイルも
 		// _excluded/unreadable/ へ残すため（除外した写真は捨てない）。
 		let sources = Dictionary(
@@ -150,6 +190,7 @@ public struct PhotoSorter: Sendable
 	/// 読み手（テスト）なら 1 件ずつ順に読む。
 	func readAll(
 		_ files: [PhotoFile],
+		cancellation: SortCancellation? = nil,
 		progress: @escaping @Sendable (ReconstructionEvent) -> Void)
 		-> (photos: [PhotoMetadata], unreadable: [String])
 	{
@@ -161,7 +202,9 @@ public struct PhotoSorter: Sendable
 			{ fraction in
 				progress(.progress(fraction))
 			}
-			return inspector.inspectAll(files)
+			return inspector.inspectAll(
+				files,
+				isCancelled: { cancellation?.isCancelled == true })
 			{ done, total in
 				throttle.record(Double(done) / Double(total))
 			}
@@ -171,6 +214,10 @@ public struct PhotoSorter: Sendable
 		var unreadable: [String] = []
 		for (index, file) in files.enumerated()
 		{
+			if cancellation?.isCancelled == true
+			{
+				break
+			}
 			if let metadata = try? reader.read(file)
 			{
 				photos.append(metadata)
@@ -371,6 +418,7 @@ public struct PhotoSorter: Sendable
 public enum SortError: Error, LocalizedError, Equatable
 {
 	case noImages(String)
+	case cancelled
 
 	public var errorDescription: String?
 	{
@@ -378,6 +426,8 @@ public enum SortError: Error, LocalizedError, Equatable
 		{
 			case .noImages(let path):
 				return "画像ファイルが見つかりません: \(path)"
+			case .cancelled:
+				return "仕分けを中断しました。"
 		}
 	}
 }

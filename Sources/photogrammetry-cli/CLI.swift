@@ -113,11 +113,19 @@ struct PhotogrammetryCLI
 			// 上限は「この Mac のハードウェア上限」と設定値の小さいほうで
 			// 診断する。上限を知っているのは RealityKit だけなので Core から渡す。
 			let sorter = PhotoSorter(hardwareLimit: ReconstructionService.maximumImageCount)
-			try sorter.run(request)
+			let cancellation = SortCancellation()
+			installSignalHandler { cancellation.cancel() }
+			try sorter.run(request, cancellation: cancellation)
 			{ event in
 				emit(HelperProtocol.encode(event))
 			}
 			emit(HelperProtocol.finishedLine)
+			exit(0)
+		}
+		catch SortError.cancelled
+		{
+			// 中断は失敗ではない。生成と同じ約束（cancelled + 終了コード 0）で返す。
+			emit(HelperProtocol.encode(.cancelled))
 			exit(0)
 		}
 		catch
@@ -167,15 +175,18 @@ struct PhotogrammetryCLI
 	/// 親プロセス（GUI）からは「異常終了」と区別が付かないため。
 	static func installCancelHandler(engine: PhotogrammetryEngine)
 	{
+		installSignalHandler { engine.cancel() }
+	}
+
+	/// SIGINT / SIGTERM を任意の後始末へ振り替える（生成と仕分けで共用）。
+	static func installSignalHandler(_ handler: @escaping @Sendable () -> Void)
+	{
 		for number in [SIGINT, SIGTERM]
 		{
 			// DispatchSource で扱うので既定ハンドラは無効化する。
 			signal(number, SIG_IGN)
 			let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
-			source.setEventHandler
-			{
-				engine.cancel()
-			}
+			source.setEventHandler(handler: handler)
 			source.resume()
 			// ソースは解放されると監視も止まるので、プロセスが終わるまで保持する。
 			signalSources.append(source)
