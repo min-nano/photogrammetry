@@ -439,7 +439,16 @@ final class PhotoSorterTests: XCTestCase
 	// 重なりの確認（設計メモ §4.6.1）
 	// -----------------------------------------------------------------
 
-	/// 共有写真の選定だけに重なりを使う経路（フェーズ 2.5 と同じ動作）。
+	/// **棄却した経路**（グループ分けにも重なりを使う。設計メモ §4.9.2）を明示的に
+	/// 有効にする。既定では切ってあるので、この経路のテストだけが自分で入れる。
+	func makeOverlapGroupingRequest() -> SortRequest
+	{
+		var request = makeRequest()
+		request.overlapGrouping = true
+		return request
+	}
+
+	/// 共有写真の選定だけに重なりを使う経路（既定・フェーズ 2.5 と同じ動作）。
 	/// **グループ分けに重なりを使うと、この道具立てでは題材にならない** — この
 	/// 偽の役はすべての組に同じ答えを返すので、「全部重なる」なら 60 枚が
 	/// 1 グループになり、「全部重ならない」なら全員が孤立してしまう。
@@ -481,14 +490,16 @@ final class PhotoSorterTests: XCTestCase
 		XCTAssertTrue(manifest.diagnostics.contains { $0.code == "noVisualOverlap" })
 	}
 
-	/// 既定の経路（フェーズ 2.6）。**グループ分けが重なりグラフで決まったことが
-	/// manifest から読めなければならない** — 仕分け結果の読み方が変わる情報なので。
+	/// **グループ分けが重なりグラフで決まったことが manifest から読めなければ
+	/// ならない** — 仕分け結果の読み方が変わる情報なので。既定では使わないが
+	/// （§4.9.2 で棄却）、配管は残してあるので経路は固定しておく。
 	func testOverlapGroupingIsRecordedInTheManifest() throws
 	{
 		let photos = try makePhotos()
 		// すべての組が重なる（＝ひと続きの場所を撮った）現場。
 		let verifier = FakeOverlapVerifier(answer: FakeOverlapVerifier.sample)
-		let manifest = try makeSorter(photos, verifier: verifier).run(makeRequest())
+		let manifest = try makeSorter(photos, verifier: verifier)
+			.run(makeOverlapGroupingRequest())
 
 		XCTAssertTrue(manifest.settings.overlapGrouping)
 		let graph = try XCTUnwrap(manifest.statistics.overlapGraph)

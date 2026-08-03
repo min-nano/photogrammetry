@@ -231,10 +231,11 @@ final class SortRequestTests: XCTestCase
 	func testOverlapGroupingRequiresOverlapCheck()
 	{
 		var request = makeRequest()
-		XCTAssertTrue(request.usesOverlapGrouping)
-		request.overlapGrouping = false
+		// 既定では使わない（設計メモ §4.9.2 で棄却）。
+		XCTAssertFalse(request.overlapGrouping)
 		XCTAssertFalse(request.usesOverlapGrouping)
 		request.overlapGrouping = true
+		XCTAssertTrue(request.usesOverlapGrouping)
 		request.overlapCheck = false
 		XCTAssertFalse(request.usesOverlapGrouping)
 	}
