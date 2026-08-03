@@ -1468,6 +1468,75 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		windows.append(window)
 	}
 
+	// --- はぐれの吸収 ---
+	//
+	// **グラフ上で孤立した写真は、そのままだと 1 枚の窓になる。** 合成サンプルで
+	// 実際にそうなった（48 枚が 37 個の窓に散った）。実データでも次数 0 の写真は
+	// 必ず出るので、ここを塞がないと「1 枚の窓」を Object Capture へ投げることに
+	// なる。**最も見た目の近い写真がいる窓へ入れる**（設計 §1.2 のとおり、混ぜる
+	// コストは低い）。
+	let minimumWindow = max(10, capacity / 10)
+	var strays: [Int] = []
+	var kept: [[Int]] = []
+	for window in windows
+	{
+		if window.count >= minimumWindow
+		{
+			kept.append(window)
+		}
+		else
+		{
+			strays.append(contentsOf: window)
+		}
+	}
+	let strayCount = strays.count
+	if !kept.isEmpty, !strays.isEmpty
+	{
+		// 受け入れ側の写真 → 窓の番号
+		var owner: [Int: Int] = [:]
+		for (index, window) in kept.enumerated()
+		{
+			for node in window
+			{
+				owner[node] = index
+			}
+		}
+		let hosts = Array(owner.keys).sorted()
+		vectors.withUnsafeBufferPointer
+		{ buffer in
+			guard let base = buffer.baseAddress
+			else
+			{
+				return
+			}
+			for stray in strays
+			{
+				var bestHost = hosts[0]
+				var bestDistance = Double.infinity
+				for host in hosts
+				{
+					let value = distance(base, stray, host, width)
+					if value < bestDistance
+					{
+						bestDistance = value
+						bestHost = host
+					}
+				}
+				if let index = owner[bestHost]
+				{
+					kept[index].append(stray)
+				}
+			}
+		}
+	}
+	if kept.isEmpty
+	{
+		// 十分な大きさの窓が 1 つも作れなかった（グラフがほぼ空）。
+		// 全部を 1 つの窓にして、判断は Object Capture へ渡す。
+		kept = [Array(0 ..< total)]
+	}
+	windows = kept
+
 	// --- 窓の中の並び（設計 §3.4）: 端から端への幅優先 ---
 	func localOrder(_ window: [Int]) -> [Int]
 	{
@@ -1540,7 +1609,15 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	print("")
 	print("■ 支持成長で作った窓（EXIF 不使用・設計 §3.1）")
 	print("  相互 \(neighbourCount) 近傍 \(edgesBefore) 本 → 共通近傍フィルタ後 \(edgesAfter) 本")
-	print("  窓 \(windows.count) 個")
+	var degrees: [Int: Int] = [:]
+	for row in graph
+	{
+		degrees[row.count, default: 0] += 1
+	}
+	let isolated = degrees[0] ?? 0
+	print("  次数 0（どこにも繋がらない写真）: \(isolated) 枚"
+		+ "  平均次数 \(String(format: "%.1f", Double(2 * edgesAfter) / Double(max(1, total))))")
+	print("  窓 \(windows.count) 個（小さすぎて解体し、最も近い窓へ入れた写真 \(strayCount) 枚）")
 	print("  番号  枚数  新規  コンダクタンス  撮影順の中央値  撮影順の広がり  時刻なし")
 	for (index, window) in windows.enumerated()
 	{
