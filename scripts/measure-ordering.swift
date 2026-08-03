@@ -78,7 +78,7 @@ else
 
 let root = URL(fileURLWithPath: inputPath, isDirectory: true).standardizedFileURL
 
-func log(_ message: String)
+@Sendable func log(_ message: String)
 {
 	FileHandle.standardError.write(Data("\(message)\n".utf8))
 }
@@ -193,7 +193,7 @@ final class Collector: @unchecked Sendable
 }
 
 /// "+09:00" 形式のオフセットを TimeZone にする（PhotoInspector と同じ）。
-func timeZone(fromOffset text: String) -> TimeZone?
+@Sendable func timeZone(fromOffset text: String) -> TimeZone?
 {
 	let trimmed = text.trimmingCharacters(in: .whitespaces)
 	guard trimmed.count >= 3, let sign = trimmed.first, sign == "+" || sign == "-"
@@ -213,7 +213,7 @@ func timeZone(fromOffset text: String) -> TimeZone?
 }
 
 /// 撮影時刻。サブ秒まで読むのは、連写だと秒が同じになって順序が崩れるため。
-func captureDate(exif: [CFString: Any], offset: String?) -> Date?
+@Sendable func captureDate(exif: [CFString: Any], offset: String?) -> Date?
 {
 	guard let text = exif[kCGImagePropertyExifDateTimeOriginal] as? String
 	else
@@ -239,7 +239,7 @@ func captureDate(exif: [CFString: Any], offset: String?) -> Date?
 }
 
 /// 露出値 EV（ISO 100 換算）。APEX の定義そのまま。
-func exposureValue(exif: [CFString: Any]) -> Double?
+@Sendable func exposureValue(exif: [CFString: Any]) -> Double?
 {
 	let aperture = (exif[kCGImagePropertyExifFNumber] as? NSNumber)?.doubleValue
 	let time = (exif[kCGImagePropertyExifExposureTime] as? NSNumber)?.doubleValue
@@ -257,7 +257,7 @@ func exposureValue(exif: [CFString: Any]) -> Double?
 }
 
 /// ファイル名末尾の連番（PhotoMetadata.sequenceNumber と同じ）。
-func sequenceNumber(fromName name: String) -> Int?
+@Sendable func sequenceNumber(fromName name: String) -> Int?
 {
 	let stem = (name as NSString).deletingPathExtension
 	var digits: [Character] = []
@@ -331,7 +331,7 @@ func elements(of observation: VNFeaturePrintObservation) -> [Float]?
 
 /// 単位ベクトルへ正規化する。距離を「向きの違い」だけで測るため
 /// （FeaturePrint.init と同じ。生の長さは OS のリビジョンで変わりうる）。
-func normalized(_ values: [Float]) -> [Float]?
+@Sendable func normalized(_ values: [Float]) -> [Float]?
 {
 	guard !values.isEmpty, values.allSatisfy({ $0.isFinite })
 	else
@@ -355,7 +355,7 @@ func normalized(_ values: [Float]) -> [Float]?
 /// 解析用の縮小画像。**320 px は本体（PhotoInspector.thumbnailSize）と同じ。**
 /// feature print の入力が 299 四方なので、これより小さいと拡大されてから
 /// 特徴を取ることになる（＝測っているものが本体とずれる）。
-func thumbnail(source: CGImageSource) -> CGImage?
+@Sendable func thumbnail(source: CGImageSource) -> CGImage?
 {
 	let options: [CFString: Any] = [
 		kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -365,7 +365,7 @@ func thumbnail(source: CGImageSource) -> CGImage?
 	return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
 }
 
-func read(url: URL, relativePath: String) -> Record?
+@Sendable func read(url: URL, relativePath: String) -> Record?
 {
 	guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
 		CGImageSourceGetCount(source) > 0
@@ -503,7 +503,7 @@ for (index, entry) in series.enumerated()
 /// 単位ベクトル同士の距離（0.0〜1.0）。FeaturePrint.distance と同じ定義だが、
 /// ‖a-b‖² = 2 - 2(a・b) を使って内積 1 本で求める（全ペアを回すので効く）。
 @inline(__always)
-func distance(
+@Sendable func distance(
 	_ buffer: UnsafePointer<Float>, _ leftIndex: Int, _ rightIndex: Int, _ dimension: Int) -> Double
 {
 	let left = buffer + leftIndex * dimension
@@ -727,6 +727,13 @@ func format(_ value: Double, _ digits: Int = 3) -> String
 	value.isNaN ? "—" : String(format: "%.\(digits)f", value)
 }
 
+/// 右詰めで桁を揃える。`String(format:)` の `%N@` は Darwin では幅指定が効かず、
+/// 表が崩れる（実際に崩れたので自前で詰める）。
+func pad(_ text: String, _ width: Int) -> String
+{
+	text.count >= width ? text : String(repeating: " ", count: width - text.count) + text
+}
+
 let randomMedian = median(randomDistances)
 let neighbourMedian = median(distancesByOffset[1] ?? [])
 let continuousMedian = median(continuousNeighbourDistances)
@@ -811,20 +818,18 @@ print("  GPS あり  \(photos.filter(\.hasLocation).count) 枚")
 
 print("")
 print("■ 撮影順の隔たりごとの視覚距離（中央値）")
-print("  隔たり     中央値   25%     75%     組数")
+print("  " + pad("隔たり", 8) + pad("中央値", 9) + pad("25%", 8) + pad("75%", 8) + pad("組数", 9))
 for offset in offsets
 {
 	let values = (distancesByOffset[offset] ?? []).sorted()
-	print(String(
-		format: "  %5d   %7@ %7@ %7@ %8d",
-		offset,
-		format(percentile(values, 0.5)) as NSString,
-		format(percentile(values, 0.25)) as NSString,
-		format(percentile(values, 0.75)) as NSString,
-		values.count))
+	print("  " + pad("\(offset)", 8)
+		+ pad(format(percentile(values, 0.5)), 8)
+		+ pad(format(percentile(values, 0.25)), 8)
+		+ pad(format(percentile(values, 0.75)), 8)
+		+ pad("\(values.count)", 9))
 }
-print(String(format: "  無関係  %7@                  %8d", format(randomMedian) as NSString,
-	randomDistances.count))
+print("  " + pad("無関係", 8) + pad(format(randomMedian), 8) + pad("", 16)
+	+ pad("\(randomDistances.count)", 9))
 
 /// 無関係な組の水準の 90% に達する隔たり＝「そこまで離れると重なりが期待できない」
 /// 目安。共有区間はこれより短くしない（§3.2 の重なり率の根拠になる）。
@@ -850,21 +855,24 @@ print("  → 0.6 未満なら設計を進めてよい。1.0 に近ければ撮�
 
 print("")
 print("■ 判定 2: feature print の「上位 k 件」で候補ペアを出せるか（提示手順 Step 1）")
-print("  隣人      平均順位   上位5    上位10   上位30   上位50")
+print("  " + pad("隣人", 6) + pad("平均順位", 11)
+	+ topKs.map { pad("上位\($0)", 9) }.joined())
 for (offsetIndex, offset) in neighbourOffsets.enumerated()
 {
 	let attempts = max(1, trials[offsetIndex])
 	let rates = topKs.indices.map { Double(hits[offsetIndex][$0]) / Double(attempts) }
-	print(String(
-		format: "  ±%d  %10.1f %8@ %8@ %8@ %8@",
-		offset,
-		rankSum[offsetIndex] / Double(attempts),
-		format(rates[0], 2) as NSString,
-		format(rates[1], 2) as NSString,
-		format(rates[2], 2) as NSString,
-		format(rates[3], 2) as NSString))
+	print("  " + pad("±\(offset)", 6)
+		+ pad(format(rankSum[offsetIndex] / Double(attempts), 1), 11)
+		+ rates.map { pad(format($0, 2), 9) }.joined())
 }
-print("  → ±1 の「上位30」が 0.5 未満なら Step 1 は成立しない（Step 2 の候補も作れない）")
+// **無作為に選んだ相手でもこの割合は出る**（k 件のうち当たる確率）。上の行と
+// 比べられないと「上位 30 に 0.7 入った」を signal と読み違える — 実際に
+// 合成サンプル（枚数が少なく k が全体に近い）で 0.73 が出た。
+let chance = topKs.map { min(1.0, Double($0) / Double(max(1, count - 1))) }
+print("  " + pad("無作為", 6) + pad("\(count / 2)", 11)
+	+ chance.map { pad(format($0, 2), 9) }.joined())
+print("  → ±1 が「無作為」の行を明確に上回らなければ Step 1 は成立しない")
+print("    （目安: 上位30 が 0.5 以上、かつ無作為の 3 倍以上）")
 
 print("")
 print("■ 距離の分布（隣り合う組）")
@@ -874,16 +882,12 @@ print("■ 距離の分布（無関係な組）")
 histogram(randomDistances).forEach { print($0) }
 
 let neighbourRecall = Double(hits[0][2]) / Double(max(1, trials[0]))
+/// 無作為でも当たる割合に対する倍率。**割合そのものではなくこの倍率で判断する。**
+let recallLift = neighbourRecall / max(0.000_001, chance[2])
 let verdict = ratio.isNaN ? "unknown" : (ratio < 0.6 ? "go" : (ratio < 0.8 ? "weak" : "no-go"))
-let step1 = neighbourRecall >= 0.5 ? "ok" : "weak"
+let step1 = neighbourRecall >= 0.5 && recallLift >= 3 ? "ok" : "weak"
 print("")
-print(String(
-	format: "result=%@ step1=%@ ratio=%@ ratio_continuous=%@ recall1@30=%@ ordering=%@ "
-		+ "foreign=%d n=%d",
-	verdict, step1,
-	format(ratio) as NSString,
-	format(continuousRatio) as NSString,
-	format(neighbourRecall, 2) as NSString,
-	orderingSource.rawValue,
-	foreign.count,
-	count))
+print("result=\(verdict) step1=\(step1) ratio=\(format(ratio))"
+	+ " ratio_continuous=\(format(continuousRatio))"
+	+ " recall1@30=\(format(neighbourRecall, 2)) lift=\(format(recallLift, 1))"
+	+ " ordering=\(orderingSource.rawValue) foreign=\(foreign.count) n=\(count)")
