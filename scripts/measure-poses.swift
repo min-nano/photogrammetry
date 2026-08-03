@@ -47,12 +47,15 @@
 //                           reduced で得た倍率は二巡構成に最も不利な値になる）
 //    --subject scene|object 既定 scene（建物・部屋。object マスキングを切る）
 //    --timeout 1800         1 回の実行の上限（秒）。超えたら中断して次へ進む
+//    --drop-blurriest 20    窓の中でブレの大きい下位 N% を落としてから投げる。
+//                           既存の QualityFilter が error 6 を救えるかを試す
 //    --download             iCloud Drive の未ダウンロードをまとめて落としてから進む
 //    --list                 添字 → ファイル名の対応を出して終わる。どの写真が
 //                           start=N にあるかを手元で確かめるため（**ファイル名を
 //                           含むので共有向けではない**）
 //
 
+import CoreGraphics
 import Foundation
 import ImageIO
 import RealityKit
@@ -84,6 +87,9 @@ var listOnly = false
 var timeoutSeconds: TimeInterval = 1800
 /// iCloud Drive の未ダウンロードをまとめて落としてから進む（`--download`）。
 var downloadFirst = false
+/// 窓の中で**ブレの大きい下位 N%** を落としてから投げる（`--drop-blurriest`）。
+/// 既存の QualityFilter が error 6 を救えるかを直接試すための設定。
+var dropBlurriestPercent = 0
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -122,6 +128,8 @@ while !arguments.isEmpty
 			listOnly = true
 		case "--download":
 			downloadFirst = true
+		case "--drop-blurriest":
+			dropBlurriestPercent = Int(value()) ?? 0
 		case "--timeout":
 			timeoutSeconds = Double(value()) ?? timeoutSeconds
 		case "-h", "--help":
@@ -129,7 +137,8 @@ while !arguments.isEmpty
 				+ "[--starts 0,400,600] [--mode poses|model|both] "
 				+ "[--ordering unordered|sequential|both] "
 				+ "[--sensitivity normal|high|both] [--detail reduced] "
-				+ "[--subject scene|object] [--timeout 1800] [--download] [--list]")
+				+ "[--subject scene|object] [--drop-blurriest 20] [--timeout 1800] "
+				+ "[--download] [--list]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -397,14 +406,107 @@ if listOnly
 	exit(0)
 }
 
+
+/// 解析用の縮小画像。**320 px は本体（PhotoInspector.thumbnailSize）と同じ。**
+@Sendable func thumbnail(of url: URL) -> CGImage?
+{
+	guard let source = CGImageSourceCreateWithURL(url as CFURL, nil)
+	else
+	{
+		return nil
+	}
+	let options: [CFString: Any] = [
+		kCGImageSourceCreateThumbnailFromImageAlways: true,
+		kCGImageSourceCreateThumbnailWithTransform: true,
+		kCGImageSourceThumbnailMaxPixelSize: 320,
+	]
+	return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+}
+
+/// ラプラシアン分散（ブレの指標）。**ImageStatistics と同じ式**にしてあるので、
+/// ここで効くと分かれば `--min-sharpness` の検討にそのまま使える。
+@Sendable func sharpness(of url: URL) -> Double
+{
+	guard let image = thumbnail(of: url)
+	else
+	{
+		return 0
+	}
+	let width = image.width
+	let height = image.height
+	guard width > 2, height > 2,
+		let context = CGContext(
+			data: nil, width: width, height: height, bitsPerComponent: 8,
+			bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(),
+			bitmapInfo: CGImageAlphaInfo.none.rawValue)
+	else
+	{
+		return 0
+	}
+	context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+	guard let data = context.data
+	else
+	{
+		return 0
+	}
+	let bytes = data.bindMemory(to: UInt8.self, capacity: context.bytesPerRow * height)
+	let stride = context.bytesPerRow
+	var sum = 0.0
+	var sumOfSquares = 0.0
+	var count = 0
+	for y in 1 ..< (height - 1)
+	{
+		for x in 1 ..< (width - 1)
+		{
+			let value =
+				Double(bytes[(y - 1) * stride + x]) + Double(bytes[(y + 1) * stride + x])
+				+ Double(bytes[y * stride + x - 1]) + Double(bytes[y * stride + x + 1])
+				- 4 * Double(bytes[y * stride + x])
+			sum += value
+			sumOfSquares += value * value
+			count += 1
+		}
+	}
+	guard count > 0
+	else
+	{
+		return 0
+	}
+	let mean = sum / Double(count)
+	return max(0, sumOfSquares / Double(count) - mean * mean)
+}
+
 /// 指定区間の窓を作る。ハードリンク（同一ボリューム外ならコピー）。
-func makeWindow(start: Int, count: Int) throws -> URL
+/// **ブレの大きい下位 N% を落とす**設定なら、ここで落としてから並べる。
+func makeWindow(start: Int, count: Int) throws -> (folder: URL, dropped: Int)
 {
 	let folder = FileManager.default.temporaryDirectory
 		.appendingPathComponent("measure-poses-\(start)-\(count)", isDirectory: true)
 	try? FileManager.default.removeItem(at: folder)
 	try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-	for (index, photo) in ordered.dropFirst(start).prefix(count).enumerated()
+	var slice = Array(ordered.dropFirst(start).prefix(count))
+	var dropped = 0
+	if dropBlurriestPercent > 0, slice.count > 2
+	{
+		// 鋭さは並行に測る（1 枚ずつだと窓ごとに数十秒かかる）。
+		let lock = NSLock()
+		var values = [Double](repeating: 0, count: slice.count)
+		let urls = slice.map(\.url)
+		DispatchQueue.concurrentPerform(iterations: urls.count)
+		{ index in
+			let value = sharpness(of: urls[index])
+			lock.lock()
+			values[index] = value
+			lock.unlock()
+		}
+		let threshold = values.sorted()[
+			min(values.count - 1, values.count * dropBlurriestPercent / 100)]
+		let kept = slice.indices.filter { values[$0] > threshold }
+		dropped = slice.count - kept.count
+		// **撮影順は保つ**（sequential を名乗るため）。
+		slice = kept.map { slice[$0] }
+	}
+	for (index, photo) in slice.enumerated()
 	{
 		// 並び順が名前でも保たれるようにしておく（--ordering sequential のとき、
 		// Object Capture はフォルダ内の順序を見るため）。
@@ -419,7 +521,7 @@ func makeWindow(start: Int, count: Int) throws -> URL
 			try FileManager.default.copyItem(at: photo.url, to: destination)
 		}
 	}
-	return folder
+	return (folder, dropped)
 }
 
 /// 窓の中身（レンズの混在と撮影の所要時間）。error 6 との相関を見るため。
@@ -568,6 +670,8 @@ struct Measurement
 	var skipped = 0
 	var invalid = 0
 	var downsampled = false
+	/// ブレで落とした枚数（`--drop-blurriest`）。
+	var dropped = 0
 	var peakBytes: UInt64 = 0
 	/// 段階名 → その段階が最初に現れた時刻（開始からの秒）。
 	var stageStarts: [(String, TimeInterval)] = []
@@ -604,7 +708,9 @@ func measure(
 	let folder: URL
 	do
 	{
-		folder = try makeWindow(start: start, count: count)
+		let window = try makeWindow(start: start, count: count)
+		folder = window.folder
+		measurement.dropped = window.dropped
 	}
 	catch
 	{
@@ -750,10 +856,10 @@ func line(
 	let window = describeWindow(start: start, count: count)
 	return String(
 		format: "run mode=%@ start=%d count=%d ordering=%@ sensitivity=%@ elapsed=%.1f posed=%d "
-			+ "skipped=%d invalid=%d downsampled=%@ peak=%@ span=%.0f lenses=%@ stages=%@ "
-			+ "result=%@",
+			+ "skipped=%d invalid=%d dropped=%d downsampled=%@ peak=%@ span=%.0f lenses=%@ "
+			+ "stages=%@ result=%@",
 		mode.rawValue, start, count, ordering, sensitivity, measurement.elapsed, measurement.posed,
-		measurement.skipped, measurement.invalid,
+		measurement.skipped, measurement.invalid, measurement.dropped,
 		measurement.downsampled ? "yes" : "no",
 		gigabytes(measurement.peakBytes),
 		window.span, window.lenses,
