@@ -190,14 +190,12 @@ func ensureMaterialized(_ urls: [URL], download: Bool)
 	guard download
 	else
 	{
-		log("""
-			iCloud Drive にまだ実体の無い写真が \(pending.count)/\(urls.count) 枚あります。
-            このまま読むと 1 枚ずつダウンロードが走って**止まったように見えます**。
-            次のどれかをしてください。
-              1. --download を付けて実行する（まとめて落として進みます）
-              2. Finder でフォルダを右クリック →「今すぐダウンロード」
-              3. ローカルへコピーしてからそちらを指定する（いちばん速い）
-			""")
+		log("iCloud Drive にまだ実体の無い写真が \(pending.count)/\(urls.count) 枚あります。")
+		log("このまま読むと 1 枚ずつダウンロードが走って**止まったように見えます**。")
+		log("次のどれかをしてください。")
+		log("  1. --download を付けて実行する（まとめて落として進みます）")
+		log("  2. Finder でフォルダを右クリック →「今すぐダウンロード」")
+		log("  3. ローカルへコピーしてからそちらを指定する（いちばん速い）")
 		exit(4)
 	}
 	log("iCloud からのダウンロードを開始します（\(pending.count) 枚）")
