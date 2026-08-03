@@ -1205,7 +1205,14 @@ if let neighbourCount = seriateK, neighbourCount > 0, count > 10
 		// B = cI - L（L = D - W）の最大固有ベクトルを、定数ベクトルを
 		// 除きながら冪乗法で求める。それが L の第 2 固有ベクトル。
 		let shift = 2 * (degree.max() ?? 1)
-		var vector = (0 ..< size).map { Double($0 % 2 == 0 ? 1 : -1) * (1 + Double($0) / Double(size)) }
+		// 初期ベクトルは決定的に散らす（乱数を使わないので結果が再現する）。
+		var vector = [Double](repeating: 0, count: size)
+		for position in 0 ..< size
+		{
+			let sign: Double = position % 2 == 0 ? 1 : -1
+			let magnitude = 1 + Double(position) / Double(size)
+			vector[position] = sign * magnitude
+		}
 		for _ in 0 ..< 4000
 		{
 			var next = [Double](repeating: 0, count: size)
