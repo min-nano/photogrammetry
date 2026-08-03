@@ -197,15 +197,25 @@ note=共有写真の候補 96 組を実際に位置合わせして確かめま�
 note=警告: group-02 は視覚的に別の場所の写真が混ざっています（room-01 55%・room-04 45%）— …
 ```
 
-仕分けたあとは、グループごとに通常どおり生成します。グループは**撮影順の連続
-区間**になるので `--sample-ordering sequential` が効きます。建物・部屋は
+仕分けたあとは、グループごとに通常どおり生成します。建物・部屋は
 `--subject scene`（オブジェクトマスキング無効）が必須です。
 
+`--sample-ordering sequential` は**そのグループの写真が撮影順の一続きのときだけ**
+効きます。重なりで仕分けると「一度離れて戻ってきた撮影」が同じグループへ入る
+ことがあり、そのグループでは撮影順が途切れます（隣り合わない 2 枚を隣だと言う
+ことになるので、かえってアライメントを崩します）。どちらなのかは
+`manifest.json` の `groups[].sequential` と診断（`groupNotSequential`）で分かります。
+
 ```bash
-for g in ~/Desktop/仕分け/group-*; do
-    photogrammetry-cli "$g" "$HOME/Desktop/$(basename "$g").usdz" \
-        --subject scene --sample-ordering sequential
-done
+python3 - <<'EOF' > /tmp/order.sh
+import json
+for g in json.load(open("/Users/me/Desktop/仕分け/manifest.json"))["groups"]:
+    print(g["id"], "sequential" if g["sequential"] else "unordered")
+EOF
+while read -r id order; do
+    photogrammetry-cli ~/Desktop/仕分け/"$id" "$HOME/Desktop/$id.usdz" \
+        --subject scene --sample-ordering "$order"
+done < /tmp/order.sh
 ```
 
 複数モデルを 1 つの座標系へ合成する `merge` はフェーズ 3 で実装予定です

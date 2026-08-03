@@ -91,14 +91,32 @@ public enum SortDiagnostics
 
 		// 次にやることを必ず 1 行で示す。仕分けただけでは何も出来上がっていないので、
 		// ここで手が止まると `sort` の価値が出ない。オプションの推奨には理由がある
-		// — グループは撮影順の連続区間になるので sequential が効き、建物・部屋は
-		// オブジェクトマスキングが破綻するので scene が要る（README「エラー 6」）。
+		// — 建物・部屋はオブジェクトマスキングが破綻するので scene が要り
+		// （README「エラー 6」）、順序のヒントは**そのグループが撮影順の一続きの
+		// ときだけ**効く。重なりで仕分けると一度離れて戻ってきた撮影が同じ
+		// グループへ入るので、常に sequential とは限らなくなった（§4.9）。
 		diagnostics.append(SortDiagnostic(
 			severity: .info,
 			code: "nextStep",
 			message: "次はグループごとに再構成します。例: "
 				+ "photogrammetry-cli <仕分け先>/\(plan.groups[0].id) \(plan.groups[0].id).usdz"
-				+ " --subject scene --sample-ordering sequential"))
+				+ " --subject scene --sample-ordering "
+				+ (plan.groups[0].sequential ? "sequential" : "unordered")))
+
+		// **順序のヒントを与えてはいけないグループは名指しする。** 撮影順に
+		// 並んでいない束に sequential を与えると、隣り合わない 2 枚を隣だと
+		// 言うことになり、かえってアライメントを崩す。
+		let interrupted = plan.groups.filter { !$0.sequential }
+		if !interrupted.isEmpty
+		{
+			diagnostics.append(SortDiagnostic(
+				severity: .info,
+				code: "groupNotSequential",
+				message: "\(interrupted.map(\.id).joined(separator: "・")) は撮影順が"
+					+ "途切れています（一度離れて戻ってきた撮影を、実際に重なっている"
+					+ "ので同じグループにまとめました）。このグループだけは "
+					+ "--sample-ordering unordered で再構成してください。"))
+		}
 
 		if plan.groups.count == 1
 		{

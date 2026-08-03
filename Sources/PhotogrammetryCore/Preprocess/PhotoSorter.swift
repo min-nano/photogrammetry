@@ -367,6 +367,7 @@ public struct PhotoSorter: Sendable
 					shared: $0.shared,
 					evidence: $0.evidence.map(\.rawValue),
 					rooms: $0.rooms,
+					sequential: $0.sequential,
 					captureStart: $0.captureStart,
 					captureEnd: $0.captureEnd)
 			},

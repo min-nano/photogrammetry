@@ -32,6 +32,8 @@ public struct SortManifest: Codable, Equatable, Sendable
 	/// どのグループも再構成が成立する形で出ていることが構成上保証される。
 	/// `settings.groupThreshold` の意味もこのとき変わり、**合算スコアではなく
 	/// 画素の一致度の閾値**になる（`groupThresholdWasAutomatic` は false）。
+	/// あわせて `groups[].sequential` を足した — グループが撮影順の連続区間とは
+	/// 限らなくなったので、順序のヒントを使ってよいかを読み手へ伝える必要がある。
 	///
 	/// 項目が増えたので古い manifest はそのままでは読み戻せない。読み手はまだ
 	/// 存在しない（`merge` はフェーズ 3）ので、移行の仕組みは持たない。
@@ -290,6 +292,11 @@ public struct SortManifest: Codable, Equatable, Sendable
 		/// このグループが写している場所（視覚クラスタ）の識別子。枚数の多い順。
 		/// 2 つ以上並んでいれば、そのグループには別の場所が混ざっている。
 		public var rooms: [String]
+		/// このフォルダの写真が**撮影順の途切れない一続き**か。
+		/// true なら再構成で `--sample-ordering sequential` を使ってよい。false は
+		/// 一度離れて戻ってきた撮影が同じグループに入っている印で、そのときに
+		/// 順序のヒントを与えると外れる（設計メモ §4.9）。
+		public var sequential: Bool
 		public var captureStart: Date?
 		public var captureEnd: Date?
 
@@ -299,9 +306,11 @@ public struct SortManifest: Codable, Equatable, Sendable
 			shared: [String],
 			evidence: [String],
 			rooms: [String],
+			sequential: Bool = true,
 			captureStart: Date?,
 			captureEnd: Date?)
 		{
+			self.sequential = sequential
 			self.id = id
 			self.photos = photos
 			self.shared = shared

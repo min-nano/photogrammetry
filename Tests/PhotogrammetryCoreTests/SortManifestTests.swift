@@ -118,6 +118,9 @@ final class SortManifestTests: XCTestCase
 			// ここから読む（なっていれば、どのグループも再構成が成立する）。
 			"\"overlapGraph\"", "\"overlapGrouping\"", "\"overlapBudget\"",
 			"\"budgetExhausted\"", "\"agreementHistogram\"",
+			// 順序のヒントを使ってよいか。撮影順が途切れたグループに sequential を
+			// 与えると、隣り合わない 2 枚を隣だと言うことになる。
+			"\"sequential\"",
 		]
 		{
 			XCTAssertTrue(json.contains(key), "\(key) が manifest にありません")

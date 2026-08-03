@@ -33,6 +33,14 @@ public struct SortPlan: Equatable, Sendable
 		/// このグループが写している場所（視覚クラスタ）の識別子。枚数の多い順。
 		/// **2 つ以上あればグループに別の場所が混ざっている**（診断で指摘する）。
 		public var rooms: [String]
+		/// このフォルダの写真が**撮影順の途切れない一続き**か。
+		///
+		/// **`--sample-ordering sequential` を勧めてよいかがこれで決まる。** フェーズ 2.5
+		/// までは常に true だった（グループは撮影順の連続区間を切ったものだったので）。
+		/// 重なりでグループ分けすると、**一度離れて戻ってきた撮影が同じグループへ入る**
+		/// ので、そうとは限らなくなる（設計メモ §4.9）。順序のヒントは「隣り合う写真は
+		/// 重なっている」という前提なので、途切れているグループに与えると外れる。
+		public var sequential: Bool
 		/// 撮影時刻の範囲（分かる場合）。診断で「どの時間帯の塊か」を示す。
 		public var captureStart: Date?
 		public var captureEnd: Date?
@@ -43,6 +51,7 @@ public struct SortPlan: Equatable, Sendable
 			shared: [String],
 			evidence: [EvidenceKind],
 			rooms: [String] = [],
+			sequential: Bool = true,
 			captureStart: Date? = nil,
 			captureEnd: Date? = nil)
 		{
@@ -51,6 +60,7 @@ public struct SortPlan: Equatable, Sendable
 			self.shared = shared
 			self.evidence = evidence
 			self.rooms = rooms
+			self.sequential = sequential
 			self.captureStart = captureStart
 			self.captureEnd = captureEnd
 		}
@@ -291,6 +301,7 @@ public enum SortPlanner
 				shared: shared.sorted().map { photos[$0].relativePath },
 				evidence: grouping.usedEvidence,
 				rooms: rooms(of: group.members, grouping: grouping),
+				sequential: isSequential(all),
 				captureStart: dates.first,
 				captureEnd: dates.last)
 		}
@@ -565,6 +576,18 @@ public enum SortPlanner
 			// 近い順。同じ距離なら結合スコアの高い順（結果を決定的にする）。
 			$0.distance == $1.distance ? $0.pair.score > $1.pair.score : $0.distance < $1.distance
 		}.map(\.pair)
+	}
+
+	/// 撮影順に並べた添字が**途切れない一続き**か。`sorted` 済みの添字を渡すこと。
+	/// 1 枚以下なら順序の問題自体が起きないので true。
+	static func isSequential(_ sorted: [Int]) -> Bool
+	{
+		guard let first = sorted.first, let last = sorted.last
+		else
+		{
+			return true
+		}
+		return last - first == sorted.count - 1
 	}
 
 	/// 写真の集合が写している場所（視覚クラスタ）を、枚数の多い順に並べる。

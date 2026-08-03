@@ -327,6 +327,13 @@ final class OverlapGraphTests: XCTestCase
 		XCTAssertTrue(first.isSuperset(of: Set(0 ..< 15)))
 		XCTAssertTrue(first.isSuperset(of: Set(30 ..< 40)), "戻ってきた区画が同じグループへ")
 		XCTAssertEqual(grouping.groups[1].members, Array(15 ..< 30))
+
+		// **撮影順が途切れたことを伝えなければならない。** このグループに
+		// --sample-ordering sequential を与えると、隣り合わない 2 枚を隣だと
+		// 言うことになる（設計メモ §4.9）。
+		let plan = SortPlanner.plan(grouping: grouping, settings: SortPlanner.Settings())
+		XCTAssertFalse(plan.groups[0].sequential, "戻ってきた区画を含むので一続きではない")
+		XCTAssertTrue(plan.groups[1].sequential)
 	}
 
 	/// **1 組も判定できなければ合算スコアへ丸ごと戻る。** 確認が答えを出せない
