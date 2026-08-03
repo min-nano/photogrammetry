@@ -437,6 +437,26 @@ public struct PhotoInspector: PhotoMetadataReading, Sendable
 		return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
 	}
 
+	/// 位置合わせ（`ImageRegistrar`）のために 1 枚読む。**Vision へ渡す画像と、
+	/// 画素の一致を測るためのグレースケールを同じ 1 回のデコードから作る** —
+	/// 重なりの検証は候補ペアの数だけデコードするので、ここで 2 度読むと所要時間が
+	/// そのまま倍になる。
+	///
+	/// 読めなければ nil。**「重なっていない」ではなく「判定できない」**として
+	/// 扱われる（PhotoOverlap の nil）。
+	public func registrationImage(at url: URL) -> (image: CGImage, gray: GrayImage)?
+	{
+		guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+			CGImageSourceGetCount(source) > 0,
+			let image = thumbnail(source: source),
+			let gray = grayscale(image: image)
+		else
+		{
+			return nil
+		}
+		return (image, GrayImage(pixels: gray.pixels, width: gray.width, height: gray.height))
+	}
+
 	/// 縮小画像からグレースケール画素を取り出す。
 	func grayscale(image: CGImage) -> (pixels: [UInt8], width: Int, height: Int)?
 	{

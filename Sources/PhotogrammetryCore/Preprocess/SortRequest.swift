@@ -51,6 +51,13 @@ public struct SortRequest: Equatable, Sendable
 	public var visualEvidence: Bool
 	/// 同じ場所とみなす視覚特徴の距離（0.0〜1.0）。nil なら分布から自動決定する。
 	public var visualThreshold: Double?
+	/// 共有写真の候補を**実際に位置合わせして**重なりを確かめるか（既定は true）。
+	/// 見た目の近さだけでは、白い壁ばかりの屋内で別の場所の写真が共有写真に
+	/// 混ざる（設計メモ §4.6.1）。切ると速くなるが、合成の対応点は当てにならなくなる。
+	public var overlapCheck: Bool
+	/// 重なっていると認める画素の一致度（0.0〜1.0）。nil なら既定値
+	/// （`SortPlanner.Settings`）を使う。厳しくすると共有写真は減るが確かになる。
+	public var overlapAgreement: Double?
 	/// ファイルの配置方法。
 	public var link: LinkStrategy
 	/// サブフォルダも走査するか。撮影者が階・部屋で分けている場合、その分けかた
@@ -71,6 +78,8 @@ public struct SortRequest: Equatable, Sendable
 		duplicateDistance: Int = 4,
 		visualEvidence: Bool = true,
 		visualThreshold: Double? = nil,
+		overlapCheck: Bool = true,
+		overlapAgreement: Double? = nil,
 		link: LinkStrategy = .hardlink,
 		recursive: Bool = true,
 		dryRun: Bool = false)
@@ -86,6 +95,8 @@ public struct SortRequest: Equatable, Sendable
 		self.duplicateDistance = duplicateDistance
 		self.visualEvidence = visualEvidence
 		self.visualThreshold = visualThreshold
+		self.overlapCheck = overlapCheck
+		self.overlapAgreement = overlapAgreement
 		self.link = link
 		self.recursive = recursive
 		self.dryRun = dryRun
@@ -129,6 +140,10 @@ public struct SortRequest: Equatable, Sendable
 		if let threshold = visualThreshold, !(0 ... 1).contains(threshold)
 		{
 			throw SortRequestError.invalidSetting("visualThreshold", "0.0〜1.0 を指定してください")
+		}
+		if let agreement = overlapAgreement, !(0 ... 1).contains(agreement)
+		{
+			throw SortRequestError.invalidSetting("overlapAgreement", "0.0〜1.0 を指定してください")
 		}
 		// 出力フォルダの中身を黙って混ぜない。既存の group-NN が残っていると
 		// 前回の仕分け結果と混ざり、どの写真がどのグループのものか分からなくなる。
@@ -191,7 +206,12 @@ public struct SortRequest: Equatable, Sendable
 	/// 仕分け計画の設定へ翻訳する。
 	public var plannerSettings: SortPlanner.Settings
 	{
-		SortPlanner.Settings(overlap: overlap)
+		var settings = SortPlanner.Settings(overlap: overlap)
+		if let agreement = overlapAgreement
+		{
+			settings.minimumOverlapAgreement = agreement
+		}
+		return settings
 	}
 }
 

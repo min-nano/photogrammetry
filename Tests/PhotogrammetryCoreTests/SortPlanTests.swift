@@ -249,13 +249,13 @@ final class SortPlanTests: XCTestCase
 		// 判定材料があるときは、重なっている組だけを採る。
 		let selected = SortPlanner.selectSharedPhotos(
 			link: link, photos: photos, sceneBar: 0.2, settings: SortPlanner.Settings(overlap: 4))
-		XCTAssertEqual(selected.sorted(), [0, 1])
+		XCTAssertEqual(selected.photos.sorted(), [0, 1])
 
 		// 判定材料が無ければ従来どおりスコア順（視覚特徴が取れない現場で
 		// 隣接が 1 本も作れなくなってはいけない）。
 		let fallback = SortPlanner.selectSharedPhotos(
 			link: link, photos: photos, sceneBar: nil, settings: SortPlanner.Settings(overlap: 4))
-		XCTAssertEqual(fallback.sorted(), [0, 1, 2, 3])
+		XCTAssertEqual(fallback.photos.sorted(), [0, 1, 2, 3])
 	}
 
 	func testAdjacencyIsDroppedWhenNothingActuallyOverlaps()
@@ -269,7 +269,7 @@ final class SortPlanTests: XCTestCase
 		let link = GroupLink(
 			a: 0, b: 1, confidence: 0.9, candidates: [PairScore(i: 0, j: 1, score: 0.95)])
 		XCTAssertTrue(SortPlanner.selectSharedPhotos(
-			link: link, photos: photos, sceneBar: 0.2, settings: SortPlanner.Settings()).isEmpty)
+			link: link, photos: photos, sceneBar: 0.2, settings: SortPlanner.Settings()).photos.isEmpty)
 	}
 
 	func testSharedPhotoSelectionFallsBackWhenDiversityCannotBeMet()
@@ -284,6 +284,196 @@ final class SortPlanTests: XCTestCase
 		let link = GroupLink(a: 0, b: 1, confidence: 0.9, candidates: candidates)
 		let selected = SortPlanner.selectSharedPhotos(
 			link: link, photos: photos, sceneBar: nil, settings: SortPlanner.Settings(overlap: 8))
-		XCTAssertEqual(selected.count, 8)
+		XCTAssertEqual(selected.photos.count, 8)
+	}
+
+	// -----------------------------------------------------------------
+	// 実際に重なっているかの検証（設計メモ §4.6.1）
+	// -----------------------------------------------------------------
+
+	/// 問い合わせを記録する差し替え用の検証役。判定は「相対パスの組」で決める。
+	final class FakeOverlapProbe: @unchecked Sendable
+	{
+		/// 重なっていると答える写真の添字（両方が含まれる組だけを認める）。
+		let overlapping: Set<Int>
+		/// 判定できないと答える写真の添字。
+		let undecided: Set<Int>
+		private let lock = NSLock()
+		private(set) var asked: [OverlapQuery] = []
+
+		init(overlapping: Set<Int>, undecided: Set<Int> = [])
+		{
+			self.overlapping = overlapping
+			self.undecided = undecided
+		}
+
+		/// 添字は SamplePhoto.make(index:) の番号（ファイル名から復元する）。
+		func number(of url: URL) -> Int
+		{
+			let name = url.deletingPathExtension().lastPathComponent
+			return Int(name.replacingOccurrences(of: "IMG_", with: "")) ?? -1
+		}
+
+		var probe: SortPlanner.OverlapProbe
+		{
+			{ [self] queries in
+				lock.lock()
+				asked.append(contentsOf: queries)
+				lock.unlock()
+				return queries.map
+				{ query in
+					let a = number(of: query.a)
+					let b = number(of: query.b)
+					if undecided.contains(a) || undecided.contains(b)
+					{
+						return nil
+					}
+					guard overlapping.contains(a), overlapping.contains(b)
+					else
+					{
+						return PhotoOverlap.none
+					}
+					return PhotoOverlap(agreement: 0.9, sharedArea: 0.6)
+				}
+			}
+		}
+	}
+
+	func makeVerificationLink() -> (link: GroupLink, photos: [PhotoMetadata])
+	{
+		// 4 枚。0〜1 は本当に重なっている組で、2〜3 はスコアだけ高い別の場所。
+		let photos = (1 ... 4).map { SamplePhoto.make(index: $0, hash: 0x0F) }
+		let link = GroupLink(
+			a: 0, b: 1, confidence: 0.9,
+			candidates: [PairScore(i: 2, j: 3, score: 0.99), PairScore(i: 0, j: 1, score: 0.20)])
+		return (link, photos)
+	}
+
+	/// **これが §4.6.1 の本題。** 見た目でも順序でも上位に来る組が、実際には
+	/// 重なっていないことがある。位置合わせで確かめて落とす。
+	func testOverlapVerificationDropsPairsThatDoNotActuallyOverlap()
+	{
+		let (link, photos) = makeVerificationLink()
+		let probe = FakeOverlapProbe(overlapping: [1, 2])
+		let selection = SortPlanner.selectSharedPhotos(
+			link: link,
+			photos: photos,
+			sceneBar: nil,
+			settings: SortPlanner.Settings(overlap: 4),
+			verifyOverlap: probe.probe)
+		XCTAssertEqual(selection.photos.sorted(), [0, 1])
+		XCTAssertEqual(selection.verified, 1)
+		XCTAssertEqual(selection.rejected, 1)
+		XCTAssertEqual(selection.undecided, 0)
+	}
+
+	func testAdjacencyIsDroppedWhenVerificationRejectsEverything()
+	{
+		let (link, photos) = makeVerificationLink()
+		let probe = FakeOverlapProbe(overlapping: [])
+		let selection = SortPlanner.selectSharedPhotos(
+			link: link,
+			photos: photos,
+			sceneBar: nil,
+			settings: SortPlanner.Settings(overlap: 4),
+			verifyOverlap: probe.probe)
+		XCTAssertTrue(selection.photos.isEmpty)
+		XCTAssertEqual(selection.rejected, 2)
+	}
+
+	/// 判定できなかった組は落とさない。**分からないことを理由に候補を捨てると、
+	/// 白い壁ばかりの現場で隣接が 1 本も作れなくなる。**
+	func testUndecidedPairsAreKept()
+	{
+		let (link, photos) = makeVerificationLink()
+		let probe = FakeOverlapProbe(overlapping: [], undecided: [1, 2, 3, 4])
+		let selection = SortPlanner.selectSharedPhotos(
+			link: link,
+			photos: photos,
+			sceneBar: nil,
+			settings: SortPlanner.Settings(overlap: 4),
+			verifyOverlap: probe.probe)
+		XCTAssertEqual(selection.photos.sorted(), [0, 1, 2, 3])
+		XCTAssertEqual(selection.undecided, 2)
+		XCTAssertEqual(selection.rejected, 0)
+	}
+
+	/// 必要な枚数が集まったら確かめるのをやめる。**これがコストの歯止め**で、
+	/// 1 組ごとにデコードと推論が走る以上、全候補を確かめてはいけない。
+	func testVerificationStopsOnceEnoughPhotosAreFound()
+	{
+		let photos = (1 ... 40).map { SamplePhoto.make(index: $0, hash: 0x0F) }
+		let candidates = (0 ..< 20).map
+		{ index in
+			PairScore(i: index, j: index + 20, score: 1 - Double(index) * 0.01)
+		}
+		let link = GroupLink(a: 0, b: 1, confidence: 0.9, candidates: candidates)
+		let probe = FakeOverlapProbe(overlapping: Set(1 ... 40))
+		let selection = SortPlanner.selectSharedPhotos(
+			link: link,
+			photos: photos,
+			sceneBar: nil,
+			settings: SortPlanner.Settings(overlap: 4, overlapCheckBatch: 2),
+			verifyOverlap: probe.probe)
+		XCTAssertEqual(selection.photos.count, 4)
+		// 1 組で 2 枚採れるので、2 組も確かめれば足りる。
+		XCTAssertLessThanOrEqual(probe.asked.count, 4)
+	}
+
+	/// 確かめる組数には上限がある（重なりが見つからない隣接でも時間を使い切らない）。
+	func testVerificationStopsAtTheCheckLimit()
+	{
+		let photos = (1 ... 60).map { SamplePhoto.make(index: $0, hash: 0x0F) }
+		let candidates = (0 ..< 30).map
+		{ index in
+			PairScore(i: index, j: index + 30, score: 1 - Double(index) * 0.01)
+		}
+		let link = GroupLink(a: 0, b: 1, confidence: 0.9, candidates: candidates)
+		let probe = FakeOverlapProbe(overlapping: [])
+		let selection = SortPlanner.selectSharedPhotos(
+			link: link,
+			photos: photos,
+			sceneBar: nil,
+			settings: SortPlanner.Settings(
+				overlap: 15, maximumOverlapChecks: 6, overlapCheckBatch: 3),
+			verifyOverlap: probe.probe)
+		XCTAssertTrue(selection.photos.isEmpty)
+		XCTAssertEqual(probe.asked.count, 6)
+	}
+
+	func testOverlapThresholdIsTheJudgement()
+	{
+		let settings = SortPlanner.Settings(
+			minimumOverlapAgreement: 0.35, minimumSharedArea: 0.15)
+		// 一致度も広さも足りている。
+		XCTAssertTrue(SortPlanner.isOverlapping(
+			PhotoOverlap(agreement: 0.4, sharedArea: 0.2), settings: settings))
+		// 一致度が足りない（＝別のものが写っている）。
+		XCTAssertFalse(SortPlanner.isOverlapping(
+			PhotoOverlap(agreement: 0.2, sharedArea: 0.9), settings: settings))
+		// 広さが足りない（＝帯のようにしか重なっていない）。
+		XCTAssertFalse(SortPlanner.isOverlapping(
+			PhotoOverlap(agreement: 0.9, sharedArea: 0.05), settings: settings))
+	}
+
+	func testPlanRecordsVerificationInTheManifestContract()
+	{
+		let grouping = makeGrouping()
+		let numbers = Set(grouping.photos.compactMap { photo -> Int? in
+			Int(photo.relativePath
+				.replacingOccurrences(of: "IMG_", with: "")
+				.replacingOccurrences(of: ".HEIC", with: ""))
+		})
+		let probe = FakeOverlapProbe(overlapping: numbers)
+		let plan = SortPlanner.plan(grouping: grouping, verifyOverlap: probe.probe)
+		XCTAssertGreaterThan(plan.overlapSummary?.verified ?? 0, 0)
+		XCTAssertEqual(plan.adjacency.count, 1)
+		// **合成はこの印を見て、どの隣接を最も信頼するかを決められる。**
+		XCTAssertTrue(plan.adjacency[0].overlapVerified)
+
+		// 確かめなかったときは集計ごと nil（0 件と取り違えないため）。
+		let unverified = SortPlanner.plan(grouping: grouping)
+		XCTAssertNil(unverified.overlapSummary)
+		XCTAssertFalse(unverified.adjacency[0].overlapVerified)
 	}
 }

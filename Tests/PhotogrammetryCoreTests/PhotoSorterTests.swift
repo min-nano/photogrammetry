@@ -35,6 +35,36 @@ struct FakePhotoReader: PhotoMetadataReading
 	}
 }
 
+/// 重なりの確認を差し替える役。実画像も Vision も要らずに「確かめた／確かめ
+/// なかった」を作れる（ImageRegistrar は Vision 依存でテスト対象外のため）。
+final class FakeOverlapVerifier: PhotoOverlapVerifying, @unchecked Sendable
+{
+	/// すべての組にこう答える。nil なら「判定できなかった」。
+	let answer: PhotoOverlap?
+	private let lock = NSLock()
+	private var count = 0
+
+	init(answer: PhotoOverlap?)
+	{
+		self.answer = answer
+	}
+
+	var asked: Int
+	{
+		lock.lock()
+		defer { lock.unlock() }
+		return count
+	}
+
+	func overlap(between a: URL, and b: URL) -> PhotoOverlap?
+	{
+		lock.lock()
+		count += 1
+		lock.unlock()
+		return answer
+	}
+}
+
 final class PhotoSorterTests: XCTestCase
 {
 	var root: URL!
@@ -70,10 +100,14 @@ final class PhotoSorterTests: XCTestCase
 		return photos
 	}
 
-	func makeSorter(_ photos: [PhotoMetadata]) -> PhotoSorter
+	func makeSorter(
+		_ photos: [PhotoMetadata],
+		verifier: PhotoOverlapVerifying = FakeOverlapVerifier(answer: nil)) -> PhotoSorter
 	{
-		PhotoSorter(reader: FakePhotoReader(
-			photos: Dictionary(uniqueKeysWithValues: photos.map { ($0.relativePath, $0) })))
+		PhotoSorter(
+			reader: FakePhotoReader(
+				photos: Dictionary(uniqueKeysWithValues: photos.map { ($0.relativePath, $0) })),
+			overlapVerifier: verifier)
 	}
 
 	func makeRequest() -> SortRequest
@@ -394,6 +428,66 @@ final class PhotoSorterTests: XCTestCase
 			SortError.noImages("/tmp/x").errorDescription,
 			"画像ファイルが見つかりません: /tmp/x")
 		XCTAssertEqual(SortError.cancelled.errorDescription, "仕分けを中断しました。")
+	}
+
+	// -----------------------------------------------------------------
+	// 重なりの確認（設計メモ §4.6.1）
+	// -----------------------------------------------------------------
+
+	func testOverlapCheckIsRecordedInTheManifest() throws
+	{
+		let photos = try makePhotos()
+		let verifier = FakeOverlapVerifier(
+			answer: PhotoOverlap(agreement: 0.9, sharedArea: 0.6))
+		let manifest = try makeSorter(photos, verifier: verifier).run(makeRequest())
+
+		XCTAssertGreaterThan(verifier.asked, 0)
+		XCTAssertTrue(manifest.settings.overlapCheck)
+		XCTAssertEqual(manifest.statistics.overlapChecks?.rejected, 0)
+		XCTAssertGreaterThan(manifest.statistics.overlapChecks?.verified ?? 0, 0)
+		XCTAssertTrue(manifest.adjacency.allSatisfy(\.overlapVerified))
+		XCTAssertTrue(manifest.diagnostics.contains { $0.code == "overlapChecked" })
+	}
+
+	/// **確かめた結果、重なっていなければ隣接を作らない。** そのときは黙らずに
+	/// 「なぜ繋がっていないのか」を言う。
+	func testAdjacencyIsDroppedAndReportedWhenNothingOverlaps() throws
+	{
+		let photos = try makePhotos()
+		let verifier = FakeOverlapVerifier(answer: .none)
+		let manifest = try makeSorter(photos, verifier: verifier).run(makeRequest())
+
+		XCTAssertTrue(manifest.adjacency.isEmpty)
+		XCTAssertGreaterThan(manifest.statistics.overlapChecks?.rejected ?? 0, 0)
+		XCTAssertTrue(manifest.diagnostics.contains { $0.code == "noOverlapConfirmed" })
+		XCTAssertTrue(manifest.diagnostics.contains { $0.code == "noVisualOverlap" })
+	}
+
+	func testOverlapCheckCanBeTurnedOff() throws
+	{
+		let photos = try makePhotos()
+		let verifier = FakeOverlapVerifier(answer: .none)
+		var request = makeRequest()
+		request.overlapCheck = false
+		let manifest = try makeSorter(photos, verifier: verifier).run(request)
+
+		// 指示が「確かめない」なら 1 組も問い合わせない。
+		XCTAssertEqual(verifier.asked, 0)
+		XCTAssertFalse(manifest.settings.overlapCheck)
+		XCTAssertNil(manifest.statistics.overlapChecks)
+		XCTAssertFalse(manifest.adjacency.isEmpty)
+		XCTAssertFalse(manifest.adjacency.contains { $0.overlapVerified })
+	}
+
+	/// 判定できなかった組は落とさない（白い壁ばかりの現場で隣接が消えないため）。
+	func testUndecidedOverlapKeepsAdjacency() throws
+	{
+		let photos = try makePhotos()
+		let manifest = try makeSorter(photos, verifier: FakeOverlapVerifier(answer: nil))
+			.run(makeRequest())
+		XCTAssertFalse(manifest.adjacency.isEmpty)
+		XCTAssertGreaterThan(manifest.statistics.overlapChecks?.undecided ?? 0, 0)
+		XCTAssertFalse(manifest.adjacency.contains { $0.overlapVerified })
 	}
 }
 

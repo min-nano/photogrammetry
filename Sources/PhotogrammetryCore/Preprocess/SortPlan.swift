@@ -71,6 +71,11 @@ public struct SortPlan: Equatable, Sendable
 		/// 別々のグループで撮っている**ことの証拠で、合成では最も信頼できる
 		/// 繋ぎ目になる（時刻が離れていても成立する）。無ければ nil。
 		public var sharedRoom: String?
+		/// 共有写真が**実際に重なって写っていることを確かめた**か（§4.6.1）。
+		/// false は「確かめていない」で、「重なっていない」ではない（視覚特徴が
+		/// 取れない現場・`--no-overlap-check`）。合成はこれが true の隣接を
+		/// 最も信頼してよい。
+		public var overlapVerified: Bool
 
 		public init(
 			a: String,
@@ -78,7 +83,8 @@ public struct SortPlan: Equatable, Sendable
 			sharedPhotos: [String],
 			confidence: Double,
 			viewpointSpread: Double? = nil,
-			sharedRoom: String? = nil)
+			sharedRoom: String? = nil,
+			overlapVerified: Bool = false)
 		{
 			self.a = a
 			self.b = b
@@ -86,6 +92,26 @@ public struct SortPlan: Equatable, Sendable
 			self.confidence = confidence
 			self.viewpointSpread = viewpointSpread
 			self.sharedRoom = sharedRoom
+			self.overlapVerified = overlapVerified
+		}
+	}
+
+	/// 重なりの検証をどれだけ行い、どれだけ落としたか。**検証しなかったときは
+	/// nil**（0 件だったのか、そもそも確かめていないのかを取り違えないため）。
+	public struct OverlapSummary: Equatable, Sendable
+	{
+		/// 実際に重なっていると確かめた組数。
+		public var verified: Int
+		/// 重なっていないと分かって落とした組数。
+		public var rejected: Int
+		/// 判定材料が足りず（模様が無い・読めない）判断を保留した組数。
+		public var undecided: Int
+
+		public init(verified: Int = 0, rejected: Int = 0, undecided: Int = 0)
+		{
+			self.verified = verified
+			self.rejected = rejected
+			self.undecided = undecided
 		}
 	}
 
@@ -93,12 +119,19 @@ public struct SortPlan: Equatable, Sendable
 	public var adjacency: [Adjacency]
 	/// どのグループにも入らなかった写真（`_unassigned/`）。
 	public var unassigned: [String]
+	/// 重なりの検証の集計。検証しなかったときは nil。
+	public var overlapSummary: OverlapSummary?
 
-	public init(groups: [Group], adjacency: [Adjacency], unassigned: [String])
+	public init(
+		groups: [Group],
+		adjacency: [Adjacency],
+		unassigned: [String],
+		overlapSummary: OverlapSummary? = nil)
 	{
 		self.groups = groups
 		self.adjacency = adjacency
 		self.unassigned = unassigned
+		self.overlapSummary = overlapSummary
 	}
 }
 
@@ -119,20 +152,56 @@ public enum SortPlanner
 		/// 知覚ハッシュより素直に「立ち位置を変えたか」を捉える（同じ場所から
 		/// 向きだけ変えた写真は、ハッシュは大きく変わるのに特徴は近いままになる）。
 		public var diversitySceneDistance: Double
+		/// 共有写真として認めるのに必要な、重なった範囲の画素の一致度（§4.6.1）。
+		/// 実測では無関係な 2 枚が 0.05 を超えず、実際に重なる 2 枚は寄り引き・
+		/// 回転が入っても 0.65 以上だったので、その間に置く。
+		public var minimumOverlapAgreement: Double
+		/// 同じく、重なりの広さ（基準画像の面積比）。一致度ほど強い手がかりでは
+		/// ないが、**帯のように少ししか重なっていない組**は対応点にならない。
+		public var minimumSharedArea: Double
+		/// 隣接 1 本あたりに重なりを確かめる候補の上限。**これがコストの上限**で、
+		/// 必要な枚数が集まればここまで使わずに切り上げる。
+		public var maximumOverlapChecks: Int
+		/// 1 度にまとめて確かめる組数。実装（Vision）が並行に処理できる粒度で、
+		/// 大きいほど並列度が上がり、小さいほど「集まったら切り上げる」が効く。
+		public var overlapCheckBatch: Int
 
 		public init(
 			overlap: Int = 15,
 			diversityDistance: Int = 6,
 			diversityHeading: Double = 15,
 			diversityDistanceMeters: Double = 1.0,
-			diversitySceneDistance: Double = 0.12)
+			diversitySceneDistance: Double = 0.12,
+			minimumOverlapAgreement: Double = 0.35,
+			minimumSharedArea: Double = 0.15,
+			maximumOverlapChecks: Int = 24,
+			overlapCheckBatch: Int = 8)
 		{
 			self.overlap = overlap
 			self.diversityDistance = diversityDistance
 			self.diversityHeading = diversityHeading
 			self.diversityDistanceMeters = diversityDistanceMeters
 			self.diversitySceneDistance = diversitySceneDistance
+			self.minimumOverlapAgreement = minimumOverlapAgreement
+			self.minimumSharedArea = minimumSharedArea
+			self.maximumOverlapChecks = maximumOverlapChecks
+			self.overlapCheckBatch = overlapCheckBatch
 		}
+	}
+
+	/// 候補の組が実際に重なっているかを確かめる問い合わせ。**まとめて渡す**のは、
+	/// 実装（デコードと Vision）が並行に処理できるようにするため。返り値は
+	/// 渡した並びと同じ長さで、nil は「判定できなかった」。
+	public typealias OverlapProbe = @Sendable ([OverlapQuery]) -> [PhotoOverlap?]
+
+	/// 隣接 1 本ぶんの選定結果。枚数だけでなく**何組を確かめ、何組を落としたか**を
+	/// 返すのは、診断で「なぜ共有写真が少ないのか」を言えるようにするため。
+	struct SharedSelection: Equatable
+	{
+		var photos: [Int] = []
+		var verified = 0
+		var rejected = 0
+		var undecided = 0
 	}
 
 	/// 視点の散らばりを 0.0〜1.0 へ正規化するときの基準（この平均ハミング距離で 1.0）。
@@ -141,15 +210,20 @@ public enum SortPlanner
 	static let spreadReferenceSceneDistance = 0.25
 
 	/// グルーピング結果から仕分け計画を作る。
+	///
+	/// - Parameter verifyOverlap: 候補の組が**実際に重なって写っているか**を
+	///   確かめる役（§4.6.1）。nil なら確かめない（フェーズ 2 までと同じ動作）。
 	public static func plan(
 		grouping: GroupingResult,
-		settings: Settings = Settings()) -> SortPlan
+		settings: Settings = Settings(),
+		verifyOverlap: OverlapProbe? = nil) -> SortPlan
 	{
 		let photos = grouping.photos
 		// グループ添字で引く配列にしておく（辞書だと毎回 Optional の既定値を
 		// 書くことになり、決して評価されない分岐が残る）。
 		var sharedByGroup = [Set<Int>](repeating: [], count: grouping.groups.count)
 		var adjacency: [SortPlan.Adjacency] = []
+		var summary = SortPlan.OverlapSummary()
 
 		// 共有写真として認める視覚的な距離の上限。**この現場の近傍距離の中央値**を
 		// 使う（絶対値の尺度は現場ごとに違うので、固定値では意味を持たない）。
@@ -159,8 +233,16 @@ public enum SortPlanner
 
 		for link in grouping.links
 		{
-			let selected = selectSharedPhotos(
-				link: link, photos: photos, sceneBar: sceneBar, settings: settings)
+			let selection = selectSharedPhotos(
+				link: link,
+				photos: photos,
+				sceneBar: sceneBar,
+				settings: settings,
+				verifyOverlap: verifyOverlap)
+			summary.verified += selection.verified
+			summary.rejected += selection.rejected
+			summary.undecided += selection.undecided
+			let selected = selection.photos
 			guard !selected.isEmpty
 			else
 			{
@@ -177,7 +259,8 @@ public enum SortPlanner
 				sharedPhotos: selected.sorted().map { photos[$0].relativePath },
 				confidence: link.confidence,
 				viewpointSpread: viewpointSpread(of: selected, photos: photos),
-				sharedRoom: sharedRoom(of: selected, link: link, grouping: grouping)))
+				sharedRoom: sharedRoom(of: selected, link: link, grouping: grouping),
+				overlapVerified: selection.verified > 0))
 		}
 
 		let groups = grouping.groups.enumerated().map
@@ -201,7 +284,8 @@ public enum SortPlanner
 		return SortPlan(
 			groups: groups,
 			adjacency: adjacency,
-			unassigned: grouping.unassigned.map { photos[$0].relativePath })
+			unassigned: grouping.unassigned.map { photos[$0].relativePath },
+			overlapSummary: verifyOverlap == nil ? nil : summary)
 	}
 
 	/// 隣接 1 本ぶんの共有写真を選ぶ。
@@ -220,6 +304,12 @@ public enum SortPlanner
 	/// 重なっていない隣接は、合成にとって無いのと同じどころか、無関係な写真を
 	/// グループへ持ち込むぶん有害なため。
 	///
+	/// **視覚特徴の距離だけでは足りない**ことが実データで分かっている（§4.6.1）。
+	/// 白い壁と同じ建具ばかりの屋内では距離が狭い帯に潰れ、上の足切りを通り抜けて
+	/// 700 枚離れた別の場所の写真が残った。そこで `verifyOverlap` があるときは、
+	/// 上位の候補を**実際に位置合わせして画素が一致するか**まで確かめ、一致
+	/// しない組は採らない。
+	///
 	/// そのうえで、**既に選んだ写真と視点が近すぎるものは飛ばす**（同じ場所から
 	/// 向きだけ変えた写真ばかりだと、合成時に対応点が一直線に並んで解が定まらない）。
 	/// 散らばりを求めた結果、枚数が足りなくなるくらいなら枚数を優先する
@@ -227,18 +317,47 @@ public enum SortPlanner
 	///
 	/// - Parameter sceneBar: 共有写真として認める視覚的な距離の上限。判定材料が
 	///   無ければ nil（そのときは従来どおり結合スコア順に採る）。
+	/// - Parameter verifyOverlap: 実際に重なっているかを確かめる役。nil なら
+	///   確かめない。
 	static func selectSharedPhotos(
 		link: GroupLink,
 		photos: [PhotoMetadata],
 		sceneBar: Double?,
-		settings: Settings) -> [Int]
+		settings: Settings,
+		verifyOverlap: OverlapProbe? = nil) -> SharedSelection
 	{
 		guard settings.overlap > 0
 		else
 		{
-			return []
+			return SharedSelection()
 		}
-		let candidates = rankedCandidates(link: link, photos: photos, sceneBar: sceneBar)
+		let ranked = rankedCandidates(link: link, photos: photos, sceneBar: sceneBar)
+		var result = SharedSelection()
+		let candidates: [PairScore]
+		if let verifyOverlap
+		{
+			let verification = verifiedCandidates(
+				ranked: ranked, photos: photos, settings: settings, verifyOverlap: verifyOverlap)
+			candidates = verification.candidates
+			result.verified = verification.verified
+			result.rejected = verification.rejected
+			result.undecided = verification.undecided
+		}
+		else
+		{
+			candidates = ranked
+		}
+		result.photos = select(from: candidates, photos: photos, settings: settings)
+		return result
+	}
+
+	/// 候補から共有写真を採る。**既に選んだ写真と視点が近すぎるものは飛ばす**が、
+	/// 枚数が足りなくなるくらいなら枚数を優先する（2 周目で条件を外して埋める）。
+	static func select(
+		from candidates: [PairScore],
+		photos: [PhotoMetadata],
+		settings: Settings) -> [Int]
+	{
 		var selected: [Int] = []
 		var chosen = Set<Int>()
 
@@ -271,6 +390,81 @@ public enum SortPlanner
 			}
 		}
 		return selected
+	}
+
+	/// 候補を上から順に「実際に重なっているか」で選り分ける。
+	///
+	/// **必要なぶんだけ確かめる。** 上位から埋まっていくので、多くの隣接では
+	/// 数組で足りる。まとめて渡すのは実装が並行に処理できるようにするためで、
+	/// 1 束ごとに「もう足りたか」を見て切り上げる。
+	///
+	/// 判定できなかった組（模様が無い・読めない）は**落とさない** — 分からない
+	/// ことを理由に候補を捨てると、視覚特徴が取れない現場で隣接が 1 本も
+	/// 作れなくなる（§4.4 と同じ判断）。
+	static func verifiedCandidates(
+		ranked: [PairScore],
+		photos: [PhotoMetadata],
+		settings: Settings,
+		verifyOverlap: OverlapProbe)
+		-> (candidates: [PairScore], verified: Int, rejected: Int, undecided: Int)
+	{
+		var accepted: [PairScore] = []
+		var verified = 0
+		var rejected = 0
+		var undecided = 0
+		var checked = 0
+		var cursor = 0
+		var endpoints = Set<Int>()
+
+		while cursor < ranked.count, checked < settings.maximumOverlapChecks
+		{
+			let upper = min(
+				ranked.count,
+				cursor + max(1, settings.overlapCheckBatch),
+				cursor + (settings.maximumOverlapChecks - checked))
+			let batch = Array(ranked[cursor ..< upper])
+			cursor = upper
+			checked += batch.count
+			let verdicts = verifyOverlap(batch.map
+			{
+				OverlapQuery(a: photos[$0.i].url, b: photos[$0.j].url)
+			})
+			for (offset, candidate) in batch.enumerated()
+			{
+				guard verdicts.indices.contains(offset), let verdict = verdicts[offset]
+				else
+				{
+					undecided += 1
+					accepted.append(candidate)
+					endpoints.insert(candidate.i)
+					endpoints.insert(candidate.j)
+					continue
+				}
+				guard isOverlapping(verdict, settings: settings)
+				else
+				{
+					rejected += 1
+					continue
+				}
+				verified += 1
+				accepted.append(candidate)
+				endpoints.insert(candidate.i)
+				endpoints.insert(candidate.j)
+			}
+			if endpoints.count >= settings.overlap
+			{
+				break
+			}
+		}
+		return (accepted, verified, rejected, undecided)
+	}
+
+	/// 測った重なりを「共有写真に使ってよい」と言えるか。**ここが判断で、
+	/// ラッパー（ImageRegistrar）は数値を返すだけ。**
+	static func isOverlapping(_ overlap: PhotoOverlap, settings: Settings) -> Bool
+	{
+		overlap.agreement >= settings.minimumOverlapAgreement
+			&& overlap.sharedArea >= settings.minimumSharedArea
 	}
 
 	/// 候補のペアを「実際に重なっている順」に並べ替える。`sceneBar` を超える

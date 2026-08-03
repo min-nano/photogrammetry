@@ -60,6 +60,9 @@ final class ReconstructionViewModel: ObservableObject
 	/// 視覚解析（同じ場所かどうかの判定）。既定で入れる。切れるようにしてあるのは
 	/// 「解析を速く済ませたい」ときの逃げ道で、精度は落ちる。
 	@Published var visualEvidence = true
+	/// 共有写真の候補を実際に位置合わせして重なりを確かめる。既定で入れる —
+	/// これを切ると、白い壁ばかりの屋内で別の場所の写真が共有写真に混ざる。
+	@Published var overlapCheck = true
 
 	@Published var isProcessing = false
 	@Published var progress: Double = 0
@@ -198,6 +201,7 @@ final class ReconstructionViewModel: ObservableObject
 			minPerGroup: minPerGroup,
 			timeGap: timeGap,
 			visualEvidence: visualEvidence,
+			overlapCheck: overlapCheck,
 			link: linkStrategy,
 			recursive: sortRecursive,
 			dryRun: sortDryRun))
@@ -232,6 +236,7 @@ final class ReconstructionViewModel: ObservableObject
 					minPerGroup = request.minPerGroup
 					timeGap = request.timeGap
 					visualEvidence = request.visualEvidence
+					overlapCheck = request.overlapCheck
 					linkStrategy = request.link
 					sortRecursive = request.recursive
 					sortDryRun = request.dryRun

@@ -232,7 +232,10 @@ public enum SortDiagnostics
 				severity: .warning,
 				code: "unassigned",
 				message: "\(plan.unassigned.count) 枚がどのグループにも入りませんでした"
-					+ "（_unassigned/ に退避）。他と繋がらない単発の写真です。"))
+					+ "（_unassigned/ に退避）。下限枚数に満たない小さな塊で、しかも"
+					+ "どのグループとも十分に結び付いていない写真です — 無理に混ぜると"
+					+ "そのグループの再構成を壊すため、あえて外しています。"
+					+ "撮り足すか、--min-per-group を下げてください。"))
 		}
 
 		return diagnostics
@@ -251,10 +254,12 @@ public enum SortDiagnostics
 		grouping: GroupingResult,
 		request: SortRequest) -> [SortDiagnostic]
 	{
-		guard request.overlap > 0, grouping.usedEvidence.contains(.scene)
+		var diagnostics = overlapCheckDiagnostics(plan: plan)
+		guard request.overlap > 0,
+			grouping.usedEvidence.contains(.scene) || plan.overlapSummary != nil
 		else
 		{
-			return []
+			return diagnostics
 		}
 		var linked = Set<String>()
 		for adjacency in plan.adjacency
@@ -276,17 +281,58 @@ public enum SortDiagnostics
 		guard !missing.isEmpty
 		else
 		{
-			return []
+			return diagnostics
 		}
 		let list = missing.prefix(5).joined(separator: "・")
 		let rest = missing.count > 5 ? "ほか \(missing.count - 5) 組" : ""
-		return [SortDiagnostic(
+		diagnostics.append(SortDiagnostic(
 			severity: .warning,
 			code: "noVisualOverlap",
 			message: "\(list)\(rest) は近い塊と判定されましたが、実際に重なって"
 				+ "写っている写真がありませんでした（共有写真を作れないので隣接に"
 				+ "していません）。合成でこれらを繋ぐには、両方から見える範囲を"
-				+ "数枚撮り足してください。")]
+				+ "数枚撮り足してください。"))
+		return diagnostics
+	}
+
+	/// 重なりの検証そのものについての報告（設計メモ §4.6.1）。
+	///
+	/// **確かめたことも、確かめられなかったことも必ず言う。** 共有写真が減った
+	/// ときに「撮り方が足りない」のか「判定が厳しすぎる」のかを、写真を見ずに
+	/// 切り分けられるようにするため。
+	static func overlapCheckDiagnostics(plan: SortPlan) -> [SortDiagnostic]
+	{
+		guard let summary = plan.overlapSummary
+		else
+		{
+			return []
+		}
+		let total = summary.verified + summary.rejected + summary.undecided
+		guard total > 0
+		else
+		{
+			return []
+		}
+		var diagnostics = [SortDiagnostic(
+			severity: .info,
+			code: "overlapChecked",
+			message: "共有写真の候補 \(total) 組を実際に位置合わせして確かめました"
+				+ "（重なりを確認 \(summary.verified) 組・重なっていないので除外 "
+				+ "\(summary.rejected) 組・判定できず保留 \(summary.undecided) 組）。")]
+
+		// **1 組も確認できなかったとき**は、判定そのものを疑う材料を出す。
+		// 撮り方が悪いのか閾値が厳しいのかで打つ手がまるで違う。
+		if summary.verified == 0, summary.rejected > 0
+		{
+			diagnostics.append(SortDiagnostic(
+				severity: .warning,
+				code: "noOverlapConfirmed",
+				message: "ただし実際に重なっていると確認できた組が 1 つもありません"
+					+ "でした。撮影が飛び飛びである可能性のほか、判定が厳しすぎる"
+					+ "可能性もあります（--overlap-agreement を下げる、"
+					+ "--no-overlap-check で確認をやめる）。"))
+		}
+		return diagnostics
 	}
 
 	/// 視覚的に見つけた「場所」についての診断（フェーズ 2）。

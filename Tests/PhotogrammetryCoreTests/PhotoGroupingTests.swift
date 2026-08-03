@@ -551,4 +551,78 @@ final class PhotoGroupingTests: XCTestCase
 		let assigned = result.groups.flatMap(\.members) + result.unassigned
 		XCTAssertEqual(Set(assigned).count, photos.count)
 	}
+
+	// -----------------------------------------------------------------
+	// 小さすぎるグループの吸収（設計メモ §4.6.1 の 2 つめの症状）
+	// -----------------------------------------------------------------
+
+	func testLinkStrengthUsesTheStrongestEdgesNotTheirNumber()
+	{
+		// 上位 5 本の平均。本数がいくら多くても弱ければ弱いまま。
+		XCTAssertEqual(
+			PhotoGrouping.linkStrength([1.0, 0.9, 0.8, 0.7, 0.6, 0.1, 0.1, 0.1]),
+			0.8,
+			accuracy: 1e-9)
+		XCTAssertEqual(PhotoGrouping.linkStrength([0.4]), 0.4, accuracy: 1e-9)
+		XCTAssertEqual(PhotoGrouping.linkStrength([]), 0)
+	}
+
+	/// **実データで起きた失敗。** 強さを合計で測ると、弱い繋がりでも本数が多い
+	/// 大きなグループが必ず勝つ。EXIF の無い写真（SNS 経由）が作る小さな塊が、
+	/// まったく別の場所の大きなグループへ吸い込まれていた。
+	func testAbsorptionPicksTheStrongestLinkNotTheMostEdges()
+	{
+		var settings = GroupingSettings()
+		settings.minPerGroup = 3
+		settings.maxPerGroup = 100
+		let small = [0, 1]
+		let many = Array(2 ... 21)
+		let few = [22, 23, 24]
+		var edges: [PairScore] = []
+		// 弱い繋がりが 20 本（合計 4.0）。
+		for other in many
+		{
+			edges.append(PairScore(i: 0, j: other, score: 0.2))
+		}
+		// 強い繋がりが 3 本（合計 2.4）。
+		for other in few
+		{
+			edges.append(PairScore(i: 1, j: other, score: 0.8))
+		}
+		let absorbed = PhotoGrouping.absorbSmallGroups(
+			parts: [small, many, few], edges: edges, bar: 0.1, settings: settings)
+		XCTAssertTrue(absorbed.unassigned.isEmpty)
+		let host = absorbed.parts.first { $0.contains(0) }
+		XCTAssertEqual(host, (small + few).sorted())
+	}
+
+	/// 結び付きが弱ければ吸収しない。**「小さいからどこかへ入れる」は、無関係な
+	/// 写真をグループへ持ち込むだけ**なので、`_unassigned` へ送って必ず伝える。
+	func testWeakLinksSendSmallGroupsToUnassigned()
+	{
+		var settings = GroupingSettings()
+		settings.minPerGroup = 3
+		settings.maxPerGroup = 100
+		let small = [0, 1]
+		let host = Array(2 ... 21)
+		let edges = host.map { PairScore(i: 0, j: $0, score: 0.1) }
+		let absorbed = PhotoGrouping.absorbSmallGroups(
+			parts: [small, host], edges: edges, bar: 0.4, settings: settings)
+		XCTAssertEqual(absorbed.unassigned, small)
+		XCTAssertEqual(absorbed.parts, [host])
+	}
+
+	/// ただし**上限枚数で割られた区間**まで追い出してはいけない。撮影の流れが
+	/// 続いている塊は結び付きが強いので、下限を課しても吸収される。
+	func testContinuousShootingIsStillAbsorbed()
+	{
+		var settings = GroupingSettings()
+		settings.minPerGroup = 8
+		settings.maxPerGroup = 20
+		let photos = SamplePhoto.sequence(start: 1, count: 12, startTime: 0, hashSeed: 0)
+			+ SamplePhoto.sequence(start: 13, count: 3, startTime: 36, hashSeed: 0)
+		let result = PhotoGrouping.group(photos: photos, settings: settings)
+		XCTAssertEqual(result.groups.count, 1)
+		XCTAssertTrue(result.unassigned.isEmpty)
+	}
 }

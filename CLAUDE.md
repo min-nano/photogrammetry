@@ -35,6 +35,8 @@ Sources/
       PhotoMetadata        写真 1 枚分の事実（値型・Sendable）
       PhotoInspector       ImageIO / CoreGraphics を叩く唯一の層  ← ラッパー
       FeaturePrinter       Vision を叩く唯一の層                  ← ラッパー
+      ImageRegistrar       Vision の画像レジストレーション        ← ラッパー
+      PhotoOverlap         重なりの値型・測定（相関）            ← 純ロジック
       ImageStatistics      画素 → ブレ・露出・知覚ハッシュ        ← 純ロジック
       FeaturePrint         視覚特徴の値型と距離                  ← 純ロジック
       RoomClustering       視覚特徴 → 同じ場所（部屋）の集まり    ← 純ロジック
@@ -59,8 +61,11 @@ Sources/
 - RealityKit の型は `PhotogrammetryEngine.swift` の外に漏らさない
   （API 表現は `ReconstructionRequest` の自前 enum。変換表はエンジン内に 1 つだけ）。
 - 同様に、ImageIO / CoreGraphics は `PhotoInspector.swift`、Vision は
-  `FeaturePrinter.swift` の中だけ。外へ出るのは値型（`PhotoMetadata` /
-  `FeaturePrint`）だけで、**判断はすべて純ロジック側に置く**。
+  `FeaturePrinter.swift` と `ImageRegistrar.swift` の中だけ。外へ出るのは値型
+  （`PhotoMetadata` / `FeaturePrint` / `GrayImage` / `PhotoOverlap`）だけで、
+  **判断はすべて純ロジック側に置く**。例えば「2 枚が重なっているか」は
+  `ImageRegistrar` が変換を取り出し、`OverlapMeasurement` が一致度を測り、
+  閾値と採否は `SortPlanner` が持つ、と 3 つに分かれている。
 - 外部連携のパラメータ語彙（`input` / `output` / `detail` / `ordering` /
   `sensitivity` / `subject` / `overlap` / `maxPerGroup` / …）は `APICommand` に
   **1 か所だけ**定義する。入口（URL / CLI）やコマンド（`process` / `sort`）を
@@ -117,7 +122,8 @@ Sources/
   「しきい値を下回った」のかを一目で区別するため。`PhotogrammetryEngine.swift`
   （RealityKit/GPU 依存）・`UpdaterService.swift`（ネットワーク I/O）・
   `PhotoInspector.swift`（ImageIO/CoreGraphics 依存）・`FeaturePrinter.swift`
-  （Vision 依存）は上記の「自動テストしない」方針どおり集計から除外している — 含めると分母が常に薄まりしきい値が
+  （Vision 依存）・`ImageRegistrar.swift`（Vision の画像レジストレーション依存）
+  は上記の「自動テストしない」方針どおり集計から除外している — 含めると分母が常に薄まりしきい値が
   意味を失うため。**フレームワークを叩くラッパーを新しく足したら、除外にも
   同時に足す**（除外を足すということは「その層に判断を置かない」という約束
   でもある。判断は必ず純ロジック側へ下ろすこと）。しきい値・除外規則は

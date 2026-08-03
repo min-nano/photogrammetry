@@ -28,6 +28,8 @@ final class SortManifestTests: XCTestCase
 				visualEvidence: true,
 				visualThreshold: 0.38,
 				visualThresholdWasAutomatic: true,
+				overlapCheck: true,
+				overlapAgreement: 0.35,
 				link: .hardlink),
 			evidence: SortManifest.Evidence(
 				used: ["time", "visual", "scene", "room"],
@@ -40,7 +42,9 @@ final class SortManifestTests: XCTestCase
 				excludedByReason: ["blur": 30, "duplicate": 12],
 				scoreHistogram: [1, 2, 3],
 				visualDistanceHistogram: [4, 5, 6],
-				sharpnessMedian: 40),
+				sharpnessMedian: 40,
+				overlapChecks: SortManifest.Statistics.OverlapChecks(
+					verified: 34, rejected: 9, undecided: 2)),
 			groups: [
 				SortManifest.Group(
 					id: "group-01",
@@ -58,7 +62,8 @@ final class SortManifestTests: XCTestCase
 					sharedPhotos: ["IMG_0118.HEIC"],
 					confidence: 0.82,
 					viewpointSpread: 0.31,
-					sharedRoom: "room-02"),
+					sharedRoom: "room-02",
+					overlapVerified: true),
 			],
 			excluded: [
 				SortManifest.Excluded(photo: "IMG_0044.HEIC", reason: .blur, score: 0.12),
@@ -79,8 +84,8 @@ final class SortManifestTests: XCTestCase
 	func testVersionIsRecorded()
 	{
 		XCTAssertEqual(makeManifest().version, SortManifest.currentVersion)
-		// 2 = フェーズ 2（視覚クラスタを足したときに上げた）。
-		XCTAssertEqual(SortManifest.currentVersion, 2)
+		// 3 = 重なりの検証（overlapVerified / overlapChecks を足したときに上げた）。
+		XCTAssertEqual(SortManifest.currentVersion, 3)
 	}
 
 	func testJSONKeysAreStable() throws
@@ -94,6 +99,9 @@ final class SortManifestTests: XCTestCase
 			// フェーズ 2。merge は「どのグループが同じ場所を写しているか」を
 			// ここから読む（時刻が離れていても成立する繋ぎ目）。
 			"\"rooms\"", "\"sharedRoom\"", "\"roomCount\"", "\"visualThreshold\"",
+			// §4.6.1。merge は「実際に重なっていると確かめた隣接か」をここから読む。
+			"\"overlapVerified\"", "\"overlapChecks\"", "\"overlapCheck\"",
+			"\"overlapAgreement\"",
 		]
 		{
 			XCTAssertTrue(json.contains(key), "\(key) が manifest にありません")
@@ -109,12 +117,14 @@ final class SortManifestTests: XCTestCase
 		manifest.statistics.sharpnessMedian = nil
 		manifest.adjacency[0].viewpointSpread = nil
 		manifest.adjacency[0].sharedRoom = nil
+		manifest.statistics.overlapChecks = nil
 		manifest.groups[0].captureStart = nil
 		manifest.groups[0].captureEnd = nil
 		let restored = try SortManifest.decoded(from: manifest.encoded())
 		XCTAssertEqual(restored, manifest)
 		XCTAssertNil(restored.adjacency[0].viewpointSpread)
 		XCTAssertNil(restored.adjacency[0].sharedRoom)
+		XCTAssertNil(restored.statistics.overlapChecks)
 	}
 
 	func testFileName()

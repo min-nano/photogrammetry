@@ -97,6 +97,11 @@ jobs:
       #                                FeaturePrint / RoomClustering（純ロジック）
       #                                が持つので、ここに残るのは「Vision の
       #                                出力を Float の配列にする」だけ。
+      #   ImageRegistrar.swift       — Vision（画像レジストレーション）依存。
+      #                                同じ理由で対象外。ここに残るのは「変換を
+      #                                取り出して画素座標へ直す」だけで、重なりの
+      #                                測定と判定は OverlapMeasurement /
+      #                                SortPlanner（純ロジック）が持つ。
       # これらを含めると分母が常に薄まり、しきい値が意味を失う
       # （実測: 含めると lines 52% / functions 47%、除外すると lines 93% /
       # functions 78% — 除外後の数字がこのプロジェクトの「純ロジック」の
@@ -112,7 +117,7 @@ jobs:
           EXE="$XCTEST_BUNDLE/Contents/MacOS/$(basename "$XCTEST_BUNDLE" .xctest)"
           test -f "$PROFDATA" || { echo "::error::coverage profile not found at $PROFDATA"; exit 1; }
           test -x "$EXE" || { echo "::error::test binary not found at $EXE"; exit 1; }
-          IGNORE='(\.build/|/Tests/|/PhotogrammetryEngine\.swift$|/UpdaterService\.swift$|/PhotoInspector\.swift$|/FeaturePrinter\.swift$)'
+          IGNORE='(\.build/|/Tests/|/PhotogrammetryEngine\.swift$|/UpdaterService\.swift$|/PhotoInspector\.swift$|/FeaturePrinter\.swift$|/ImageRegistrar\.swift$)'
           xcrun llvm-cov export -format=text -instr-profile="$PROFDATA" -ignore-filename-regex="$IGNORE" "$EXE" \
             > coverage-summary.json
           xcrun llvm-cov export -format=lcov -instr-profile="$PROFDATA" -ignore-filename-regex="$IGNORE" "$EXE" \
@@ -269,8 +274,9 @@ jobs:
                   'coverage of only the lines this PR changed (vs. the base ' +
                   'branch). `PhotogrammetryEngine.swift` (RealityKit/GPU), ' +
                   '`UpdaterService.swift` (network I/O), ' +
-                  '`PhotoInspector.swift` (ImageIO/CoreGraphics) and ' +
-                  '`FeaturePrinter.swift` (Vision) are ' +
+                  '`PhotoInspector.swift` (ImageIO/CoreGraphics), ' +
+                  '`FeaturePrinter.swift` (Vision) and ' +
+                  '`ImageRegistrar.swift` (Vision image registration) are ' +
                   'excluded — CLAUDE.md keeps those out of automated ' +
                   'testing.',
                 '',

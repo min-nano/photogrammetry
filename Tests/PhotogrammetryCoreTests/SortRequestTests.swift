@@ -106,6 +106,10 @@ final class SortRequestTests: XCTestCase
 		request = makeRequest()
 		request.visualThreshold = -0.1
 		XCTAssertThrowsError(try request.validate())
+
+		request = makeRequest()
+		request.overlapAgreement = 1.4
+		XCTAssertThrowsError(try request.validate())
 	}
 
 	func testErrorDescriptions()
@@ -182,5 +186,19 @@ final class SortRequestTests: XCTestCase
 		// 既存の証拠の重みには手を触れない（フェーズ 1 と同じ配分に戻す）。
 		XCTAssertEqual(
 			request.groupingSettings.weights[.time], GroupingSettings.defaultWeights[.time])
+	}
+
+	func testOverlapCheckSettingsReachThePlanner()
+	{
+		var request = makeRequest()
+		// 既定は「確かめる」。閾値は SortPlanner の既定に任せる。
+		XCTAssertTrue(request.overlapCheck)
+		XCTAssertEqual(
+			request.plannerSettings.minimumOverlapAgreement,
+			SortPlanner.Settings().minimumOverlapAgreement)
+
+		// 指定したときは、その値がそのまま判定に使われる（manifest にも残る）。
+		request.overlapAgreement = 0.6
+		XCTAssertEqual(request.plannerSettings.minimumOverlapAgreement, 0.6)
 	}
 }

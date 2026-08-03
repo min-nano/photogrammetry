@@ -19,10 +19,15 @@ public struct SortManifest: Codable, Equatable, Sendable
 	/// 形式のバージョン。互換性を壊す変更を入れるときだけ上げる。
 	///
 	/// 2 = フェーズ 2。視覚クラスタ（`groups[].rooms` / `adjacency[].sharedRoom` /
-	/// `statistics.roomCount`）と視覚解析の設定を足した。項目が増えたので
-	/// バージョン 1 の manifest はそのままでは読み戻せない。読み手はまだ
+	/// `statistics.roomCount`）と視覚解析の設定を足した。
+	///
+	/// 3 = 重なりの検証（設計メモ §4.6.1）。`adjacency[].overlapVerified` と
+	/// `statistics.overlapChecks` を足した。**合成は「実際に重なっていると
+	/// 確かめた」隣接を最も信頼してよい**という情報で、`sharedRoom` より強い。
+	///
+	/// 項目が増えたので古い manifest はそのままでは読み戻せない。読み手はまだ
 	/// 存在しない（`merge` はフェーズ 3）ので、移行の仕組みは持たない。
-	public static let currentVersion = 2
+	public static let currentVersion = 3
 
 	public var version: Int
 	/// 書き出した時刻。
@@ -87,6 +92,10 @@ public struct SortManifest: Codable, Equatable, Sendable
 		/// （後から同じ結果を再現できるようにするため）。
 		public var visualThreshold: Double
 		public var visualThresholdWasAutomatic: Bool
+		/// 共有写真の候補を実際に位置合わせして確かめたか。
+		public var overlapCheck: Bool
+		/// 重なっていると認めた画素の一致度の下限（再現のため実際の値を残す）。
+		public var overlapAgreement: Double
 		/// ファイルの配置方法。
 		public var link: LinkStrategy
 
@@ -102,6 +111,8 @@ public struct SortManifest: Codable, Equatable, Sendable
 			visualEvidence: Bool,
 			visualThreshold: Double,
 			visualThresholdWasAutomatic: Bool,
+			overlapCheck: Bool,
+			overlapAgreement: Double,
 			link: LinkStrategy)
 		{
 			self.overlap = overlap
@@ -115,6 +126,8 @@ public struct SortManifest: Codable, Equatable, Sendable
 			self.visualEvidence = visualEvidence
 			self.visualThreshold = visualThreshold
 			self.visualThresholdWasAutomatic = visualThresholdWasAutomatic
+			self.overlapCheck = overlapCheck
+			self.overlapAgreement = overlapAgreement
 			self.link = link
 		}
 	}
@@ -155,6 +168,9 @@ public struct SortManifest: Codable, Equatable, Sendable
 		public var visualDistanceHistogram: [Int]
 		/// 鮮鋭度の中央値。閾値の妥当性を見るための基準。
 		public var sharpnessMedian: Double?
+		/// 重なりの検証の集計（確かめなかったときは nil）。**「共有写真が少ない」
+		/// のが撮り方のせいか閾値のせいかを、写真を見ずに切り分ける材料**になる。
+		public var overlapChecks: OverlapChecks?
 
 		public init(
 			inputCount: Int,
@@ -164,8 +180,10 @@ public struct SortManifest: Codable, Equatable, Sendable
 			excludedByReason: [String: Int],
 			scoreHistogram: [Int],
 			visualDistanceHistogram: [Int],
-			sharpnessMedian: Double?)
+			sharpnessMedian: Double?,
+			overlapChecks: OverlapChecks? = nil)
 		{
+			self.overlapChecks = overlapChecks
 			self.inputCount = inputCount
 			self.keptCount = keptCount
 			self.groupCount = groupCount
@@ -174,6 +192,24 @@ public struct SortManifest: Codable, Equatable, Sendable
 			self.scoreHistogram = scoreHistogram
 			self.visualDistanceHistogram = visualDistanceHistogram
 			self.sharpnessMedian = sharpnessMedian
+		}
+
+		/// 重なりの検証を何組行い、どう判定したか。**写真そのものを含まない**。
+		public struct OverlapChecks: Codable, Equatable, Sendable
+		{
+			/// 実際に重なっていると確かめた組数。
+			public var verified: Int
+			/// 重なっていないと分かって落とした組数。
+			public var rejected: Int
+			/// 判定材料が足りず保留した組数（模様が無い・読めない）。
+			public var undecided: Int
+
+			public init(verified: Int, rejected: Int, undecided: Int)
+			{
+				self.verified = verified
+				self.rejected = rejected
+				self.undecided = undecided
+			}
 		}
 	}
 
@@ -220,8 +256,12 @@ public struct SortManifest: Codable, Equatable, Sendable
 		/// 共有写真の視点の散らばり（低いと合成が退化しやすい）。
 		public var viewpointSpread: Double?
 		/// 両方のグループが写している共通の場所（視覚クラスタ）。**時刻が
-		/// 離れていても成立する繋ぎ目**なので、合成では最も信頼できる。
+		/// 離れていても成立する繋ぎ目**なので、合成では信頼できる。
 		public var sharedRoom: String?
+		/// 共有写真が**実際に重なって写っていることを確かめた**か（§4.6.1）。
+		/// これが true の隣接は最も信頼してよい。false は「確かめていない」で、
+		/// 「重なっていない」ではない。
+		public var overlapVerified: Bool
 
 		public init(
 			a: String,
@@ -229,8 +269,10 @@ public struct SortManifest: Codable, Equatable, Sendable
 			sharedPhotos: [String],
 			confidence: Double,
 			viewpointSpread: Double?,
-			sharedRoom: String?)
+			sharedRoom: String?,
+			overlapVerified: Bool = false)
 		{
+			self.overlapVerified = overlapVerified
 			self.a = a
 			self.b = b
 			self.sharedPhotos = sharedPhotos

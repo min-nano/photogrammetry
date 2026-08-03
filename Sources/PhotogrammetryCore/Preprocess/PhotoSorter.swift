@@ -65,12 +65,18 @@ public struct PhotoSorter: Sendable
 {
 	/// 写真からメタデータを読む役。
 	public var reader: PhotoMetadataReading
+	/// 共有写真の候補が実際に重なっているかを確かめる役（設計メモ §4.6.1）。
+	public var overlapVerifier: PhotoOverlapVerifying
 	/// この Mac の 1 セッション上限枚数（診断に使う）。分からなければ nil。
 	public var hardwareLimit: Int?
 
-	public init(reader: PhotoMetadataReading = PhotoInspector(), hardwareLimit: Int? = nil)
+	public init(
+		reader: PhotoMetadataReading = PhotoInspector(),
+		overlapVerifier: PhotoOverlapVerifying = ImageRegistrar(),
+		hardwareLimit: Int? = nil)
 	{
 		self.reader = reader
+		self.overlapVerifier = overlapVerifier
 		self.hardwareLimit = hardwareLimit
 	}
 
@@ -136,7 +142,19 @@ public struct PhotoSorter: Sendable
 			photos: quality.kept, settings: request.groupingSettings)
 		progress(.progress(0.8))
 
-		let plan = SortPlanner.plan(grouping: grouping, settings: request.plannerSettings)
+		// 共有写真の候補を実際に位置合わせして確かめる（設計メモ §4.6.1）。
+		// 数十組ぶんのデコードと推論なので、進捗が止まったように見えないよう
+		// 先に一言出す。
+		if request.overlapCheck
+		{
+			progress(.note("共有写真の候補が実際に重なっているかを確認しています…"))
+		}
+		let plan = SortPlanner.plan(
+			grouping: grouping,
+			settings: request.plannerSettings,
+			verifyOverlap: overlapProbe(for: request, cancellation: cancellation))
+		try checkCancellation()
+		progress(.progress(0.85))
 		let diagnostics = SortDiagnostics.evaluate(
 			plan: plan,
 			grouping: grouping,
@@ -220,6 +238,26 @@ public struct PhotoSorter: Sendable
 		}
 	}
 
+	/// 重なりの検証を計画へ渡す形にする。指示が「確かめない」なら nil を返し、
+	/// 計画側は従来どおり（フェーズ 2 まで）の選び方に戻る。
+	///
+	/// 中断は**問い合わせのたびに見る**。数千枚のデコードと同じく数分かかりうる
+	/// 段なので、ここで効かないと「キャンセルが効かないボタン」になる。
+	func overlapProbe(for request: SortRequest, cancellation: SortCancellation?)
+		-> SortPlanner.OverlapProbe?
+	{
+		guard request.overlapCheck
+		else
+		{
+			return nil
+		}
+		let verifier = overlapVerifier
+		return
+		{ queries in
+			verifier.overlaps(for: queries, isCancelled: { cancellation?.isCancelled == true })
+		}
+	}
+
 	func makeManifest(
 		request: SortRequest,
 		plan: SortPlan,
@@ -254,6 +292,8 @@ public struct PhotoSorter: Sendable
 				visualEvidence: request.visualEvidence,
 				visualThreshold: grouping.rooms.threshold,
 				visualThresholdWasAutomatic: grouping.rooms.thresholdWasAutomatic,
+				overlapCheck: request.overlapCheck,
+				overlapAgreement: request.plannerSettings.minimumOverlapAgreement,
 				link: request.link),
 			evidence: SortManifest.Evidence(
 				used: grouping.usedEvidence.map(\.rawValue),
@@ -266,7 +306,12 @@ public struct PhotoSorter: Sendable
 				excludedByReason: byReason,
 				scoreHistogram: grouping.scoreHistogram,
 				visualDistanceHistogram: grouping.rooms.distanceHistogram,
-				sharpnessMedian: quality.sharpnessMedian),
+				sharpnessMedian: quality.sharpnessMedian,
+				overlapChecks: plan.overlapSummary.map
+				{
+					SortManifest.Statistics.OverlapChecks(
+						verified: $0.verified, rejected: $0.rejected, undecided: $0.undecided)
+				}),
 			groups: plan.groups.map
 			{
 				SortManifest.Group(
@@ -286,7 +331,8 @@ public struct PhotoSorter: Sendable
 					sharedPhotos: $0.sharedPhotos,
 					confidence: $0.confidence,
 					viewpointSpread: $0.viewpointSpread,
-					sharedRoom: $0.sharedRoom)
+					sharedRoom: $0.sharedRoom,
+					overlapVerified: $0.overlapVerified)
 			},
 			excluded: quality.excluded.map
 			{

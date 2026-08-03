@@ -316,6 +316,13 @@ struct ContentView: View
 					.font(.caption)
 					.foregroundColor(.secondary)
 
+				Toggle("共有写真の重なりを確かめる", isOn: $model.overlapCheck)
+				Text("グループ間で共有する写真を、実際に位置合わせして「同じものが"
+					+ "写っている」と確かめてから選びます。切ると速くなりますが、"
+					+ "別の場所の写真が共有写真に混ざることがあります。")
+					.font(.caption)
+					.foregroundColor(.secondary)
+
 				Toggle("サブフォルダも対象にする", isOn: $model.sortRecursive)
 				Toggle("確認のみ（ファイルを作らず診断だけ）", isOn: $model.sortDryRun)
 				Text("撮り直しが要るかはここで分かります。仕分けは数分ですが、再構成は数時間かかります。")

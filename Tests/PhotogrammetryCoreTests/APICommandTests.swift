@@ -266,6 +266,7 @@ final class APICommandTests: XCTestCase
 				+ "&overlap=8&maxPerGroup=120&minPerGroup=15&timeGap=120"
 				+ "&groupThreshold=0.4&minSharpness=12.5&duplicateDistance=6"
 				+ "&visual=false&visualThreshold=0.45"
+				+ "&overlapCheck=false&overlapAgreement=0.5"
 				+ "&link=copy&recursive=false&dryRun=true")!
 		let request = try parseSort(url: url)
 		XCTAssertEqual(request.inputFolder.path, "/tmp/photos")
@@ -279,6 +280,8 @@ final class APICommandTests: XCTestCase
 		XCTAssertEqual(request.duplicateDistance, 6)
 		XCTAssertFalse(request.visualEvidence)
 		XCTAssertEqual(request.visualThreshold, 0.45)
+		XCTAssertFalse(request.overlapCheck)
+		XCTAssertEqual(request.overlapAgreement, 0.5)
 		XCTAssertEqual(request.link, .copy)
 		XCTAssertFalse(request.recursive)
 		XCTAssertTrue(request.dryRun)
@@ -294,8 +297,10 @@ final class APICommandTests: XCTestCase
 		XCTAssertNil(request.groupThreshold)
 		XCTAssertNil(request.minimumSharpness)
 		XCTAssertNil(request.visualThreshold)
-		// 視覚解析は既定で入れる（切るのは逃げ道）。
+		XCTAssertNil(request.overlapAgreement)
+		// 視覚解析も重なりの確認も既定で入れる（切るのは逃げ道）。
 		XCTAssertTrue(request.visualEvidence)
+		XCTAssertTrue(request.overlapCheck)
 		XCTAssertTrue(request.recursive)
 		XCTAssertFalse(request.dryRun)
 	}
@@ -337,6 +342,8 @@ final class APICommandTests: XCTestCase
 			"--duplicate-distance", "6",
 			"--visual-threshold", "0.45",
 			"--no-visual",
+			"--overlap-agreement", "0.5",
+			"--no-overlap-check",
 			"--link", "symlink",
 			"--no-recursive",
 			"--dry-run",
@@ -346,6 +353,8 @@ final class APICommandTests: XCTestCase
 		XCTAssertEqual(request.overlap, 8)
 		XCTAssertEqual(request.visualThreshold, 0.45)
 		XCTAssertFalse(request.visualEvidence)
+		XCTAssertEqual(request.overlapAgreement, 0.5)
+		XCTAssertFalse(request.overlapCheck)
 		XCTAssertEqual(request.link, .symlink)
 		XCTAssertFalse(request.recursive)
 		XCTAssertTrue(request.dryRun)
@@ -400,6 +409,8 @@ final class APICommandTests: XCTestCase
 			duplicateDistance: 5,
 			visualEvidence: false,
 			visualThreshold: 0.45,
+			overlapCheck: false,
+			overlapAgreement: 0.5,
 			link: .copy,
 			recursive: false,
 			dryRun: true)
@@ -410,11 +421,15 @@ final class APICommandTests: XCTestCase
 		request.minimumSharpness = nil
 		request.visualThreshold = nil
 		request.visualEvidence = true
+		request.overlapAgreement = nil
+		request.overlapCheck = true
 		let arguments = APICommand.arguments(for: request)
 		XCTAssertFalse(arguments.contains("--group-threshold"))
 		XCTAssertFalse(arguments.contains("--min-sharpness"))
 		XCTAssertFalse(arguments.contains("--visual-threshold"))
 		XCTAssertFalse(arguments.contains("--no-visual"))
+		XCTAssertFalse(arguments.contains("--overlap-agreement"))
+		XCTAssertFalse(arguments.contains("--no-overlap-check"))
 		XCTAssertEqual(try parseSort(arguments: arguments), request)
 	}
 

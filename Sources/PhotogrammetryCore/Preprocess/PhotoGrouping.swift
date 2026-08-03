@@ -106,6 +106,9 @@ public struct GroupingSettings: Equatable, Sendable
 	public var minPerGroup: Int
 	/// 結合スコアの閾値。nil なら分布から自動決定する。
 	public var threshold: Double?
+	/// 小さすぎるグループを隣へ吸収するのに必要な結び付きの強さ。nil なら
+	/// 結合スコアの閾値から決める（`absorptionThresholdRatio`）。
+	public var minimumAbsorptionScore: Double?
 	/// 撮影順で前後この枚数までを必ず比較する。
 	public var neighborWindow: Int
 	/// 知覚ハッシュが近い上位この件数を、撮影順から離れていても比較する
@@ -161,6 +164,7 @@ public struct GroupingSettings: Equatable, Sendable
 		maxPerGroup: Int = 150,
 		minPerGroup: Int = 20,
 		threshold: Double? = nil,
+		minimumAbsorptionScore: Double? = nil,
 		neighborWindow: Int = 60,
 		visualNeighbors: Int = 12,
 		maxLinksPerGroup: Int = 4,
@@ -181,6 +185,7 @@ public struct GroupingSettings: Equatable, Sendable
 		self.maxPerGroup = maxPerGroup
 		self.minPerGroup = minPerGroup
 		self.threshold = threshold
+		self.minimumAbsorptionScore = minimumAbsorptionScore
 		self.neighborWindow = neighborWindow
 		self.visualNeighbors = visualNeighbors
 		self.maxLinksPerGroup = maxLinksPerGroup
@@ -298,6 +303,12 @@ public enum PhotoGrouping
 	/// スコア分布のヒストグラムの分割数。
 	public static let histogramBins = 20
 
+	/// 小さすぎるグループを隣へ吸収するのに要求する強さ（結合スコアの閾値に
+	/// 対する割合）。閾値そのものは要求しない — それを満たすなら最初から
+	/// 同じ連結成分になっているはずで、上限枚数で割った区間まで
+	/// `_unassigned` へ送ってしまう。
+	public static let absorptionThresholdRatio = 0.5
+
 	/// 切れ目を測るときに見る前後の枚数。**この幅の前後がどれだけ繋がって
 	/// いるか**だけで判定する（離れた写真どうしの組は全体の構造の話であって、
 	/// 切れ目の判定材料ではない）。狭すぎると 1 枚のブレで誤判定し、広すぎると
@@ -366,8 +377,14 @@ public enum PhotoGrouping
 		parts.sort(by: startsBefore)
 
 		// --- 小さすぎるグループの吸収 ---
+		// 吸収を認める強さの下限は結合スコアの閾値から決める。閾値そのものを
+		// 課すと「同じグループにできるほど強い繋がり」を要求することになり、
+		// 上限枚数で割った区間まで `_unassigned` へ行ってしまう。
 		let absorbed = absorbSmallGroups(
-			parts: parts, edges: scored, settings: settings)
+			parts: parts,
+			edges: scored,
+			bar: settings.minimumAbsorptionScore ?? threshold * absorptionThresholdRatio,
+			settings: settings)
 		let groups = absorbed.parts.enumerated().map
 		{ index, members in
 			PhotoGroup(id: identifier(index), members: members)
@@ -874,9 +891,23 @@ public enum PhotoGrouping
 
 	/// 小さすぎるグループを、最も結び付きの強い隣へ吸収する。吸収できなければ
 	/// `_unassigned` へ送る（黙って混ぜない）。
+	///
+	/// **結び付きの強さは「上位のエッジの平均」で測る（合計ではない）。**
+	/// 合計にすると、弱い繋がりでもエッジの本数が多い大きなグループが必ず勝つ。
+	/// 実データ（1424 枚）では、SNS 経由で受け取った EXIF の無い写真が作る
+	/// 小さな塊が、まったく別の場所の大きなグループへ次々と吸い込まれていた。
+	/// `buildLinks` の confidence と同じ測り方に揃えてある。
+	///
+	/// **そのうえで、強さが `bar` に届かない吸収は行わない。** 「小さいから
+	/// どこかへ入れる」は、無関係な写真をグループへ持ち込むだけで再構成の役に
+	/// 立たない。行き先が無いことは `_unassigned` として必ず伝える（§4.0 の
+	/// 「黙って悪い結果を出さない」）。
+	///
+	/// - Parameter bar: 吸収を認める結び付きの強さの下限。
 	static func absorbSmallGroups(
 		parts: [[Int]],
 		edges: [PairScore],
+		bar: Double,
 		settings: GroupingSettings) -> (parts: [[Int]], unassigned: [Int])
 	{
 		guard parts.count > 1
@@ -907,7 +938,7 @@ public enum PhotoGrouping
 					membership[member] = position
 				}
 			}
-			var strength: [Int: Double] = [:]
+			var scores: [Int: [Double]] = [:]
 			for edge in edges
 			{
 				guard let left = membership[edge.i], let right = membership[edge.j], left != right
@@ -917,15 +948,17 @@ public enum PhotoGrouping
 				}
 				if left == index
 				{
-					strength[right, default: 0] += edge.score
+					scores[right, default: []].append(edge.score)
 				}
 				else if right == index
 				{
-					strength[left, default: 0] += edge.score
+					scores[left, default: []].append(edge.score)
 				}
 			}
+			let strength = scores.mapValues(linkStrength)
 			let target = strength
 				.filter { result[$0.key].count + small.count <= settings.maxPerGroup }
+				.filter { $0.value >= bar }
 				.max { left, right in
 					left.value == right.value ? left.key > right.key : left.value < right.value
 				}?.key
@@ -945,6 +978,23 @@ public enum PhotoGrouping
 		result.sort(by: startsBefore)
 		return (result, unassigned)
 	}
+
+	/// 2 つのグループの結び付きの強さ。**上位のエッジの平均**（`buildLinks` の
+	/// confidence と同じ測り方）。何本繋がっているかではなく、いちばん強い
+	/// 繋がりがどれだけ強いかを見る。
+	static func linkStrength(_ scores: [Double]) -> Double
+	{
+		let top = scores.sorted(by: >).prefix(linkSampleSize)
+		guard !top.isEmpty
+		else
+		{
+			return 0
+		}
+		return top.reduce(0, +) / Double(top.count)
+	}
+
+	/// 結び付きの強さを測るときに見るエッジの本数。
+	static let linkSampleSize = 5
 
 	/// グループ間の隣接を作る。**閾値を下回ったエッジも含める**のが要点で、
 	/// 切れ目をまたぐ写真こそが合成の対応点になる（設計メモ §4.4）。
@@ -997,8 +1047,7 @@ public enum PhotoGrouping
 			{
 				$0.score == $1.score ? ($0.i == $1.i ? $0.j < $1.j : $0.i < $1.i) : $0.score > $1.score
 			}
-			let top = sorted.prefix(5)
-			let confidence = top.isEmpty ? 0 : top.map(\.score).reduce(0, +) / Double(top.count)
+			let confidence = linkStrength(sorted.map(\.score))
 			let a = key / groups.count
 			let b = key % groups.count
 			all.append((
