@@ -755,10 +755,18 @@ public enum PhotoGrouping
 	/// 大きすぎるグループを「撮影の流れの最も弱い切れ目」で二分し、上限以下に
 	/// なるまで繰り返す。
 	///
-	/// 切れ目は、撮影順に並べたときにその位置をまたぐエッジの重みの合計が最小に
-	/// なる場所。**部屋を移るときに立ち止まれば、そこがそのまま最小になる**
+	/// 切れ目は、撮影順に並べたときにその位置をまたぐエッジの**平均**の重みが
+	/// 最小になる場所。**部屋を移るときに立ち止まれば、そこがそのまま最小になる**
 	/// （撮影ガイド §12-2 が効くのはここ）。守られていなくても必ずどこかで切れる
 	/// ので、撮影が推奨から外れていても破綻しない。
+	///
+	/// **合計ではなく平均を見る。** 合計は「その位置を何本のエッジがまたぐか」に
+	/// 引きずられる。またぐ本数は中央ほど多い（端では片側が短いので少ない）ので、
+	/// 合計は上に凸の形になり、**内容と関係なく端が最小**になってしまう。実データ
+	/// （1424 枚）では 63 グループ中 57 グループがちょうど下限枚数で切られ、
+	/// グループ間の時刻差の中央値は 2 秒だった — つまり撮影が続いている真ん中で
+	/// 機械的に切っていた。**屋外と室内が同じグループに入るのはこれが原因。**
+	/// 平均なら、端は「近くて強いエッジばかり」で高く出るので選ばれない。
 	static func split(members: [Int], edges: [PairScore], maxPerGroup: Int, minPerGroup: Int)
 		-> [[Int]]
 	{
@@ -768,8 +776,9 @@ public enum PhotoGrouping
 			return [members]
 		}
 		let positions = Dictionary(uniqueKeysWithValues: members.enumerated().map { ($1, $0) })
-		// 位置 p と p+1 の間をまたぐエッジの重み合計。差分配列で一度に求める。
+		// 位置 p と p+1 の間をまたぐエッジの重みの合計と本数。差分配列で一度に求める。
 		var crossing = [Double](repeating: 0, count: members.count)
+		var spanning = [Double](repeating: 0, count: members.count)
 		for edge in edges
 		{
 			guard let left = positions[edge.i], let right = positions[edge.j]
@@ -788,13 +797,18 @@ public enum PhotoGrouping
 			// 始点で足して終点で引く（high は必ず配列内）。
 			crossing[low] += edge.score
 			crossing[high] -= edge.score
+			spanning[low] += 1
+			spanning[high] -= 1
 		}
-		var running = 0.0
+		var runningWeight = 0.0
+		var runningCount = 0.0
 		var weights = [Double](repeating: 0, count: members.count)
 		for index in 0 ..< members.count
 		{
-			running += crossing[index]
-			weights[index] = running
+			runningWeight += crossing[index]
+			runningCount += spanning[index]
+			// 1 本もまたがない位置は「完全に切れている」ので最小（0）でよい。
+			weights[index] = runningCount > 0 ? runningWeight / runningCount : 0
 		}
 
 		// 端に寄りすぎた切れ目は避ける（1 枚だけのグループを作らない）。

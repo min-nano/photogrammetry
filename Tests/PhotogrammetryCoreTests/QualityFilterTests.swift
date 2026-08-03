@@ -140,13 +140,14 @@ final class QualityFilterTests: XCTestCase
 		// **実データで見つかった穴。** `IMG_0001.JPEG` と `IMG_0001 2.JPEG` の
 		// ような複製は、EXIF の時刻が無ければ末尾の数字（連番）で並ぶため
 		// 撮影順では遠く離れる。連続する塊しか見ないと一度も比較されない。
+		// 指紋は互いに 16 ビット離してある（偶然「ほぼ同一」にならないように）。
 		let input = [
-			SamplePhoto.make(index: 1, hash: 0xFF00, sharpness: 100),
-			SamplePhoto.make(index: 2, hash: 0x1234, sharpness: 100),
-			SamplePhoto.make(index: 3, hash: 0x5678, sharpness: 100),
-			SamplePhoto.make(index: 4, hash: 0x9ABC, sharpness: 100),
+			SamplePhoto.make(index: 1, hash: 0x0000_0000_0000_00FF, sharpness: 100),
+			SamplePhoto.make(index: 2, hash: 0x0000_0000_00FF_0000, sharpness: 100),
+			SamplePhoto.make(index: 3, hash: 0x0000_00FF_0000_0000, sharpness: 100),
+			SamplePhoto.make(index: 4, hash: 0x00FF_0000_0000_0000, sharpness: 100),
 			// 1 枚目の複製（撮影順では 4 枚も離れている）。
-			SamplePhoto.make(index: 5, hash: 0xFF00, sharpness: 90),
+			SamplePhoto.make(index: 5, hash: 0x0000_0000_0000_00FF, sharpness: 90),
 		]
 		let outcome = QualityFilter.apply(to: input)
 		XCTAssertEqual(outcome.excluded.filter { $0.reason == .duplicate }.count, 1)

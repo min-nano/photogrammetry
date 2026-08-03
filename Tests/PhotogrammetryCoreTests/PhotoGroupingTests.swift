@@ -98,6 +98,35 @@ final class PhotoGroupingTests: XCTestCase
 		}
 	}
 
+	func testSplitCutsWhereTheFlowIsWeakestNotWhereItIsConvenient()
+	{
+		// **実データで露見した性質。** その位置をまたぐエッジの「合計」で切ると、
+		// またぐ本数（中央ほど多い）に引きずられて、内容と無関係に端が最小になる。
+		// 1424 枚の現場では 63 グループ中 57 グループがちょうど下限枚数で切られ、
+		// グループ間の時刻差の中央値は 2 秒だった（＝撮影の途中で切っていた）。
+		//
+		// 実データと同じ形にする（候補ペアの窓 60 枚 > 余白 20 枚）。位置 120 に
+		// 本物の切れ目を置くが、**谷は緩やか**にする — 屋外から室内へ歩いて入る
+		// 場面では時刻も位置も連続していて、変わるのは見た目と露出だけなので、
+		// 結び付きは「弱くなる」だけで断ち切れはしない。
+		// この条件だと、合計で選ぶ実装は端（位置 179）を、平均で選ぶ実装は
+		// 本物の切れ目（位置 120）を選ぶ。
+		var edges: [PairScore] = []
+		for i in 0 ..< 200
+		{
+			for j in (i + 1) ..< min(200, i + 61)
+			{
+				let crossesSeam = i <= 120 && j > 120
+				edges.append(PairScore(i: i, j: j, score: crossesSeam ? 0.6 : 0.9))
+			}
+		}
+		let parts = PhotoGrouping.split(
+			members: Array(0 ..< 200), edges: edges, maxPerGroup: 150, minPerGroup: 20)
+		XCTAssertEqual(parts.count, 2)
+		XCTAssertEqual(parts.first?.count, 121)
+		XCTAssertEqual(parts.last?.first, 121)
+	}
+
 	func testSplitGroupsRemainLinked()
 	{
 		let photos = SamplePhoto.sequence(start: 1, count: 100, startTime: 0, hashSeed: 0)
