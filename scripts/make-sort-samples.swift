@@ -86,9 +86,13 @@ func makeImage(room: Int, step: Int, flat: Bool) -> CGImage
 			green: Double((index + room) % 5) / 5,
 			blue: room == 0 ? Double(index % 3) / 6 : Double(index % 7) / 7,
 			alpha: 1))
+		// 視点の移動。横へ流しつつ、奥行きの違いを縦のずれ幅の差で表す
+		// （手前のものほど大きく動く）。**1 枚ごとの絵が十分に変わらないと
+		// 「ほぼ同一」として品質フィルタに落とされてしまう**ので、ここは
+		// 実際の歩行と同じくらい動かす。
 		context.fill(CGRect(
-			x: Double(Int((value >> 33) % 860) - step * 6),
-			y: Double((value >> 13) % 620),
+			x: Double(Int((value >> 33) % 860) - step * 24),
+			y: Double(Int((value >> 13) % 620) + (index % 5) * step * 3),
 			width: 70,
 			height: 50))
 	}

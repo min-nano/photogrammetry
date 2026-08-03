@@ -128,11 +128,16 @@ public struct PhotoInspector: PhotoMetadataReading, Sendable
 	/// すべてこの 1 枚から求める。原寸で計算しても判定は変わらないうえ、
 	/// 数千枚では時間が桁で変わるため。**縮小を 1 回で済ませる**のも要点で、
 	/// Vision 用にもう一度デコードするとそれだけで所要時間が倍になる。
+	///
+	/// 既定を 320 にしてあるのは Vision の都合。feature print の入力は
+	/// 299×299 で、これより小さい画像を渡すと拡大されてから特徴を取ることに
+	/// なる（＝「同じ部屋か」の判定が甘くなる）。ブレ判定と知覚ハッシュは
+	/// この大きさの違いに影響されない（どちらも分布との相対・大小関係だけを見る）。
 	public var thumbnailSize: Int
 	/// 視覚特徴を取る役（Vision）。Vision の型はこの向こうへ出ない。
 	public var featurePrinter: ImageFeaturePrinting
 
-	public init(thumbnailSize: Int = 256, featurePrinter: ImageFeaturePrinting = FeaturePrinter())
+	public init(thumbnailSize: Int = 320, featurePrinter: ImageFeaturePrinting = FeaturePrinter())
 	{
 		self.thumbnailSize = thumbnailSize
 		self.featurePrinter = featurePrinter
