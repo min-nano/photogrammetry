@@ -16,8 +16,9 @@
 //    1. **窓が成立する場所としない場所の地図**（`--starts` を振る）。どこが
 //       駄目なのかが分からないと、窓の作り方を直しようがない
 //    2. **窓の大きさへの感度**（`--counts`）。小さくすれば通るのか
-//    3. **`--ordering` の効き**（`sequential` / `unordered`）。窓が撮影順の連続
-//       区間なら sequential を名乗れる。位置合わせの戦略が変わるので効きうる
+//    3. **`--ordering` と `--sensitivity` の効き**。`sequential` は実測で
+//       start=0 の error 6 を成功へひっくり返した。`featureSensitivity = .high` は
+//       「特徴の少ない被写体」向けの設定で、白い壁ばかりの室内はまさにそれ
 //    4. **段階ごとの所要時間**。対応付けとメッシュ生成の比率（二巡構成の成否）
 //    5. **窓の中身**（レンズの混在・撮影の所要時間）。error 6 との相関を見る
 //
@@ -40,6 +41,7 @@
 //    --starts 0,400,600     撮影順の何枚目から取るか（既定 0）。`--start` も可
 //    --mode both|poses|model  既定 poses（both は同じ窓で両方測って倍率を出す）
 //    --ordering unordered|sequential|both  既定 unordered
+//    --sensitivity normal|high|both  既定 normal（high は特徴の少ない被写体向け）
 //    --detail reduced       model のときの詳細度（既定 reduced＝**保守的**。
 //                           medium / full ほどメッシュ側が重くなるので、
 //                           reduced で得た倍率は二巡構成に最も不利な値になる）
@@ -67,6 +69,7 @@ var modeName = "poses"
 var detailName = "reduced"
 var subjectName = "scene"
 var orderingName = "unordered"
+var sensitivityName = "normal"
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -99,10 +102,13 @@ while !arguments.isEmpty
 			subjectName = value()
 		case "--ordering":
 			orderingName = value()
+		case "--sensitivity":
+			sensitivityName = value()
 		case "-h", "--help":
 			print("使い方: measure-poses <写真フォルダ> [--counts 100,200] "
 				+ "[--starts 0,400,600] [--mode poses|model|both] "
-				+ "[--ordering unordered|sequential|both] [--detail reduced] "
+				+ "[--ordering unordered|sequential|both] "
+				+ "[--sensitivity normal|high|both] [--detail reduced] "
 				+ "[--subject scene|object]")
 			exit(0)
 		default:
@@ -374,7 +380,8 @@ func stageName(_ stage: PhotogrammetrySession.Output.ProcessingStage) -> String
 	}
 }
 
-func measure(mode: Mode, start: Int, count: Int, ordering: String) async -> Measurement
+func measure(
+	mode: Mode, start: Int, count: Int, ordering: String, sensitivity: String) async -> Measurement
 {
 	var measurement = Measurement()
 	let peak = PeakMemory()
@@ -397,6 +404,9 @@ func measure(mode: Mode, start: Int, count: Int, ordering: String) async -> Meas
 
 	var configuration = PhotogrammetrySession.Configuration()
 	configuration.sampleOrdering = ordering == "sequential" ? .sequential : .unordered
+	// **白い壁ばかりの室内は特徴が少ない。** RealityKit はそのための設定を
+	// 持っているので、error 6 の region で効くかどうかを測る（既定は normal）。
+	configuration.featureSensitivity = sensitivity == "high" ? .high : .normal
 	// 建物・部屋ではオブジェクトマスキングを切る（切らないと前景の切り出しが
 	// 破綻してアライメントが落ちる。PhotogrammetryEngine と同じ判断）。
 	configuration.isObjectMaskingEnabled = (subjectName == "object")
@@ -495,16 +505,18 @@ func gigabytes(_ bytes: UInt64) -> String
 }
 
 func line(
-	mode: Mode, start: Int, count: Int, ordering: String, _ measurement: Measurement) -> String
+	mode: Mode, start: Int, count: Int, ordering: String, sensitivity: String,
+	_ measurement: Measurement) -> String
 {
 	let stages = measurement.stageStarts
 		.map { String(format: "%@:%.0f", $0.0, $0.1) }
 		.joined(separator: ",")
 	let window = describeWindow(start: start, count: count)
 	return String(
-		format: "run mode=%@ start=%d count=%d ordering=%@ elapsed=%.1f posed=%d skipped=%d "
-			+ "invalid=%d downsampled=%@ peak=%@ span=%.0f lenses=%@ stages=%@ result=%@",
-		mode.rawValue, start, count, ordering, measurement.elapsed, measurement.posed,
+		format: "run mode=%@ start=%d count=%d ordering=%@ sensitivity=%@ elapsed=%.1f posed=%d "
+			+ "skipped=%d invalid=%d downsampled=%@ peak=%@ span=%.0f lenses=%@ stages=%@ "
+			+ "result=%@",
+		mode.rawValue, start, count, ordering, sensitivity, measurement.elapsed, measurement.posed,
 		measurement.skipped, measurement.invalid,
 		measurement.downsampled ? "yes" : "no",
 		gigabytes(measurement.peakBytes),
@@ -521,6 +533,7 @@ switch modeName
 	default: modes = [.poses]
 }
 let orderings = orderingName == "both" ? ["unordered", "sequential"] : [orderingName]
+let sensitivities = sensitivityName == "both" ? ["normal", "high"] : [sensitivityName]
 
 Task
 {
@@ -543,34 +556,38 @@ Task
 				emit("# start=\(start) count=\(count) は写真が足りないので飛ばします")
 				continue
 			}
-			var elapsedByMode: [Mode: TimeInterval] = [:]
 			for ordering in orderings
 			{
-				for mode in modes
+				for sensitivity in sensitivities
 				{
-					log("測定中: mode=\(mode.rawValue) start=\(start) count=\(count) "
-						+ "ordering=\(ordering) …")
-					let measurement = await measure(
-						mode: mode, start: start, count: count, ordering: ordering)
-					emit(line(
-						mode: mode, start: start, count: count, ordering: ordering,
-						measurement))
-					// 倍率は**両方成功したときだけ**出す。error 6 どうしの比は
-					// 「どちらも位置合わせで死んだ」を意味するだけで、二巡構成の
-					// 判断材料にならない（実際 0.98 という無意味な値が出た）。
-					if measurement.outcome == "ok"
+					var elapsedByMode: [Mode: TimeInterval] = [:]
+					for mode in modes
 					{
-						elapsedByMode[mode] = measurement.elapsed
+						log("測定中: mode=\(mode.rawValue) start=\(start) count=\(count) "
+							+ "ordering=\(ordering) sensitivity=\(sensitivity) …")
+						let measurement = await measure(
+							mode: mode, start: start, count: count, ordering: ordering,
+							sensitivity: sensitivity)
+						emit(line(
+							mode: mode, start: start, count: count, ordering: ordering,
+							sensitivity: sensitivity, measurement))
+						// 倍率は**両方成功したときだけ**出す。error 6 どうしの比は
+						// 「どちらも位置合わせで死んだ」を意味するだけで、二巡構成の
+						// 判断材料にならない（実際 0.98 という無意味な値が出た）。
+						if measurement.outcome == "ok"
+						{
+							elapsedByMode[mode] = measurement.elapsed
+						}
+					}
+					if let poses = elapsedByMode[.poses], let model = elapsedByMode[.model],
+						poses > 0
+					{
+						emit(String(
+							format: "ratio start=%d count=%d ordering=%@ sensitivity=%@ "
+								+ "poses=%.1f model=%.1f speedup=%.2f",
+							start, count, ordering, sensitivity, poses, model, model / poses))
 					}
 				}
-				if let poses = elapsedByMode[.poses], let model = elapsedByMode[.model], poses > 0
-				{
-					emit(String(
-						format: "ratio start=%d count=%d ordering=%@ poses=%.1f model=%.1f "
-							+ "speedup=%.2f",
-						start, count, ordering, poses, model, model / poses))
-				}
-				elapsedByMode.removeAll()
 			}
 		}
 	}
