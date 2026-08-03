@@ -29,6 +29,8 @@
 //    --limit N          撮影順の先頭 N 枚だけで測る（下見用）
 //    --max-pairs N      無関係な組の基準を取るための標本数（既定 200000）
 //    --segments N       撮影順を N 枚ずつに切って区間ごとの中身を出す
+//    --seriate 12       視覚特徴だけで並べ替える（スペクトル法）。EXIF 無しで
+//                       成立するかの検証。k は相互近傍の数
 //    --download         iCloud Drive の未ダウンロードをまとめて落としてから進む
 //
 
@@ -51,6 +53,9 @@ var maxPairs = 200_000
 var segments: Int?
 /// iCloud Drive の未ダウンロードをまとめて落としてから進む（`--download`）。
 var downloadFirst = false
+/// **視覚特徴だけで並べ替える**（`--seriate k`）。EXIF を一切使わずに
+/// 「隣り合う写真は重なっている」並びを作れるかを確かめる（設計 §3.9）。
+var seriateK: Int?
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -68,9 +73,11 @@ while !arguments.isEmpty
 			segments = arguments.isEmpty ? nil : Int(arguments.removeFirst())
 		case "--download":
 			downloadFirst = true
+		case "--seriate":
+			seriateK = arguments.isEmpty ? 12 : (Int(arguments.removeFirst()) ?? 12)
 		case "-h", "--help":
 			print("使い方: measure-ordering <写真フォルダ> [--no-recursive] [--limit N] "
-				+ "[--max-pairs N] [--segments N] [--download]")
+				+ "[--max-pairs N] [--segments N] [--seriate 12] [--download]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -1062,6 +1069,231 @@ print("  " + pad("無作為", 6) + pad("\(count / 2)", 11)
 	+ chance.map { pad(format($0, 2), 9) }.joined())
 print("  → ±1 が「無作為」の行を明確に上回らなければ Step 1 は成立しない")
 print("    （目安: 上位30 が 0.5 以上、かつ無作為の 3 倍以上）")
+
+
+// ---------------------------------------------------------------------
+// 視覚特徴だけで並べ替える（--seriate・EXIF を使わない）
+//
+// **理屈**: 歩きながら撮った写真は「撮影順に離れるほど似ていない」。この性質を
+// 持つ類似度行列を Robinson 行列と呼び、**その並べ替えはグラフラプラシアンの
+// 第 2 固有ベクトル（フィードラーベクトル）で復元できる**ことが知られている
+// （Atkins, Boman & Hendrickson 1998）。閾値もクラスタ数も要らない。
+//
+// この現場の実測（隔たりごとの距離が 0.242 → 0.456 へ単調に増える）は、まさに
+// その前提が成り立っていることの確認になっている。**現場固有の数値合わせでは
+// なく、撮影という物理過程から来る性質**なので、他の現場へも持ち越せる。
+// ---------------------------------------------------------------------
+
+if let neighbourCount = seriateK, neighbourCount > 0, count > 10
+{
+	// --- 1. 相互 k 近傍グラフ（閾値を持たない） ---
+	var neighbours = [[Int]](repeating: [], count: count)
+	let neighbourLock = NSLock()
+	matrix.withUnsafeBufferPointer
+	{ buffer in
+		guard let base = buffer.baseAddress
+		else
+		{
+			return
+		}
+		DispatchQueue.concurrentPerform(iterations: count)
+		{ index in
+			var best: [(Int, Double)] = []
+			for other in 0 ..< count where other != index
+			{
+				let value = distance(base, index, other, dimension)
+				if best.count < neighbourCount
+				{
+					best.append((other, value))
+					best.sort { $0.1 < $1.1 }
+				}
+				else if value < best[best.count - 1].1
+				{
+					best[best.count - 1] = (other, value)
+					best.sort { $0.1 < $1.1 }
+				}
+			}
+			neighbourLock.lock()
+			neighbours[index] = best.map(\.0)
+			neighbourLock.unlock()
+		}
+	}
+
+	var weights = [[(node: Int, weight: Double)]](repeating: [], count: count)
+	var edgeCount = 0
+	matrix.withUnsafeBufferPointer
+	{ buffer in
+		guard let base = buffer.baseAddress
+		else
+		{
+			return
+		}
+		for index in 0 ..< count
+		{
+			for other in neighbours[index] where other > index && neighbours[other].contains(index)
+			{
+				// 相互に上位へ入った組だけを辺にする（片側だけの近傍は、
+				// ハブになった 1 枚が全体を繋いでしまうので採らない）。
+				let weight = max(0.001, 1 - distance(base, index, other, dimension))
+				weights[index].append((other, weight))
+				weights[other].append((index, weight))
+				edgeCount += 1
+			}
+		}
+	}
+
+	// --- 2. 連結成分 ---
+	var parent = Array(0 ..< count)
+	func findRoot(_ node: Int) -> Int
+	{
+		var root = node
+		while parent[root] != root
+		{
+			parent[root] = parent[parent[root]]
+			root = parent[root]
+		}
+		return root
+	}
+	for index in 0 ..< count
+	{
+		for edge in weights[index]
+		{
+			let left = findRoot(index)
+			let right = findRoot(edge.node)
+			if left != right
+			{
+				parent[right] = left
+			}
+		}
+	}
+	var components: [Int: [Int]] = [:]
+	for index in 0 ..< count
+	{
+		components[findRoot(index), default: []].append(index)
+	}
+	let sortedComponents = components.values.sorted { $0.count > $1.count }
+
+	// --- 3. 成分ごとにフィードラーベクトルで並べる ---
+	func fiedlerOrder(_ nodes: [Int]) -> [Int]
+	{
+		guard nodes.count > 2
+		else
+		{
+			return nodes
+		}
+		var localIndex: [Int: Int] = [:]
+		for (position, node) in nodes.enumerated()
+		{
+			localIndex[node] = position
+		}
+		let size = nodes.count
+		var adjacency = [[(Int, Double)]](repeating: [], count: size)
+		var degree = [Double](repeating: 0, count: size)
+		for (position, node) in nodes.enumerated()
+		{
+			for edge in weights[node]
+			{
+				guard let other = localIndex[edge.node]
+				else
+				{
+					continue
+				}
+				adjacency[position].append((other, edge.weight))
+				degree[position] += edge.weight
+			}
+		}
+		// B = cI - L（L = D - W）の最大固有ベクトルを、定数ベクトルを
+		// 除きながら冪乗法で求める。それが L の第 2 固有ベクトル。
+		let shift = 2 * (degree.max() ?? 1)
+		var vector = (0 ..< size).map { Double($0 % 2 == 0 ? 1 : -1) * (1 + Double($0) / Double(size)) }
+		for _ in 0 ..< 4000
+		{
+			var next = [Double](repeating: 0, count: size)
+			for position in 0 ..< size
+			{
+				var sum = (shift - degree[position]) * vector[position]
+				for edge in adjacency[position]
+				{
+					sum += edge.1 * vector[edge.0]
+				}
+				next[position] = sum
+			}
+			let mean = next.reduce(0, +) / Double(size)
+			for position in 0 ..< size
+			{
+				next[position] -= mean
+			}
+			let norm = next.reduce(0) { $0 + $1 * $1 }.squareRoot()
+			guard norm > 0
+			else
+			{
+				break
+			}
+			vector = next.map { $0 / norm }
+		}
+		return nodes.enumerated()
+			.sorted { vector[$0.offset] < vector[$1.offset] }
+			.map(\.element)
+	}
+
+	var spectralOrder: [Int] = []
+	for nodes in sortedComponents
+	{
+		spectralOrder.append(contentsOf: fiedlerOrder(nodes))
+	}
+
+	// --- 4. 報告 ---
+	print("")
+	print("■ 視覚特徴だけで並べ替える（EXIF 不使用・スペクトル法）")
+	print("  相互 \(neighbourCount) 近傍グラフ  辺 \(edgeCount) 本")
+	print("  連結成分 \(sortedComponents.count) 個  大きい順: "
+		+ sortedComponents.prefix(6).map { String($0.count) }.joined(separator: " / "))
+
+	matrix.withUnsafeBufferPointer
+	{ buffer in
+		guard let base = buffer.baseAddress
+		else
+		{
+			return
+		}
+		print("  隔たりごとの距離（**この並べ替えでの**中央値）")
+		print("    隔たり   中央値     組数")
+		for offset in offsets
+		{
+			var values: [Double] = []
+			for index in 0 ..< (spectralOrder.count - offset)
+			{
+				values.append(distance(
+					base, spectralOrder[index], spectralOrder[index + offset], dimension))
+			}
+			print(String(
+				format: "    %5d %9@ %8d", offset, format(median(values)) as NSString, values.count))
+		}
+	}
+
+	// 撮影順（EXIF）との一致。**EXIF を答え合わせにだけ使う**。
+	var position = [Int](repeating: 0, count: count)
+	for (rank, node) in spectralOrder.enumerated()
+	{
+		position[node] = rank
+	}
+	var adjacentInBoth = 0
+	var comparable = 0
+	for index in 0 ..< (count - 1)
+	{
+		comparable += 1
+		if abs(position[index] - position[index + 1]) <= 3
+		{
+			adjacentInBoth += 1
+		}
+	}
+	print(String(
+		format: "  撮影順で隣り合う組のうち、この並べ替えでも 3 以内: %.2f（%d/%d）",
+		Double(adjacentInBoth) / Double(max(1, comparable)), adjacentInBoth, comparable))
+	print("  → 隔たり 1 の距離が撮影順のときと同等以下なら、**EXIF 無しで同じ品質の")
+	print("    並びが作れている**。一致率そのものは高くなくてよい（別の道順でも")
+	print("    「隣は重なっている」が成り立てば窓としては等価）")
+}
 
 print("")
 print("■ 距離の分布（隣り合う組）")
