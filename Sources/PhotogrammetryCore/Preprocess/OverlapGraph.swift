@@ -388,6 +388,16 @@ public enum OverlapSurvey
 			return graph
 		}
 
+		// **骨格が 1 組も判定できなかったら、そこで止める。** 模様の無い写真ばかり・
+		// 読めない形式ばかりの現場では、この先どれだけ測っても答えは出ない。
+		// 呼び出し側は合算スコアへ戻るので、残りの予算は 1 組も使わずに返すのが正しい
+		// （数千枚ぶんのデコードを黙って空振りさせない）。
+		guard graph.isUsable
+		else
+		{
+			return graph
+		}
+
 		// --- 2. 切れ目の補強 ---
 		guard consume(seamProbePairs(count: count, graph: graph, settings: settings))
 		else

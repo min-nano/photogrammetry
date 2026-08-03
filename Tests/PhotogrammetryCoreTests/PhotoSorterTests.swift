@@ -434,12 +434,25 @@ final class PhotoSorterTests: XCTestCase
 	// 重なりの確認（設計メモ §4.6.1）
 	// -----------------------------------------------------------------
 
+	/// 共有写真の選定だけに重なりを使う経路（フェーズ 2.5 と同じ動作）。
+	/// **グループ分けに重なりを使うと、この道具立てでは題材にならない** — この
+	/// 偽の役はすべての組に同じ答えを返すので、「全部重なる」なら 60 枚が
+	/// 1 グループになり、「全部重ならない」なら全員が孤立してしまう。
+	/// 隣接をまたぐ選定そのものを見たいので、ここでは切って測る。
+	func makeSharedPhotoRequest() -> SortRequest
+	{
+		var request = makeRequest()
+		request.overlapGrouping = false
+		return request
+	}
+
 	func testOverlapCheckIsRecordedInTheManifest() throws
 	{
 		let photos = try makePhotos()
 		let verifier = FakeOverlapVerifier(
 			answer: PhotoOverlap(agreement: 0.9, sharedArea: 0.6))
-		let manifest = try makeSorter(photos, verifier: verifier).run(makeRequest())
+		let manifest = try makeSorter(photos, verifier: verifier)
+			.run(makeSharedPhotoRequest())
 
 		XCTAssertGreaterThan(verifier.asked, 0)
 		XCTAssertTrue(manifest.settings.overlapCheck)
@@ -455,12 +468,53 @@ final class PhotoSorterTests: XCTestCase
 	{
 		let photos = try makePhotos()
 		let verifier = FakeOverlapVerifier(answer: PhotoOverlap.none)
-		let manifest = try makeSorter(photos, verifier: verifier).run(makeRequest())
+		let manifest = try makeSorter(photos, verifier: verifier)
+			.run(makeSharedPhotoRequest())
 
 		XCTAssertTrue(manifest.adjacency.isEmpty)
 		XCTAssertGreaterThan(manifest.statistics.overlapChecks?.rejected ?? 0, 0)
 		XCTAssertTrue(manifest.diagnostics.contains { $0.code == "noOverlapConfirmed" })
 		XCTAssertTrue(manifest.diagnostics.contains { $0.code == "noVisualOverlap" })
+	}
+
+	/// 既定の経路（フェーズ 2.6）。**グループ分けが重なりグラフで決まったことが
+	/// manifest から読めなければならない** — 仕分け結果の読み方が変わる情報なので。
+	func testOverlapGroupingIsRecordedInTheManifest() throws
+	{
+		let photos = try makePhotos()
+		// すべての組が重なる（＝ひと続きの場所を撮った）現場。
+		let verifier = FakeOverlapVerifier(
+			answer: PhotoOverlap(agreement: 0.9, sharedArea: 0.6))
+		let manifest = try makeSorter(photos, verifier: verifier).run(makeRequest())
+
+		XCTAssertTrue(manifest.settings.overlapGrouping)
+		let graph = try XCTUnwrap(manifest.statistics.overlapGraph)
+		// 予算は枚数から決まる（写真 1 枚あたり 16 組）。
+		XCTAssertEqual(graph.budget, manifest.statistics.keptCount * 16)
+		XCTAssertEqual(manifest.settings.overlapBudget, graph.budget)
+		XCTAssertGreaterThan(graph.overlapping, 0)
+		XCTAssertEqual(graph.separate, 0)
+		XCTAssertEqual(graph.checked, graph.overlapping + graph.separate + graph.undecided)
+		XCTAssertFalse(graph.budgetExhausted, "骨格だけで繋がったので予算は余る")
+		XCTAssertTrue(manifest.evidence.used.contains("overlap"))
+		XCTAssertTrue(manifest.diagnostics.contains { $0.code == "overlapGrouping" })
+		// 全部重なる＝ひと続きなので 1 グループ。合成は要らない。
+		XCTAssertEqual(manifest.groups.count, 1)
+	}
+
+	/// 重なりでのグループ分けだけを切っても、共有写真の確認は残る。
+	func testOverlapGroupingCanBeTurnedOffWhileKeepingTheCheck() throws
+	{
+		let photos = try makePhotos()
+		let verifier = FakeOverlapVerifier(
+			answer: PhotoOverlap(agreement: 0.9, sharedArea: 0.6))
+		let manifest = try makeSorter(photos, verifier: verifier)
+			.run(makeSharedPhotoRequest())
+
+		XCTAssertFalse(manifest.settings.overlapGrouping)
+		XCTAssertNil(manifest.statistics.overlapGraph)
+		XCTAssertTrue(manifest.settings.overlapCheck)
+		XCTAssertNotNil(manifest.statistics.overlapChecks)
 	}
 
 	func testOverlapCheckCanBeTurnedOff() throws

@@ -331,7 +331,7 @@ final class OverlapGraphTests: XCTestCase
 
 	/// **1 組も判定できなければ合算スコアへ丸ごと戻る。** 確認が答えを出せない
 	/// 現場で歯止めまで失うと、確認前より悪くなる（§4.6.1 と同じ判断）。
-	func testFallsBackToCombinedScoreWhenNothingCanBeJudged()
+	func testFallsBackToCombinedScoreWhenNothingCanBeJudged() throws
 	{
 		var scene = SampleScene()
 		scene.add(count: 20, look: 0, place: 0, startStep: 0, startTime: 0)
@@ -349,6 +349,10 @@ final class OverlapGraphTests: XCTestCase
 			PhotoGrouping.group(photos: scene.photos, settings: settings).groups.map(\.members),
 			"フェーズ 2 とまったく同じ結果に戻る")
 		XCTAssertNotNil(grouping.overlap, "測った事実そのものは捨てない（診断と再利用のため）")
+		// **空振りに予算を使い切らない。** 骨格が 1 組も判定できなければそこで止める。
+		let graph = try XCTUnwrap(grouping.overlap)
+		XCTAssertLessThan(graph.checked, graph.budget)
+		XCTAssertFalse(graph.budgetExhausted)
 	}
 
 	/// 中断は**確認のたびに効く**。効かないキャンセルボタンを出さないため。
