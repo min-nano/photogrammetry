@@ -62,11 +62,12 @@ final class PhotoOverlapTests: XCTestCase
 
 	func testShiftedPhotoAgreesWhenTheTransformMatches()
 	{
-		// 内容が右へ 24 画素ずれた 2 枚。基準の (x, y) は相手の (x - 24, y) に写る。
+		// 相手は模様が右へ 24 画素ずれて写っている（撮る位置を横へ動かした）。
+		// 基準の (x, y) と同じものは相手の (x + 24, y) にある。
 		let base = makeImage()
 		let other = makeImage(shiftX: -24)
 		let overlap = OverlapMeasurement.measure(
-			base: base, other: other, transform: .translation(x: -24, y: 0))
+			base: base, other: other, transform: .translation(x: 24, y: 0))
 		XCTAssertGreaterThan(overlap?.agreement ?? 0, 0.95)
 		// 重なりは横 (120-24)/120 = 0.8。
 		XCTAssertEqual(overlap?.sharedArea ?? 0, 0.8, accuracy: 0.05)

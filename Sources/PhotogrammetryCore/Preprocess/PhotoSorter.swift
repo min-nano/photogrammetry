@@ -252,10 +252,11 @@ public struct PhotoSorter: Sendable
 			return nil
 		}
 		let verifier = overlapVerifier
-		return
+		let probe: SortPlanner.OverlapProbe =
 		{ queries in
 			verifier.overlaps(for: queries, isCancelled: { cancellation?.isCancelled == true })
 		}
+		return probe
 	}
 
 	func makeManifest(

@@ -454,7 +454,7 @@ final class PhotoSorterTests: XCTestCase
 	func testAdjacencyIsDroppedAndReportedWhenNothingOverlaps() throws
 	{
 		let photos = try makePhotos()
-		let verifier = FakeOverlapVerifier(answer: .none)
+		let verifier = FakeOverlapVerifier(answer: PhotoOverlap.none)
 		let manifest = try makeSorter(photos, verifier: verifier).run(makeRequest())
 
 		XCTAssertTrue(manifest.adjacency.isEmpty)
@@ -466,7 +466,7 @@ final class PhotoSorterTests: XCTestCase
 	func testOverlapCheckCanBeTurnedOff() throws
 	{
 		let photos = try makePhotos()
-		let verifier = FakeOverlapVerifier(answer: .none)
+		let verifier = FakeOverlapVerifier(answer: PhotoOverlap.none)
 		var request = makeRequest()
 		request.overlapCheck = false
 		let manifest = try makeSorter(photos, verifier: verifier).run(request)
