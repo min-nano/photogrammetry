@@ -1,48 +1,49 @@
 //
 //  measure-poses.swift
 //
-//  **二巡構成（docs/design-loose-clustering.md §3.7）が成立するかを測る**
-//  スクリプト。設計上のリスク 6 —「`--poses-only` が十分速いことに依存している」—
-//  を、実機の Object Capture で確かめるためのもの。
+//  **実機の Object Capture に窓を投げて、何が起きるかを測る**スクリプト。
+//  docs/design-loose-clustering.md §5.3 / §5.4 の測定はこれで行う。
 //
-//  測るのは 3 つ。
+//  当初は二巡構成（§3.7）のコストを測るためだけのものだったが、1 回目の実測で
+//  **もっと手前の前提が崩れている**ことが分かったので、対象を広げた。
 //
-//    1. 姿勢だけ求める実行は、メッシュまで作る実行の何倍速いか
-//       → 1 巡目のコスト。ここが 0.8 倍しか速くならないなら二巡構成は割に合わない
-//    2. 姿勢だけなら窓を何枚まで大きくできるか
-//       → メモリを食うのはメッシュ生成以降のはずなので、1 巡目はずっと大きく
-//         取れる可能性がある。取れるほど全体座標系の継ぎ目が減る
-//    3. **段階ごとの所要時間**（preProcessing / imageAlignment /
-//       pointCloudGeneration / meshGeneration / textureMapping / optimization）
-//       → 1 回の本番実行だけでも「対応付けが全体の何割か」が分かる。これが
-//         8 割なら、メッシュを飛ばしても大して速くならないと事前に言える
+//    - 撮影順に連続した 100 枚が、場所によっては丸ごと error 6（位置合わせ失敗）
+//      になる。「連続区間なら再構成できる」という設計の土台が成り立っていない
+//    - 成功した窓でも姿勢が付いたのは 100 枚中 65 枚
 //
-//  ついでに **どの写真が捨てられたか**（skipped / invalid）と、**姿勢が付いた
-//  枚数**も数える。§3.7 の「姿勢が付かなかった写真＝本当に使えない写真」が
-//  実際にどれくらい出るのかは、ここで初めて分かる。
+//  したがって測るのは 5 つ。
 //
-//  なぜ本体（photogrammetry-cli）に `--poses-only` を足さないのか:
-//    足すかどうかを決めるための計測だから。**測ってから入れる**（#11 / #12 は
-//    測る前に入れて 2 度戻した）。二巡構成を採ると決まったら正式な入口を作る。
+//    1. **窓が成立する場所としない場所の地図**（`--starts` を振る）。どこが
+//       駄目なのかが分からないと、窓の作り方を直しようがない
+//    2. **窓の大きさへの感度**（`--counts`）。小さくすれば通るのか
+//    3. **`--ordering` の効き**（`sequential` / `unordered`）。窓が撮影順の連続
+//       区間なら sequential を名乗れる。位置合わせの戦略が変わるので効きうる
+//    4. **段階ごとの所要時間**。対応付けとメッシュ生成の比率（二巡構成の成否）
+//    5. **窓の中身**（レンズの混在・撮影の所要時間）。error 6 との相関を見る
+//
+//  なぜ本体（photogrammetry-cli）に足さないのか:
+//    これは「何を作るべきか」を決めるための計測だから。**測ってから入れる**
+//    （#11 / #12 は測る前に入れて 2 度戻した）。
 //
 //  使い方（Object Capture が動く実機で）:
 //
 //    swiftc -O scripts/measure-poses.swift -o /tmp/measure-poses
-//    /tmp/measure-poses ~/Pictures/現場 --counts 100,200,400 | tee /tmp/poses.txt
+//    /tmp/measure-poses ~/Pictures/現場 --starts 0,200,400,600,800 --counts 100 \
+//        --mode poses | tee -a /tmp/poses.txt
 //
-//  **必ず tee でファイルへ残すこと。** CorePhotogrammetry は内部エラーで
+//  **必ず tee -a でファイルへ残すこと。** CorePhotogrammetry は内部エラーで
 //  abort() することがあり（CLAUDE.md）、その場合このプロセスごと落ちる。
 //  1 件ずつ結果を吐いて flush してあるので、落ちてもそこまでの測定値は残る。
 //
 //  オプション:
-//    --counts 100,200,400   試す枚数（小さい順に。既定 100,200,400）
-//    --start N              撮影順の何枚目から取るか（既定 0）
-//    --mode both|poses|model  既定 both（同じ枚数で両方を測って比べる）
+//    --counts 100,200       試す枚数（既定 100）
+//    --starts 0,400,600     撮影順の何枚目から取るか（既定 0）。`--start` も可
+//    --mode both|poses|model  既定 poses（both は同じ窓で両方測って倍率を出す）
+//    --ordering unordered|sequential|both  既定 unordered
 //    --detail reduced       model のときの詳細度（既定 reduced＝**保守的**。
 //                           medium / full ほどメッシュ側が重くなるので、
 //                           reduced で得た倍率は二巡構成に最も不利な値になる）
 //    --subject scene|object 既定 scene（建物・部屋。object マスキングを切る）
-//    --ordering unordered|sequential  既定 unordered（§3.2.1）
 //
 
 import Foundation
@@ -60,9 +61,9 @@ func fail(_ message: String) -> Never
 }
 
 var inputPath: String?
-var counts = [100, 200, 400]
-var start = 0
-var modeName = "both"
+var counts = [100]
+var starts = [0]
+var modeName = "poses"
 var detailName = "reduced"
 var subjectName = "scene"
 var orderingName = "unordered"
@@ -80,12 +81,16 @@ while !arguments.isEmpty
 		}
 		return arguments.removeFirst()
 	}
+	func list() -> [Int]
+	{
+		value().split(separator: ",").compactMap { Int($0) }
+	}
 	switch argument
 	{
 		case "--counts":
-			counts = value().split(separator: ",").compactMap { Int($0) }.sorted()
-		case "--start":
-			start = Int(value()) ?? 0
+			counts = list().sorted()
+		case "--starts", "--start":
+			starts = list()
 		case "--mode":
 			modeName = value()
 		case "--detail":
@@ -95,9 +100,10 @@ while !arguments.isEmpty
 		case "--ordering":
 			orderingName = value()
 		case "-h", "--help":
-			print("使い方: measure-poses <写真フォルダ> [--counts 100,200,400] "
-				+ "[--start N] [--mode both|poses|model] [--detail reduced] "
-				+ "[--subject scene|object] [--ordering unordered|sequential]")
+			print("使い方: measure-poses <写真フォルダ> [--counts 100,200] "
+				+ "[--starts 0,400,600] [--mode poses|model|both] "
+				+ "[--ordering unordered|sequential|both] [--detail reduced] "
+				+ "[--subject scene|object]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -108,7 +114,7 @@ while !arguments.isEmpty
 	}
 }
 
-guard let inputPath, !counts.isEmpty
+guard let inputPath, !counts.isEmpty, !starts.isEmpty
 else
 {
 	fail("使い方: measure-poses <写真フォルダ> [オプション]")
@@ -132,6 +138,15 @@ func emit(_ line: String)
 // ---------------------------------------------------------------------
 
 let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "heic", "heif", "tif", "tiff"]
+
+/// 写真 1 枚ぶんの、窓を組むのに要る事実だけ。
+struct Photo
+{
+	var url: URL
+	var date: Date?
+	/// 35mm 換算焦点距離。error 8 / error 6 とレンズ混在の相関を見るため。
+	var focal35: Int?
+}
 
 func imageFiles(in folder: URL) -> [URL]
 {
@@ -163,22 +178,27 @@ func imageFiles(in folder: URL) -> [URL]
 	return result
 }
 
-/// EXIF 撮影時刻。**窓は撮影順の連続区間なので、ここも撮影順で切り出す**
-/// （設計 §3.2 の窓と同じ形で測らないと、測定が本番とずれる）。
-func captureDate(of url: URL) -> Date?
+/// EXIF から撮影時刻と焦点距離を 1 回のオープンで読む。**窓は撮影順の連続区間
+/// なので、ここも撮影順で切り出す**（測定が本番とずれないように）。
+func readPhoto(_ url: URL) -> Photo
 {
 	guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
 		let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-		let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any],
-		let text = exif[kCGImagePropertyExifDateTimeOriginal] as? String
+		let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
 	else
 	{
-		return nil
+		return Photo(url: url, date: nil, focal35: nil)
 	}
-	let formatter = DateFormatter()
-	formatter.locale = Locale(identifier: "en_US_POSIX")
-	formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
-	return formatter.date(from: text)
+	var date: Date?
+	if let text = exif[kCGImagePropertyExifDateTimeOriginal] as? String
+	{
+		let formatter = DateFormatter()
+		formatter.locale = Locale(identifier: "en_US_POSIX")
+		formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+		date = formatter.date(from: text)
+	}
+	let focal = (exif[kCGImagePropertyExifFocalLenIn35mmFilm] as? NSNumber)?.intValue
+	return Photo(url: url, date: date, focal35: focal)
 }
 
 let allFiles = imageFiles(in: root)
@@ -190,7 +210,7 @@ else
 
 /// 撮影順（EXIF 時刻。無いものは末尾へ）。
 let ordered = allFiles
-	.map { (url: $0, date: captureDate(of: $0)) }
+	.map(readPhoto)
 	.sorted
 	{ left, right in
 		switch (left.date, right.date)
@@ -205,34 +225,49 @@ let ordered = allFiles
 				return left.url.path < right.url.path
 		}
 	}
-	.map(\.url)
 
-log("画像 \(ordered.count) 枚（撮影順）。\(start) 枚目から切り出して測ります")
+log("画像 \(ordered.count) 枚（撮影順）")
 
-/// 指定枚数ぶんの窓を作る。ハードリンク（同一ボリューム外ならコピー）。
-func makeWindow(count: Int) throws -> URL
+/// 指定区間の窓を作る。ハードリンク（同一ボリューム外ならコピー）。
+func makeWindow(start: Int, count: Int) throws -> URL
 {
 	let folder = FileManager.default.temporaryDirectory
-		.appendingPathComponent("measure-poses-\(count)-\(start)", isDirectory: true)
+		.appendingPathComponent("measure-poses-\(start)-\(count)", isDirectory: true)
 	try? FileManager.default.removeItem(at: folder)
 	try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-	let slice = ordered.dropFirst(start).prefix(count)
-	for (index, source) in slice.enumerated()
+	for (index, photo) in ordered.dropFirst(start).prefix(count).enumerated()
 	{
 		// 並び順が名前でも保たれるようにしておく（--ordering sequential のとき、
 		// Object Capture はフォルダ内の順序を見るため）。
-		let name = String(format: "%05d.%@", index, source.pathExtension)
+		let name = String(format: "%05d.%@", index, photo.url.pathExtension)
 		let destination = folder.appendingPathComponent(name)
 		do
 		{
-			try FileManager.default.linkItem(at: source, to: destination)
+			try FileManager.default.linkItem(at: photo.url, to: destination)
 		}
 		catch
 		{
-			try FileManager.default.copyItem(at: source, to: destination)
+			try FileManager.default.copyItem(at: photo.url, to: destination)
 		}
 	}
 	return folder
+}
+
+/// 窓の中身（レンズの混在と撮影の所要時間）。error 6 との相関を見るため。
+func describeWindow(start: Int, count: Int) -> (lenses: String, span: TimeInterval)
+{
+	let slice = Array(ordered.dropFirst(start).prefix(count))
+	var histogram: [Int: Int] = [:]
+	for photo in slice
+	{
+		histogram[photo.focal35 ?? 0, default: 0] += 1
+	}
+	let lenses = histogram.sorted { $0.value > $1.value }
+		.map { $0.key == 0 ? "none×\($0.value)" : "\($0.key)mm×\($0.value)" }
+		.joined(separator: "/")
+	let dates = slice.compactMap(\.date)
+	let span = (dates.max()?.timeIntervalSince(dates.min() ?? .distantPast)) ?? 0
+	return (lenses.isEmpty ? "-" : lenses, dates.isEmpty ? 0 : span)
 }
 
 // ---------------------------------------------------------------------
@@ -339,7 +374,7 @@ func stageName(_ stage: PhotogrammetrySession.Output.ProcessingStage) -> String
 	}
 }
 
-func measure(mode: Mode, count: Int) async -> Measurement
+func measure(mode: Mode, start: Int, count: Int, ordering: String) async -> Measurement
 {
 	var measurement = Measurement()
 	let peak = PeakMemory()
@@ -348,7 +383,7 @@ func measure(mode: Mode, count: Int) async -> Measurement
 	let folder: URL
 	do
 	{
-		folder = try makeWindow(count: count)
+		folder = try makeWindow(start: start, count: count)
 	}
 	catch
 	{
@@ -361,13 +396,13 @@ func measure(mode: Mode, count: Int) async -> Measurement
 	}
 
 	var configuration = PhotogrammetrySession.Configuration()
-	configuration.sampleOrdering = orderingName == "sequential" ? .sequential : .unordered
+	configuration.sampleOrdering = ordering == "sequential" ? .sequential : .unordered
 	// 建物・部屋ではオブジェクトマスキングを切る（切らないと前景の切り出しが
 	// 破綻してアライメントが落ちる。PhotogrammetryEngine と同じ判断）。
 	configuration.isObjectMaskingEnabled = (subjectName == "object")
 
 	let output = FileManager.default.temporaryDirectory
-		.appendingPathComponent("measure-poses-\(count)-\(start).usdz")
+		.appendingPathComponent("measure-poses-\(start)-\(count).usdz")
 	defer
 	{
 		try? FileManager.default.removeItem(at: output)
@@ -459,18 +494,21 @@ func gigabytes(_ bytes: UInt64) -> String
 	String(format: "%.1fGB", Double(bytes) / 1_073_741_824)
 }
 
-func line(mode: Mode, count: Int, _ measurement: Measurement) -> String
+func line(
+	mode: Mode, start: Int, count: Int, ordering: String, _ measurement: Measurement) -> String
 {
 	let stages = measurement.stageStarts
 		.map { String(format: "%@:%.0f", $0.0, $0.1) }
 		.joined(separator: ",")
+	let window = describeWindow(start: start, count: count)
 	return String(
-		format: "run mode=%@ count=%d elapsed=%.1f posed=%d skipped=%d invalid=%d "
-			+ "downsampled=%@ peak=%@ stages=%@ result=%@",
-		mode.rawValue, count, measurement.elapsed, measurement.posed,
+		format: "run mode=%@ start=%d count=%d ordering=%@ elapsed=%.1f posed=%d skipped=%d "
+			+ "invalid=%d downsampled=%@ peak=%@ span=%.0f lenses=%@ stages=%@ result=%@",
+		mode.rawValue, start, count, ordering, measurement.elapsed, measurement.posed,
 		measurement.skipped, measurement.invalid,
 		measurement.downsampled ? "yes" : "no",
 		gigabytes(measurement.peakBytes),
+		window.span, window.lenses,
 		stages.isEmpty ? "-" : stages,
 		measurement.outcome)
 }
@@ -478,10 +516,11 @@ func line(mode: Mode, count: Int, _ measurement: Measurement) -> String
 let modes: [Mode]
 switch modeName
 {
-	case "poses": modes = [.poses]
 	case "model": modes = [.model]
-	default: modes = [.poses, .model]
+	case "both": modes = [.poses, .model]
+	default: modes = [.poses]
 }
+let orderings = orderingName == "both" ? ["unordered", "sequential"] : [orderingName]
 
 Task
 {
@@ -491,34 +530,48 @@ Task
 		emit("result=unsupported  この Mac は Object Capture に対応していません")
 		exit(3)
 	}
-	emit("# 入力 \(ordered.count) 枚 / start=\(start) / detail=\(detailName) "
-		+ "/ subject=\(subjectName) / ordering=\(orderingName)")
+	emit("# 入力 \(ordered.count) 枚 / detail=\(detailName) / subject=\(subjectName)")
 	emit("# ハードウェア上限 \(PhotogrammetrySession.limits.maximumNumberOfInputImages) 枚")
 
-	var elapsedByKey: [String: TimeInterval] = [:]
-	for count in counts
+	for start in starts
 	{
-		guard count <= ordered.count - start
-		else
+		for count in counts
 		{
-			emit("# count=\(count) は写真が足りないので飛ばします")
-			continue
-		}
-		for mode in modes
-		{
-			log("測定中: mode=\(mode.rawValue) count=\(count) …")
-			let measurement = await measure(mode: mode, count: count)
-			emit(line(mode: mode, count: count, measurement))
-			elapsedByKey["\(mode.rawValue)-\(count)"] = measurement.elapsed
-		}
-		// 同じ枚数で両方を測ったときだけ、その場で倍率を出す（落ちても
-		// そこまでの比較が残るように、最後にまとめて出すことはしない）。
-		if let poses = elapsedByKey["poses-\(count)"],
-			let model = elapsedByKey["model-\(count)"], poses > 0
-		{
-			emit(String(
-				format: "ratio count=%d poses=%.1f model=%.1f speedup=%.2f",
-				count, poses, model, model / poses))
+			guard count <= ordered.count - start
+			else
+			{
+				emit("# start=\(start) count=\(count) は写真が足りないので飛ばします")
+				continue
+			}
+			var elapsedByMode: [Mode: TimeInterval] = [:]
+			for ordering in orderings
+			{
+				for mode in modes
+				{
+					log("測定中: mode=\(mode.rawValue) start=\(start) count=\(count) "
+						+ "ordering=\(ordering) …")
+					let measurement = await measure(
+						mode: mode, start: start, count: count, ordering: ordering)
+					emit(line(
+						mode: mode, start: start, count: count, ordering: ordering,
+						measurement))
+					// 倍率は**両方成功したときだけ**出す。error 6 どうしの比は
+					// 「どちらも位置合わせで死んだ」を意味するだけで、二巡構成の
+					// 判断材料にならない（実際 0.98 という無意味な値が出た）。
+					if measurement.outcome == "ok"
+					{
+						elapsedByMode[mode] = measurement.elapsed
+					}
+				}
+				if let poses = elapsedByMode[.poses], let model = elapsedByMode[.model], poses > 0
+				{
+					emit(String(
+						format: "ratio start=%d count=%d ordering=%@ poses=%.1f model=%.1f "
+							+ "speedup=%.2f",
+						start, count, ordering, poses, model, model / poses))
+				}
+				elapsedByMode.removeAll()
+			}
 		}
 	}
 	emit("done")
