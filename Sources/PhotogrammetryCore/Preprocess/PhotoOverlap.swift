@@ -479,6 +479,16 @@ public enum OverlapMeasurement
 	/// 1 ブロックが認められる最低の一致度。全体の相関より高く取れるのは、
 	/// 局所では視差の影響がほとんど無いため。
 	public static let minimumBlockAgreement = 0.6
+	/// **その一致が「そこだけ」で起きていることを求める。** 探索の中で最もよく
+	/// 合ったずれが、離れた別のずれより**これだけ上回っている**ことを要求する。
+	///
+	/// これが無いと、大きな平らな面（同じ色の壁・床）を持つ 2 枚が「どこでも
+	/// 合う」せいで重なっていることになってしまう。合成サンプルの 2 部屋
+	/// （色の違う矩形の並び）が 1 グループに融合して発覚した。特徴点照合の
+	/// 比率テストと同じ考え方で、**曖昧な一致は証拠にしない。**
+	public static let minimumPeakMargin = 0.15
+	/// 「離れた別のずれ」と認める距離（探索半径に対する割合）。
+	public static let peakSeparation = 0.5
 	/// 1 ブロックの相関に必要な標本数。
 	static let minimumBlockSamples = 24
 
@@ -490,47 +500,58 @@ public enum OverlapMeasurement
 		other: GrayImage,
 		radius: Int) -> (x: Int, y: Int, agreement: Double)?
 	{
-		var best: (x: Int, y: Int, agreement: Double)?
-		func consider(_ dx: Int, _ dy: Int)
-		{
-			guard let score = correlation(
-				values: values, targets: targets, other: other, offsetX: dx, offsetY: dy)
-			else
-			{
-				return
-			}
-			guard let current = best
-			else
-			{
-				best = (dx, dy, score)
-				return
-			}
-			if score > current.agreement
-			{
-				best = (dx, dy, score)
-			}
-		}
+		// 粗い探索の答えは全部覚えておく。**最良のずれだけでなく「離れた別の
+		// ずれがどれだけ合ったか」も要る**（曖昧な一致を落とすため）。
+		var coarseScores: [(x: Int, y: Int, agreement: Double)] = []
 		var offset = -radius
 		while offset <= radius
 		{
 			var vertical = -radius
 			while vertical <= radius
 			{
-				consider(offset, vertical)
+				if let score = correlation(
+					values: values, targets: targets, other: other,
+					offsetX: offset, offsetY: vertical)
+				{
+					coarseScores.append((offset, vertical, score))
+				}
 				vertical += coarseStride
 			}
 			offset += coarseStride
 		}
-		guard let coarse = best
+		guard let coarse = coarseScores.max(by: { $0.agreement < $1.agreement })
 		else
 		{
 			return nil
 		}
+
+		// **離れた別のずれでも同じくらい合うなら、その一致は「そこだけ」で起きて
+		// いない。** 大きな平らな面はどこでも合うので、これで落ちる。
+		let separation = max(4.0, Double(radius) * peakSeparation)
+		let rival = coarseScores.filter
+		{
+			let dx = Double($0.x - coarse.x)
+			let dy = Double($0.y - coarse.y)
+			return (dx * dx + dy * dy).squareRoot() > separation
+		}.map(\.agreement).max()
+		if let rival, coarse.agreement - rival < minimumPeakMargin
+		{
+			return nil
+		}
+
+		var best = coarse
 		for dx in (coarse.x - refineRadius) ... (coarse.x + refineRadius)
 		{
 			for dy in (coarse.y - refineRadius) ... (coarse.y + refineRadius)
 			{
-				consider(dx, dy)
+				guard let score = correlation(
+					values: values, targets: targets, other: other, offsetX: dx, offsetY: dy),
+					score > best.agreement
+				else
+				{
+					continue
+				}
+				best = (dx, dy, score)
 			}
 		}
 		return best

@@ -68,6 +68,28 @@ final class PhotoOverlapTests: XCTestCase
 		return GrayImage(pixels: pixels, width: width, height: height)
 	}
 
+	/// **大きな平らな面の並び**（色の違う矩形）。壁・床・建具ばかりの屋内や、
+	/// 合成サンプルの部屋がこれにあたる。ブロック単位で見ると「どこでも合う」ので、
+	/// 曖昧な一致を落とさないと別の場所どうしが重なっていることになってしまう。
+	func makeBlockyImage(
+		width: Int = 120,
+		height: Int = 90,
+		seed: UInt64 = 1) -> GrayImage
+	{
+		var pixels = [UInt8](repeating: 0, count: width * height)
+		for y in 0 ..< height
+		{
+			for x in 0 ..< width
+			{
+				// 30 画素角の市松。種で明るさの割り当てだけを変える。
+				let cell = (x / 30) + (y / 30) * 4
+				let value = 40 + ((cell &* 37 &+ Int(seed) &* 53) % 5) * 45
+				pixels[y * width + x] = UInt8(min(255, value))
+			}
+		}
+		return GrayImage(pixels: pixels, width: width, height: height)
+	}
+
 	/// 一面の壁のように模様が無い画像。
 	func makeFlatImage(width: Int = 120, height: Int = 90, value: UInt8 = 200) -> GrayImage
 	{
@@ -220,6 +242,21 @@ final class PhotoOverlapTests: XCTestCase
 		let overlap = OverlapMeasurement.measure(
 			base: makeImage(seed: 1), other: makeImage(seed: 40), transform: .identity)
 		XCTAssertLessThan(overlap?.inlierRatio ?? 1, OverlapCriteria().minimumInlierRatio)
+		XCTAssertFalse(OverlapCriteria().judge(overlap).isOverlapping)
+	}
+
+	/// **大きな平らな面どうしは「どこでも合う」ので証拠にしない。**
+	///
+	/// 合成サンプルの 2 部屋（色の違う矩形の並び）が 1 グループに融合して発覚した。
+	/// ブロックの一致だけを見ると、平らな面は少しずらしても同じくらい合ってしまう。
+	/// 離れた別のずれと差が付かない一致は落とす（特徴点照合の比率テストと同じ）。
+	func testAmbiguousMatchesOnFlatSurfacesAreNotEvidence()
+	{
+		let overlap = OverlapMeasurement.measure(
+			base: makeBlockyImage(seed: 1),
+			other: makeBlockyImage(seed: 3),
+			transform: .identity)
+		// 判定できないか、できても「重なっている」とは言わない。
 		XCTAssertFalse(OverlapCriteria().judge(overlap).isOverlapping)
 	}
 
