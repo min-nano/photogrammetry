@@ -186,10 +186,15 @@ public enum OverlapMeasurement
 	public static let refineRadius = 3
 	/// 判定に足るブロック数。これを下回ると「判定できなかった」（nil）。
 	public static let minimumEvaluatedBlocks = 6
-	/// ずれ方が揃っていると認める、中央値からの距離（探索半径に対する割合）。
-	/// **無関係な 2 枚でもブロック単位では偶然合うことがある**が、そのずれは
-	/// ばらばらに散る。本当に重なっていれば、視差でずれても中央値の周りに集まる。
-	public static let offsetTolerance = 0.6
+	/// 隣り合うブロックのずれが「揃っている」と認める距離（探索半径に対する割合）。
+	///
+	/// **中央値との比較ではなく、格子の隣どうしで比べる。** 視差は「1 つのずれ」に
+	/// 収束しない — 手前のものと奥のものではずれ方が違うのが視差そのものなので、
+	/// 全体の中央値から測ると**本当に重なっている組ほど落ちる**（実際、手前 16 px・
+	/// 奥 26 px の 2 枚で半分が落ちた）。一方、奥行きは連続しているので**隣り合う
+	/// ブロックのずれは近い**。無関係な 2 枚が偶然合ったときのずれにはこの性質が
+	/// 無いので、ここで切り分けられる。
+	public static let neighbourTolerance = 0.5
 
 	/// 位置合わせ後の重なりを測る。
 	///
@@ -351,11 +356,12 @@ public enum OverlapMeasurement
 		let radius = max(
 			coarseStride,
 			Int((Double(max(other.width, other.height)) * searchFraction).rounded()))
-		let tolerance = max(2.0, Double(radius) * offsetTolerance)
+		let tolerance = max(3.0, Double(radius) * neighbourTolerance)
 
 		var inside = 0
 		var evaluated = 0
-		var offsets: [(x: Int, y: Int)] = []
+		// 格子の並びのまま持つ（隣どうしを比べるため）。
+		var offsets = [(x: Int, y: Int)?](repeating: nil, count: gridRows * gridColumns)
 
 		for row in 0 ..< gridRows
 		{
@@ -415,27 +421,59 @@ public enum OverlapMeasurement
 				evaluated += 1
 				if best.agreement >= minimumBlockAgreement
 				{
-					offsets.append((best.x, best.y))
+					offsets[row * gridColumns + column] = (best.x, best.y)
 				}
 			}
 		}
 
-		guard evaluated > 0, !offsets.isEmpty
+		guard evaluated > 0
 		else
 		{
 			return (inside, evaluated, 0)
 		}
-		// **ずれ方が揃っているものだけを数える。** 偶然合ったブロックのずれは
-		// 散らばるが、本当に重なっていれば視差でずれても中央値の周りに集まる。
-		let medianX = median(offsets.map { Double($0.x) })
-		let medianY = median(offsets.map { Double($0.y) })
-		let coherent = offsets.filter
+		return (inside, evaluated, coherentBlocks(offsets: offsets, tolerance: tolerance))
+	}
+
+	/// **隣り合うブロックとずれ方が揃っているものだけを数える。**
+	///
+	/// 合ったブロックのうち、格子の隣（上下左右）にも合ったブロックがあり、その
+	/// ずれが `tolerance` 以内のものを採る。奥行きは連続しているので、本当に
+	/// 重なっていれば隣どうしは必ず近い（視差で全体がばらけていても）。偶然合った
+	/// だけのブロックにはこの性質が無く、孤立するので落ちる。
+	static func coherentBlocks(offsets: [(x: Int, y: Int)?], tolerance: Double) -> Int
+	{
+		var count = 0
+		for row in 0 ..< gridRows
 		{
-			let dx = Double($0.x) - medianX
-			let dy = Double($0.y) - medianY
-			return (dx * dx + dy * dy).squareRoot() <= tolerance
-		}.count
-		return (inside, evaluated, coherent)
+			for column in 0 ..< gridColumns
+			{
+				guard let here = offsets[row * gridColumns + column]
+				else
+				{
+					continue
+				}
+				let neighbours = [(row - 1, column), (row + 1, column),
+					(row, column - 1), (row, column + 1)]
+				let agrees = neighbours.contains
+				{ neighbourRow, neighbourColumn in
+					guard neighbourRow >= 0, neighbourRow < gridRows,
+						neighbourColumn >= 0, neighbourColumn < gridColumns,
+						let there = offsets[neighbourRow * gridColumns + neighbourColumn]
+					else
+					{
+						return false
+					}
+					let dx = Double(here.x - there.x)
+					let dy = Double(here.y - there.y)
+					return (dx * dx + dy * dy).squareRoot() <= tolerance
+				}
+				if agrees
+				{
+					count += 1
+				}
+			}
+		}
+		return count
 	}
 
 	/// 1 ブロックが認められる最低の一致度。全体の相関より高く取れるのは、
@@ -558,17 +596,5 @@ public enum OverlapMeasurement
 		let sum = values.reduce(0, +)
 		let sumSquared = values.reduce(0) { $0 + $1 * $1 }
 		return (sumSquared - sum * sum / count) / count
-	}
-
-	/// 中央値。空なら 0。
-	static func median(_ values: [Double]) -> Double
-	{
-		guard !values.isEmpty
-		else
-		{
-			return 0
-		}
-		let sorted = values.sorted()
-		return sorted[sorted.count / 2]
 	}
 }

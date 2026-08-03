@@ -459,8 +459,13 @@ final class OverlapGraphTests: XCTestCase
 			verifyOverlap: stub.probe)
 
 		XCTAssertEqual(grouping.groups.count, 2)
-		XCTAssertTrue(grouping.links.isEmpty, "2 つの場所の間に重なっている組は 1 つも無い")
-		let plan = SortPlanner.plan(grouping: grouping, settings: SortPlanner.Settings())
-		XCTAssertTrue(plan.adjacency.isEmpty)
+		// **隣接の候補には未測定の組も残る**（絞ると共有写真が枯れる。§4.9.1）。
+		// 落とすのは確認を通してからで、そこで初めて隣接が消える。
+		let plan = SortPlanner.plan(
+			grouping: grouping,
+			settings: SortPlanner.Settings(),
+			verifyOverlap: stub.probe)
+		XCTAssertTrue(plan.adjacency.isEmpty, "確かめれば 1 組も重なっていない")
+		XCTAssertGreaterThan(plan.overlapSummary?.rejected ?? 0, 0)
 	}
 }
