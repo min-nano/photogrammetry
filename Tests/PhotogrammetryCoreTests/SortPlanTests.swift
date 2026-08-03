@@ -124,6 +124,23 @@ final class SortPlanTests: XCTestCase
 		}
 	}
 
+	func testGroupRoomsAreOrderedByPhotoCount()
+	{
+		// 1 つのグループに複数の場所が混ざるときの並び。**枚数の多い順**で、
+		// 同数なら識別子の若い順（manifest と診断の文面がこの順に従う）。
+		let mixed = manualGrouping(
+			groups: [Array(0 ..< 10)],
+			labels: [1, 1, 1, 0, 0, 0, 0, 0, 0, 0])
+		XCTAssertEqual(
+			SortPlanner.rooms(of: Array(0 ..< 10), grouping: mixed),
+			["room-01", "room-02"])
+
+		let tied = manualGrouping(
+			groups: [Array(0 ..< 4)],
+			labels: [1, 1, 0, 0])
+		XCTAssertEqual(SortPlanner.rooms(of: Array(0 ..< 4), grouping: tied), ["room-01", "room-02"])
+	}
+
 	func testDifferentPlacesHaveNoSharedRoom()
 	{
 		let photos = (0 ..< 60).map

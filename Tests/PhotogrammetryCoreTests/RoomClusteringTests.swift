@@ -78,6 +78,21 @@ final class RoomClusteringTests: XCTestCase
 		XCTAssertEqual(result.clusters.first?.members.count, 21)
 	}
 
+	func testSeveralTinyClustersAreAllAbsorbed()
+	{
+		// 小さすぎるクラスタが 2 つ以上あるときは、撮影順（添字の小さいほう）から
+		// 順に寄せる。**どれから処理するかを決めておかないと結果が実行ごとに
+		// 変わる**（辞書の走査順は保証されないため）。
+		let input = prints(room: 0, count: 20)
+			+ [SamplePhoto.featurePrint(room: 3, step: 0),
+				SamplePhoto.featurePrint(room: 3, step: 1)]
+			+ [SamplePhoto.featurePrint(room: 5, step: 0),
+				SamplePhoto.featurePrint(room: 5, step: 1)]
+		let result = RoomClustering.cluster(prints: input)
+		XCTAssertEqual(result.clusters.count, 1)
+		XCTAssertEqual(result.clusters.first?.members.count, 24)
+	}
+
 	func testExplicitThresholdIsUsedAndRecorded()
 	{
 		let settings = RoomClustering.Settings(threshold: 0.4)

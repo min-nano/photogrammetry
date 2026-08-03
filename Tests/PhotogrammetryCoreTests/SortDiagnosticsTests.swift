@@ -280,43 +280,6 @@ final class SortDiagnosticsTests: XCTestCase
 	// 写している写真の集まり」なので、**仕分けの結果を撮影者の言葉で説明できる**。
 	// -----------------------------------------------------------------
 
-	/// グループ分けと場所の割り当てを直接指定した結果を作る（実写真も
-	/// クラスタリングも通さずに、診断だけを固定するため）。
-	func manualGrouping(groups: [[Int]], labels: [Int]) -> GroupingResult
-	{
-		let photos = labels.indices.map { SamplePhoto.make(index: $0) }
-		let clusterCount = (labels.max() ?? -1) + 1
-		let clusters = (0 ..< clusterCount).map
-		{ label in
-			RoomCluster(
-				id: RoomClustering.identifier(label),
-				members: labels.indices.filter { labels[$0] == label })
-		}
-		let rooms = RoomClusteringResult(
-			clusters: clusters,
-			labels: labels.map { Optional($0) },
-			neighbors: [[SceneNeighbor]](repeating: [], count: labels.count),
-			threshold: 0.3,
-			thresholdWasAutomatic: true,
-			separability: 0.6,
-			distanceHistogram: [],
-			coverage: 1)
-		return GroupingResult(
-			photos: photos,
-			groups: groups.enumerated().map
-			{
-				PhotoGroup(id: PhotoGrouping.identifier($0.offset), members: $0.element)
-			},
-			links: [],
-			unassigned: [],
-			rooms: rooms,
-			usedEvidence: [.time, .scene, .room],
-			evidenceCoverage: [.scene: 1, .room: 1],
-			threshold: 0.5,
-			thresholdWasAutomatic: true,
-			scoreHistogram: [])
-	}
-
 	func evaluate(plan: SortPlan, grouping: GroupingResult) -> [SortDiagnostic]
 	{
 		SortDiagnostics.evaluate(
