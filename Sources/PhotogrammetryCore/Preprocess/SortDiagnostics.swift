@@ -213,6 +213,9 @@ public enum SortDiagnostics
 					+ "--min-sharpness で閾値を明示してください。"))
 		}
 
+		// --- グループ分けそのものに重なりを使ったか（フェーズ 2.6） ---
+		diagnostics.append(contentsOf: overlapGroupingDiagnostics(grouping: grouping))
+
 		// --- 繋がりそうに見えたが、実際には重なっていなかった組 ---
 		diagnostics.append(contentsOf: missingOverlapDiagnostics(
 			plan: plan, grouping: grouping, request: request))
@@ -238,6 +241,70 @@ public enum SortDiagnostics
 					+ "撮り足すか、--min-per-group を下げてください。"))
 		}
 
+		return diagnostics
+	}
+
+	/// グループ分けそのものを実際の重なりで決めたか（設計メモ §4.9）。
+	///
+	/// **これは仕分け結果の読み方を変える情報。** 重なりで決めたなら、グループは
+	/// 「実際に重なっている写真の連結成分を枚数で割ったもの」なので、どのグループも
+	/// 再構成が成立する形になっている。決めなかったなら従来どおり「同じ頃・同じ
+	/// ような見た目の写真の塊」でしかない。**どちらなのかを黙っていてはいけない。**
+	static func overlapGroupingDiagnostics(grouping: GroupingResult) -> [SortDiagnostic]
+	{
+		guard let graph = grouping.overlap
+		else
+		{
+			// 指示があったのに 1 組も確かめていない（＝写真が 1 枚しかない等）。
+			// 通常の経路ではここへ来ないので、黙って何も言わないのが正しい。
+			return []
+		}
+		var diagnostics: [SortDiagnostic] = []
+		let decided = graph.overlappingCount + graph.separateCount
+
+		guard grouping.usedEvidence.contains(.overlap)
+		else
+		{
+			diagnostics.append(SortDiagnostic(
+				severity: .warning,
+				code: "overlapGroupingUnavailable",
+				message: "\(graph.checked) 組を位置合わせしましたが、判定できた組が"
+					+ "少なすぎたため（\(decided) 組）、グループ分けは従来どおり撮影時刻や"
+					+ "見た目の合算で行いました。白い壁や白飛びばかりで模様が読めない"
+					+ "可能性があります — 判定を緩めるなら --overlap-agreement を"
+					+ "下げてください。"))
+			return diagnostics
+		}
+
+		diagnostics.append(SortDiagnostic(
+			severity: .info,
+			code: "overlapGrouping",
+			message: "実際に重なって写っているかで仕分けました（\(graph.checked) 組を"
+				+ "位置合わせ・重なり \(graph.overlappingCount) 組・重なりなし "
+				+ "\(graph.separateCount) 組・判定できず \(graph.undecidedCount) 組）。"
+				+ "撮影時刻や GPS は「どの組を確かめるか」の順番付けにだけ使っています。"))
+
+		if graph.budgetExhausted
+		{
+			diagnostics.append(SortDiagnostic(
+				severity: .warning,
+				code: "overlapBudgetExhausted",
+				message: "確認回数の上限 \(graph.budget) 組を使い切りました"
+					+ " — 繋がりを見落としている可能性があります。時間に余裕があれば"
+					+ "--overlap-budget を上げて確かめ直してください。"))
+		}
+
+		let orphans = graph.photosWithoutOverlap()
+		if !orphans.isEmpty
+		{
+			diagnostics.append(SortDiagnostic(
+				severity: .warning,
+				code: "photosWithoutOverlap",
+				message: "\(orphans.count) 枚は、確かめたどの写真とも重なって"
+					+ "いませんでした（\(percent(Double(orphans.count) / Double(max(1, graph.photoCount))))）。"
+					+ "その場で 1 枚だけ撮った写真や、周りと繋がらない位置から撮った写真です"
+					+ " — 再構成には寄与しないので、前後の見える範囲を撮り足してください。"))
+		}
 		return diagnostics
 	}
 
@@ -547,7 +614,10 @@ public enum SortDiagnostics
 			message: used.isEmpty
 				? "使える手がかりがありませんでした（撮影時刻も位置も見た目も判定できません）。"
 				: "使った手がかり: " + used.map(\.displayName).joined(separator: "・")
-					+ String(format: "（結合スコアの閾値 %.2f%@）",
+					// 重なりで分けたときは閾値の意味が変わる（合算スコアではなく
+					// 画素の一致度）。同じ数字を別の名前で呼ばない。
+					+ String(format: "（%@の閾値 %.2f%@）",
+						used.contains(.overlap) ? "画素の一致度" : "結合スコア",
 						grouping.threshold,
 						grouping.thresholdWasAutomatic ? "・自動決定" : "・指定値")))
 

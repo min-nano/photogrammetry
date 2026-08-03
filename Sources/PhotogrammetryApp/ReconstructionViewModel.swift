@@ -63,6 +63,9 @@ final class ReconstructionViewModel: ObservableObject
 	/// 共有写真の候補を実際に位置合わせして重なりを確かめる。既定で入れる —
 	/// これを切ると、白い壁ばかりの屋内で別の場所の写真が共有写真に混ざる。
 	@Published var overlapCheck = true
+	/// グループ分けそのものを実際の重なりで決める。既定で入れる — 切ると
+	/// 隣り合う部屋を続けて撮った写真が 1 つのグループに混ざりやすくなる。
+	@Published var overlapGrouping = true
 
 	@Published var isProcessing = false
 	@Published var progress: Double = 0
@@ -202,6 +205,7 @@ final class ReconstructionViewModel: ObservableObject
 			timeGap: timeGap,
 			visualEvidence: visualEvidence,
 			overlapCheck: overlapCheck,
+			overlapGrouping: overlapGrouping,
 			link: linkStrategy,
 			recursive: sortRecursive,
 			dryRun: sortDryRun))
@@ -237,6 +241,7 @@ final class ReconstructionViewModel: ObservableObject
 					timeGap = request.timeGap
 					visualEvidence = request.visualEvidence
 					overlapCheck = request.overlapCheck
+					overlapGrouping = request.overlapGrouping
 					linkStrategy = request.link
 					sortRecursive = request.recursive
 					sortDryRun = request.dryRun

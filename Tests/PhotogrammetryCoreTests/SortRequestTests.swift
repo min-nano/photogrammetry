@@ -110,6 +110,10 @@ final class SortRequestTests: XCTestCase
 		request = makeRequest()
 		request.overlapAgreement = 1.4
 		XCTAssertThrowsError(try request.validate())
+
+		request = makeRequest()
+		request.overlapBudget = 0
+		XCTAssertThrowsError(try request.validate())
 	}
 
 	func testErrorDescriptions()
@@ -200,5 +204,38 @@ final class SortRequestTests: XCTestCase
 		// 指定したときは、その値がそのまま判定に使われる（manifest にも残る）。
 		request.overlapAgreement = 0.6
 		XCTAssertEqual(request.plannerSettings.minimumOverlapAgreement, 0.6)
+	}
+
+	/// **判断の基準は 1 か所から配る。** グループ分け（§4.9）と共有写真の選定
+	/// （§4.6.1）で「重なっている」の意味が食い違ってはいけない。
+	func testOverlapCriteriaAreSharedBetweenGroupingAndPlanning()
+	{
+		var request = makeRequest()
+		request.overlapAgreement = 0.55
+		XCTAssertEqual(
+			request.groupingSettings.overlapSurvey.criteria,
+			request.plannerSettings.overlapCriteria)
+		XCTAssertEqual(request.groupingSettings.overlapSurvey.criteria.minimumAgreement, 0.55)
+	}
+
+	/// 予算はそのまま調査へ届く。既定は「枚数から決める」ので nil のまま。
+	func testOverlapBudgetReachesTheSurvey()
+	{
+		var request = makeRequest()
+		XCTAssertNil(request.groupingSettings.overlapSurvey.budget)
+		request.overlapBudget = 5_000
+		XCTAssertEqual(request.groupingSettings.overlapSurvey.budget, 5_000)
+	}
+
+	/// 確認そのものを切ったら、グループ分けにも使わない（指示の矛盾を残さない）。
+	func testOverlapGroupingRequiresOverlapCheck()
+	{
+		var request = makeRequest()
+		XCTAssertTrue(request.usesOverlapGrouping)
+		request.overlapGrouping = false
+		XCTAssertFalse(request.usesOverlapGrouping)
+		request.overlapGrouping = true
+		request.overlapCheck = false
+		XCTAssertFalse(request.usesOverlapGrouping)
 	}
 }

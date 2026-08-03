@@ -58,6 +58,15 @@ public struct SortRequest: Equatable, Sendable
 	/// 重なっていると認める画素の一致度（0.0〜1.0）。nil なら既定値
 	/// （`SortPlanner.Settings`）を使う。厳しくすると共有写真は減るが確かになる。
 	public var overlapAgreement: Double?
+	/// **グループ分けそのもの**を実際の重なりで決めるか（既定は true。設計メモ
+	/// §4.9）。時刻・GPS・露出・見た目は「どのペアを確かめるか」の順番付けへ降り、
+	/// 繋ぐかどうかは実測が決める。切るとフェーズ 2 と同じ合算スコアで分ける
+	/// （速いが、隣り合う部屋を続けて撮った写真は 1 つのグループに混ざりやすい）。
+	/// `overlapCheck` が false ならこの指示も効かない（確認そのものを行わないため）。
+	public var overlapGrouping: Bool
+	/// グループ分けで重なりを確かめる回数の上限。nil なら写真 1 枚あたり 16 組。
+	/// **ここが所要時間の上限**で、上げるほど繋がりを見落としにくくなる。
+	public var overlapBudget: Int?
 	/// ファイルの配置方法。
 	public var link: LinkStrategy
 	/// サブフォルダも走査するか。撮影者が階・部屋で分けている場合、その分けかた
@@ -80,6 +89,8 @@ public struct SortRequest: Equatable, Sendable
 		visualThreshold: Double? = nil,
 		overlapCheck: Bool = true,
 		overlapAgreement: Double? = nil,
+		overlapGrouping: Bool = true,
+		overlapBudget: Int? = nil,
 		link: LinkStrategy = .hardlink,
 		recursive: Bool = true,
 		dryRun: Bool = false)
@@ -97,6 +108,8 @@ public struct SortRequest: Equatable, Sendable
 		self.visualThreshold = visualThreshold
 		self.overlapCheck = overlapCheck
 		self.overlapAgreement = overlapAgreement
+		self.overlapGrouping = overlapGrouping
+		self.overlapBudget = overlapBudget
 		self.link = link
 		self.recursive = recursive
 		self.dryRun = dryRun
@@ -144,6 +157,10 @@ public struct SortRequest: Equatable, Sendable
 		if let agreement = overlapAgreement, !(0 ... 1).contains(agreement)
 		{
 			throw SortRequestError.invalidSetting("overlapAgreement", "0.0〜1.0 を指定してください")
+		}
+		if let budget = overlapBudget, budget < 1
+		{
+			throw SortRequestError.invalidSetting("overlapBudget", "1 以上を指定してください")
 		}
 		// 出力フォルダの中身を黙って混ぜない。既存の group-NN が残っていると
 		// 前回の仕分け結果と混ざり、どの写真がどのグループのものか分からなくなる。
@@ -197,10 +214,21 @@ public struct SortRequest: Equatable, Sendable
 		return GroupingSettings(
 			timeGap: timeGap,
 			roomClustering: RoomClustering.Settings(threshold: visualThreshold),
+			overlapSurvey: OverlapSurvey.Settings(
+				budget: overlapBudget,
+				criteria: plannerSettings.overlapCriteria),
 			maxPerGroup: effectiveMax,
 			minPerGroup: minPerGroup,
 			threshold: groupThreshold,
 			weights: weights)
+	}
+
+	/// グループ分けで重なりを確かめるか。**確認そのものを切っていれば当然行わない。**
+	/// 2 つの指示に分けてあるのは、「共有写真だけ確かめる」（フェーズ 2.5 と同じ
+	/// 動作・速い）を残すため。
+	public var usesOverlapGrouping: Bool
+	{
+		overlapCheck && overlapGrouping
 	}
 
 	/// 仕分け計画の設定へ翻訳する。

@@ -54,6 +54,72 @@ final class SortDiagnosticsTests: XCTestCase
 	}
 
 	// -----------------------------------------------------------------
+	// 重なりでグループ分けしたか（設計メモ §4.9）
+	// -----------------------------------------------------------------
+
+	/// 重なりの検証の結果だけを直接与えて診断を作る（グラフの中身と診断の
+	/// 対応だけを見たいので、実際の仕分けは通さない）。
+	func overlapDiagnostics(
+		graph: OverlapGraph?,
+		usedEvidence: [EvidenceKind] = [.time, .overlap]) -> Set<String>
+	{
+		var grouping = manualGrouping(groups: [[0, 1], [2, 3]], labels: [0, 0, 1, 1])
+		grouping.overlap = graph
+		grouping.usedEvidence = usedEvidence
+		return codes(SortDiagnostics.overlapGroupingDiagnostics(grouping: grouping))
+	}
+
+	/// **仕分け結果の読み方が変わる情報なので、必ず言う。**
+	func testOverlapGroupingIsAlwaysReported()
+	{
+		var graph = OverlapGraph(photoCount: 4, checked: 2, budget: 64)
+		graph.verdicts[OverlapGraph.key(0, 1, photoCount: 4)] =
+			.overlapping(PhotoOverlap(agreement: 0.9, sharedArea: 0.5))
+		graph.verdicts[OverlapGraph.key(2, 3, photoCount: 4)] =
+			.overlapping(PhotoOverlap(agreement: 0.9, sharedArea: 0.5))
+		XCTAssertEqual(overlapDiagnostics(graph: graph), ["overlapGrouping"])
+	}
+
+	/// 確かめたが**使えなかった**ことも言う。黙って合算スコアへ戻ると、
+	/// 「なぜ隣の部屋が混ざっているのか」が誰にも分からなくなる。
+	func testFallingBackToCombinedScoreIsReported()
+	{
+		var graph = OverlapGraph(photoCount: 4, checked: 6, budget: 64)
+		graph.verdicts[OverlapGraph.key(0, 1, photoCount: 4)] = .undecided
+		XCTAssertEqual(
+			overlapDiagnostics(graph: graph, usedEvidence: [.time]),
+			["overlapGroupingUnavailable"])
+	}
+
+	/// 予算を使い切ったら**見落としがありうる**ことを言う。
+	func testExhaustedBudgetIsReported()
+	{
+		var graph = OverlapGraph(photoCount: 4, checked: 64, budget: 64, budgetExhausted: true)
+		graph.verdicts[OverlapGraph.key(0, 1, photoCount: 4)] =
+			.overlapping(PhotoOverlap(agreement: 0.9, sharedArea: 0.5))
+		graph.verdicts[OverlapGraph.key(2, 3, photoCount: 4)] =
+			.overlapping(PhotoOverlap(agreement: 0.9, sharedArea: 0.5))
+		XCTAssertTrue(overlapDiagnostics(graph: graph).contains("overlapBudgetExhausted"))
+	}
+
+	/// どの写真とも重ならなかった写真は名指しで数える（再構成に寄与しないため）。
+	func testPhotosWithoutOverlapAreReported()
+	{
+		var graph = OverlapGraph(photoCount: 4, checked: 3, budget: 64)
+		graph.verdicts[OverlapGraph.key(0, 1, photoCount: 4)] =
+			.overlapping(PhotoOverlap(agreement: 0.9, sharedArea: 0.5))
+		graph.verdicts[OverlapGraph.key(2, 3, photoCount: 4)] =
+			.separate(PhotoOverlap(agreement: 0.04, sharedArea: 0.5))
+		XCTAssertTrue(overlapDiagnostics(graph: graph).contains("photosWithoutOverlap"))
+	}
+
+	/// 確かめていない現場では何も言わない（言うことが無い）。
+	func testNothingIsSaidWhenOverlapWasNotChecked()
+	{
+		XCTAssertTrue(overlapDiagnostics(graph: nil, usedEvidence: [.time]).isEmpty)
+	}
+
+	// -----------------------------------------------------------------
 
 	func testTooFewSharedPhotosIsReported()
 	{

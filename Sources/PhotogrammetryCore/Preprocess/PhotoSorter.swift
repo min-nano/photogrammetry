@@ -136,10 +136,34 @@ public struct PhotoSorter: Sendable
 		{
 			ExcludedPhoto(photo: $0, reason: .unreadable, score: 0)
 		})
-		progress(.progress(0.7))
+		progress(.progress(0.65))
 
+		// グループ分けで実際の重なりを確かめる（設計メモ §4.9）。数千枚だと数万組の
+		// 位置合わせになるので、**進捗が止まったように見えないよう**先に一言出し、
+		// そのあとは確認の進み具合をそのまま流す。
+		let surveying = request.usesOverlapGrouping
+		if surveying
+		{
+			progress(.note("どの写真どうしが実際に重なっているかを確認しています…"))
+		}
+		let surveyProgress = ProgressThrottle(scale: 0.15, offset: 0.65)
+		{ fraction in
+			progress(.progress(fraction))
+		}
 		let grouping = PhotoGrouping.group(
-			photos: quality.kept, settings: request.groupingSettings)
+			photos: quality.kept,
+			settings: request.groupingSettings,
+			verifyOverlap: surveying ? overlapProbe(cancellation: cancellation) : nil,
+			isCancelled: { cancellation?.isCancelled == true })
+		{ checked, budget in
+			guard budget > 0
+			else
+			{
+				return
+			}
+			surveyProgress.record(Double(checked) / Double(budget))
+		}
+		try checkCancellation()
 		progress(.progress(0.8))
 
 		// 共有写真の候補を実際に位置合わせして確かめる（設計メモ §4.6.1）。
@@ -251,12 +275,19 @@ public struct PhotoSorter: Sendable
 		{
 			return nil
 		}
+		return overlapProbe(cancellation: cancellation)
+	}
+
+	/// 位置合わせの役を閉包にする。中断は**問い合わせのたびに見る**。数千枚の
+	/// デコードと同じく数分かかりうる段なので、ここで効かないと「キャンセルが
+	/// 効かないボタン」になる。
+	func overlapProbe(cancellation: SortCancellation?) -> SortPlanner.OverlapProbe
+	{
 		let verifier = overlapVerifier
-		let probe: SortPlanner.OverlapProbe =
+		return
 		{ queries in
 			verifier.overlaps(for: queries, isCancelled: { cancellation?.isCancelled == true })
 		}
-		return probe
 	}
 
 	func makeManifest(
@@ -295,6 +326,8 @@ public struct PhotoSorter: Sendable
 				visualThresholdWasAutomatic: grouping.rooms.thresholdWasAutomatic,
 				overlapCheck: request.overlapCheck,
 				overlapAgreement: request.plannerSettings.minimumOverlapAgreement,
+				overlapGrouping: grouping.usedEvidence.contains(.overlap),
+				overlapBudget: grouping.overlap?.budget,
 				link: request.link),
 			evidence: SortManifest.Evidence(
 				used: grouping.usedEvidence.map(\.rawValue),
@@ -312,6 +345,18 @@ public struct PhotoSorter: Sendable
 				{
 					SortManifest.Statistics.OverlapChecks(
 						verified: $0.verified, rejected: $0.rejected, undecided: $0.undecided)
+				},
+				overlapGraph: grouping.overlap.map
+				{
+					SortManifest.Statistics.OverlapGraphStatistics(
+						checked: $0.checked,
+						budget: $0.budget,
+						budgetExhausted: $0.budgetExhausted,
+						overlapping: $0.overlappingCount,
+						separate: $0.separateCount,
+						undecided: $0.undecidedCount,
+						degreeHistogram: $0.degreeHistogram(),
+						agreementHistogram: $0.agreementHistogram())
 				}),
 			groups: plan.groups.map
 			{
@@ -479,11 +524,16 @@ final class ProgressThrottle: @unchecked Sendable
 	private let lock = NSLock()
 	private var last = -1.0
 	private let scale: Double
+	private let offset: Double
 	private let emit: @Sendable (Double) -> Void
 
-	init(scale: Double, emit: @escaping @Sendable (Double) -> Void)
+	/// - Parameters:
+	///   - scale: 段全体のうちこの割合を占める。
+	///   - offset: 段の始まりの位置。段が全体の途中にあるとき（重なりの確認）に要る。
+	init(scale: Double, offset: Double = 0, emit: @escaping @Sendable (Double) -> Void)
 	{
 		self.scale = scale
+		self.offset = offset
 		self.emit = emit
 	}
 
@@ -499,6 +549,6 @@ final class ProgressThrottle: @unchecked Sendable
 			return
 		}
 		last = rounded
-		emit(rounded * scale)
+		emit(offset + rounded * scale)
 	}
 }

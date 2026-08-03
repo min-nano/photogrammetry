@@ -50,6 +50,7 @@ public enum APICommand: Equatable, Sendable
 	//                   [&timeGap=300][&groupThreshold=0.4][&minSharpness=12]
 	//                   [&duplicateDistance=4][&visual=true][&visualThreshold=0.4]
 	//                   [&overlapCheck=true][&overlapAgreement=0.35]
+	//                   [&overlapGrouping=true][&overlapBudget=20000]
 	//                   [&link=hardlink][&recursive=true][&dryRun=false]
 	// パスはパーセントエンコード済みの絶対パス。
 	// -----------------------------------------------------------------
@@ -159,6 +160,14 @@ public enum APICommand: Equatable, Sendable
 				if let raw = parameters["overlapAgreement"]
 				{
 					request.overlapAgreement = try doubleValue(raw, parameter: "overlapAgreement")
+				}
+				if let raw = parameters["overlapGrouping"]
+				{
+					request.overlapGrouping = try boolValue(raw, parameter: "overlapGrouping")
+				}
+				if let raw = parameters["overlapBudget"]
+				{
+					request.overlapBudget = try intValue(raw, parameter: "overlapBudget")
 				}
 				if let raw = parameters["link"]
 				{
@@ -325,6 +334,13 @@ public enum APICommand: Equatable, Sendable
 				case "--no-overlap-check":
 					request.overlapCheck = false
 					index += 1
+				case "--no-overlap-grouping":
+					request.overlapGrouping = false
+					index += 1
+				case "--overlap-budget":
+					request.overlapBudget = try intValue(
+						optionValue(arguments, at: index, name: argument), parameter: argument)
+					index += 2
 				case "--link":
 					request.link = try enumValue(
 						optionValue(arguments, at: index, name: argument), parameter: argument)
@@ -408,6 +424,14 @@ public enum APICommand: Equatable, Sendable
 		if !request.overlapCheck
 		{
 			result.append("--no-overlap-check")
+		}
+		if !request.overlapGrouping
+		{
+			result.append("--no-overlap-grouping")
+		}
+		if let budget = request.overlapBudget
+		{
+			result += ["--overlap-budget", String(budget)]
 		}
 		if !request.recursive
 		{

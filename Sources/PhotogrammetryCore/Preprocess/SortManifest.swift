@@ -25,9 +25,17 @@ public struct SortManifest: Codable, Equatable, Sendable
 	/// `statistics.overlapChecks` を足した。**合成は「実際に重なっていると
 	/// 確かめた」隣接を最も信頼してよい**という情報で、`sharedRoom` より強い。
 	///
+	/// 4 = グループ分けそのものを重なりで決める（設計メモ §4.9）。
+	/// `statistics.overlapGraph` と `settings.overlapGrouping` / `overlapBudget` を
+	/// 足した。**`overlapGraph` が載っている manifest では、グループは「実際に
+	/// 重なっている写真の連結成分を枚数で割ったもの」**になっている — つまり
+	/// どのグループも再構成が成立する形で出ていることが構成上保証される。
+	/// `settings.groupThreshold` の意味もこのとき変わり、**合算スコアではなく
+	/// 画素の一致度の閾値**になる（`groupThresholdWasAutomatic` は false）。
+	///
 	/// 項目が増えたので古い manifest はそのままでは読み戻せない。読み手はまだ
 	/// 存在しない（`merge` はフェーズ 3）ので、移行の仕組みは持たない。
-	public static let currentVersion = 3
+	public static let currentVersion = 4
 
 	public var version: Int
 	/// 書き出した時刻。
@@ -96,6 +104,11 @@ public struct SortManifest: Codable, Equatable, Sendable
 		public var overlapCheck: Bool
 		/// 重なっていると認めた画素の一致度の下限（再現のため実際の値を残す）。
 		public var overlapAgreement: Double
+		/// グループ分けそのものを実際の重なりで決めたか（設計メモ §4.9）。
+		public var overlapGrouping: Bool
+		/// グループ分けで重なりを確かめた回数の上限（実際に使った値）。
+		/// 確かめなかったときは nil。
+		public var overlapBudget: Int?
 		/// ファイルの配置方法。
 		public var link: LinkStrategy
 
@@ -113,8 +126,12 @@ public struct SortManifest: Codable, Equatable, Sendable
 			visualThresholdWasAutomatic: Bool,
 			overlapCheck: Bool,
 			overlapAgreement: Double,
+			overlapGrouping: Bool = false,
+			overlapBudget: Int? = nil,
 			link: LinkStrategy)
 		{
+			self.overlapGrouping = overlapGrouping
+			self.overlapBudget = overlapBudget
 			self.overlap = overlap
 			self.maxPerGroup = maxPerGroup
 			self.minPerGroup = minPerGroup
@@ -171,6 +188,8 @@ public struct SortManifest: Codable, Equatable, Sendable
 		/// 重なりの検証の集計（確かめなかったときは nil）。**「共有写真が少ない」
 		/// のが撮り方のせいか閾値のせいかを、写真を見ずに切り分ける材料**になる。
 		public var overlapChecks: OverlapChecks?
+		/// グループ分けで作った重なりグラフの統計（§4.9）。使わなかったときは nil。
+		public var overlapGraph: OverlapGraphStatistics?
 
 		public init(
 			inputCount: Int,
@@ -181,9 +200,11 @@ public struct SortManifest: Codable, Equatable, Sendable
 			scoreHistogram: [Int],
 			visualDistanceHistogram: [Int],
 			sharpnessMedian: Double?,
-			overlapChecks: OverlapChecks? = nil)
+			overlapChecks: OverlapChecks? = nil,
+			overlapGraph: OverlapGraphStatistics? = nil)
 		{
 			self.overlapChecks = overlapChecks
+			self.overlapGraph = overlapGraph
 			self.inputCount = inputCount
 			self.keptCount = keptCount
 			self.groupCount = groupCount
@@ -209,6 +230,51 @@ public struct SortManifest: Codable, Equatable, Sendable
 				self.verified = verified
 				self.rejected = rejected
 				self.undecided = undecided
+			}
+		}
+
+		/// グループ分けで作った重なりグラフの統計（設計メモ §4.9）。**写真そのものを
+		/// 含まない**ので、そのまま共有して設定を検討できる（§10-10）。
+		public struct OverlapGraphStatistics: Codable, Equatable, Sendable
+		{
+			/// 実際に確かめた組数。
+			public var checked: Int
+			/// 使ってよかった回数の上限。
+			public var budget: Int
+			/// 上限を使い切ったか。**true なら見落とした繋がりがありうる**ので、
+			/// `--overlap-budget` を上げて試す価値がある。
+			public var budgetExhausted: Bool
+			/// 重なっていると確かめた組数。
+			public var overlapping: Int
+			/// 重なっていないと確かめた組数（＝グループを切る根拠になった組）。
+			public var separate: Int
+			/// 判定できなかった組数（模様が無い・読めない）。
+			public var undecided: Int
+			/// 写真 1 枚ごとの「重なる相手の数」の分布。添字 0 は「どの写真とも
+			/// 重ならなかった」で、**ここが大きい現場は撮影密度が足りない**。
+			public var degreeHistogram: [Int]
+			/// 一致度の分布（0.0〜1.0 を 20 分割）。閾値の妥当性を写真無しで見直す
+			/// ための材料で、**山が 2 つに割れていれば判定は効いている**。
+			public var agreementHistogram: [Int]
+
+			public init(
+				checked: Int,
+				budget: Int,
+				budgetExhausted: Bool,
+				overlapping: Int,
+				separate: Int,
+				undecided: Int,
+				degreeHistogram: [Int],
+				agreementHistogram: [Int])
+			{
+				self.checked = checked
+				self.budget = budget
+				self.budgetExhausted = budgetExhausted
+				self.overlapping = overlapping
+				self.separate = separate
+				self.undecided = undecided
+				self.degreeHistogram = degreeHistogram
+				self.agreementHistogram = agreementHistogram
 			}
 		}
 	}

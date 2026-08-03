@@ -316,10 +316,19 @@ struct ContentView: View
 					.font(.caption)
 					.foregroundColor(.secondary)
 
-				Toggle("共有写真の重なりを確かめる", isOn: $model.overlapCheck)
+				Toggle("重なりを確かめる", isOn: $model.overlapCheck)
 				Text("グループ間で共有する写真を、実際に位置合わせして「同じものが"
 					+ "写っている」と確かめてから選びます。切ると速くなりますが、"
 					+ "別の場所の写真が共有写真に混ざることがあります。")
+					.font(.caption)
+					.foregroundColor(.secondary)
+
+				Toggle("重なりでグループ分けする", isOn: $model.overlapGrouping)
+					.disabled(!model.overlapCheck)
+				Text("どの写真どうしが実際に重なって写っているかでグループを決めます。"
+					+ "撮影時刻や GPS は「どの組を確かめるか」の順番付けに使います。"
+					+ "隣り合う部屋を続けて撮っても混ざらず、部屋を行き来しても分かれ"
+					+ "ません。写真の枚数に応じて数分〜十数分かかります。")
 					.font(.caption)
 					.foregroundColor(.secondary)
 

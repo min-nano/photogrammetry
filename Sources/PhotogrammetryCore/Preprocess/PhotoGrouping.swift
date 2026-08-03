@@ -45,6 +45,11 @@ public enum EvidenceKind: String, Codable, CaseIterable, Equatable, Sendable
 	case scene
 	/// 視覚クラスタリングで「同じ場所」と判定されたか（RoomClustering）。
 	case room
+	/// **実際に重なって写っているか**（画像レジストレーション。設計メモ §4.9）。
+	/// 他の証拠と違い、これは重み付き平均に加わらない — 加わるのではなく
+	/// **エッジ集合そのものを置き換える**。語彙を揃えるために同じ enum に置いて
+	/// あるので、`affinity` の中には現れない。
+	case overlap
 
 	/// 診断レポートに出す日本語名。
 	public var displayName: String
@@ -71,6 +76,8 @@ public enum EvidenceKind: String, Codable, CaseIterable, Equatable, Sendable
 				return "視覚特徴の近さ"
 			case .room:
 				return "同じ場所の判定"
+			case .overlap:
+				return "実際の重なり"
 		}
 	}
 }
@@ -96,6 +103,9 @@ public struct GroupingSettings: Equatable, Sendable
 	public var sceneSpan: Double
 	/// 視覚クラスタリング（「同じ部屋」の判定）の設定。
 	public var roomClustering: RoomClustering.Settings
+	/// 重なりの確認をどのペアに何回使うか（設計メモ §4.9）。実際に確認するか
+	/// どうかは `group(photos:settings:verifyOverlap:)` に役が渡されたかで決まる。
+	public var overlapSurvey: OverlapSurvey.Settings
 	/// GPS をこの水平誤差（m）より悪いときは使わない。
 	public var maximumGPSAccuracy: Double
 	/// 測位時刻が撮影時刻からこれ以上ずれていたら使わない（秒）。
@@ -159,6 +169,7 @@ public struct GroupingSettings: Equatable, Sendable
 		visualSpan: Double = 0.25,
 		sceneSpan: Double = 0.35,
 		roomClustering: RoomClustering.Settings = RoomClustering.Settings(),
+		overlapSurvey: OverlapSurvey.Settings = OverlapSurvey.Settings(),
 		maximumGPSAccuracy: Double = 30,
 		maximumGPSAge: TimeInterval = 120,
 		maxPerGroup: Int = 150,
@@ -180,6 +191,7 @@ public struct GroupingSettings: Equatable, Sendable
 		self.visualSpan = visualSpan
 		self.sceneSpan = sceneSpan
 		self.roomClustering = roomClustering
+		self.overlapSurvey = overlapSurvey
 		self.maximumGPSAccuracy = maximumGPSAccuracy
 		self.maximumGPSAge = maximumGPSAge
 		self.maxPerGroup = maxPerGroup
@@ -255,6 +267,13 @@ public struct GroupingResult: Equatable, Sendable
 	public var links: [GroupLink]
 	/// どのグループにも入らなかった写真（`_unassigned/` へ送る）。
 	public var unassigned: [Int]
+	/// 実際に確かめた重なり（フェーズ 2.6）。確かめなかったときは nil。
+	///
+	/// **「確かめた」と「それでグループ分けを決めた」は別**。判定できた組が少なす
+	/// ぎれば合算スコアへ戻るが、測った結果自体は捨てない（共有写真の選定で
+	/// 使い回すため）。グループ分けを決めたかどうかは
+	/// `usedEvidence.contains(.overlap)` で分かる（設計メモ §4.9）。
+	public var overlap: OverlapGraph?
 	/// 視覚クラスタリングの結果（＝見つかった「場所」。フェーズ 2）。
 	/// グループとは別の軸で、**1 つの場所が複数のグループに分かれることも、
 	/// 1 つのグループが複数の場所を含むこともある**。前者は合成の手がかりに、
@@ -279,6 +298,7 @@ public struct GroupingResult: Equatable, Sendable
 		links: [GroupLink],
 		unassigned: [Int],
 		rooms: RoomClusteringResult,
+		overlap: OverlapGraph? = nil,
 		usedEvidence: [EvidenceKind],
 		evidenceCoverage: [EvidenceKind: Double],
 		threshold: Double,
@@ -290,6 +310,7 @@ public struct GroupingResult: Equatable, Sendable
 		self.links = links
 		self.unassigned = unassigned
 		self.rooms = rooms
+		self.overlap = overlap
 		self.usedEvidence = usedEvidence
 		self.evidenceCoverage = evidenceCoverage
 		self.threshold = threshold
@@ -316,7 +337,19 @@ public enum PhotoGrouping
 	public static let seamWindow = 10
 
 	/// 写真をグループへ分ける。入力の順序は問わない（内部で撮影順へ並べ直す）。
-	public static func group(photos input: [PhotoMetadata], settings: GroupingSettings = GroupingSettings())
+	///
+	/// - Parameters:
+	///   - verifyOverlap: 2 枚が**実際に重なって写っているか**を確かめる役
+	///     （設計メモ §4.9）。渡すと、グループ分けのエッジ集合が合算スコアから
+	///     実測へ置き換わる。nil ならフェーズ 1／2 と同じ動作。
+	///   - isCancelled: 数分かかりうる段なので中断を受け取る。
+	///   - progress: 確かめた回数と予算。
+	public static func group(
+		photos input: [PhotoMetadata],
+		settings: GroupingSettings = GroupingSettings(),
+		verifyOverlap: OverlapSurvey.Probe? = nil,
+		isCancelled: () -> Bool = { false },
+		progress: (Int, Int) -> Void = { _, _ in })
 		-> GroupingResult
 	{
 		let photos = PhotoOrdering.sorted(input)
@@ -324,8 +357,8 @@ public enum PhotoGrouping
 		// なるうえ、近傍の計算結果は候補ペアの選定にもそのまま使い回す。
 		let rooms = RoomClustering.cluster(
 			prints: photos.map(\.featurePrint), settings: settings.roomClustering)
-		let coverage = evidenceCoverage(photos: photos, rooms: rooms, settings: settings)
-		let usable = usableEvidence(coverage: coverage, settings: settings)
+		var coverage = evidenceCoverage(photos: photos, rooms: rooms, settings: settings)
+		var usable = usableEvidence(coverage: coverage, settings: settings)
 
 		guard photos.count > 1
 		else
@@ -344,8 +377,10 @@ public enum PhotoGrouping
 				scoreHistogram: [Int](repeating: 0, count: histogramBins))
 		}
 
-		// --- ペアの結合スコア ---
-		let scored = candidatePairs(photos: photos, rooms: rooms, settings: settings).map
+		// --- ペアの事前確率（フェーズ 1／2 の合算スコア）---
+		// 重なりを確かめるときは、これは「どのペアを確かめるか」の順番付けに降りる
+		// （設計メモ §4.9）。確かめないときは従来どおりこれがグループ分けを決める。
+		let prior = candidatePairs(photos: photos, rooms: rooms, settings: settings).map
 		{ pair in
 			PairScore(
 				i: pair.0,
@@ -357,9 +392,53 @@ public enum PhotoGrouping
 					settings: settings,
 					usable: usable))
 		}
+
+		// --- 実際の重なりを確かめる（フェーズ 2.6）---
+		let graph = verifyOverlap.map
+		{ probe in
+			OverlapSurvey.survey(
+				urls: photos.map(\.url),
+				prior: prior,
+				settings: settings.overlapSurvey,
+				isCancelled: isCancelled,
+				progress: progress,
+				probe: probe)
+		}
+		coverage[.overlap] = graph.map { overlapCoverage(graph: $0) } ?? 0
+		// **判定できた組が半分の写真に届かないときは合算スコアへ戻る。**
+		// 他の証拠と同じ足切り（`minimumEvidenceCoverage`）で、確認が答えを出せない
+		// 現場（模様の無い写真ばかり）で歯止めまで失うと確認前より悪くなる。
+		let measured: OverlapGraph? = {
+			guard let graph, graph.isUsable,
+				(coverage[.overlap] ?? 0) >= settings.minimumEvidenceCoverage
+			else
+			{
+				return nil
+			}
+			return graph
+		}()
+
+		// --- エッジ集合 ---
+		// 重なりが使えるならエッジは実測に置き換わる。閾値は分布から推定しない
+		// （一致度は現場に依存しない目盛りを持つため。設計メモ §4.9）。
+		let scored: [PairScore]
+		let threshold: Double
+		let thresholdWasAutomatic: Bool
+		if let measured
+		{
+			usable.insert(.overlap)
+			scored = measured.edges()
+			threshold = settings.threshold ?? measured.criteria.minimumAgreement
+			thresholdWasAutomatic = false
+		}
+		else
+		{
+			scored = prior
+			threshold = settings.threshold ?? automaticThreshold(scores: prior.map(\.score))
+			thresholdWasAutomatic = settings.threshold == nil
+		}
 		let histogram = ThresholdEstimator.histogram(
 			values: scored.map(\.score), bins: histogramBins, lower: 0, upper: 1)
-		let threshold = settings.threshold ?? automaticThreshold(scores: scored.map(\.score))
 
 		// --- 連結成分 → 大きすぎるものを撮影の流れの切れ目で分割 ---
 		var components = connectedComponents(count: photos.count, edges: scored, threshold: threshold)
@@ -390,7 +469,11 @@ public enum PhotoGrouping
 			PhotoGroup(id: identifier(index), members: members)
 		}
 
-		let links = buildLinks(groups: groups, edges: scored, rooms: rooms, settings: settings)
+		// 隣接の候補からは**証明済みに重なっていない組だけ**を外す（設計メモ §4.9）。
+		// 測っていない組は残す — 分からないことを理由に候補を捨てると、視覚特徴が
+		// 取れない現場で隣接が 1 本も作れなくなる（§4.4 と同じ判断）。
+		let linkEdges = measured == nil ? scored : scored.filter { $0.score > 0 }
+		let links = buildLinks(groups: groups, edges: linkEdges, rooms: rooms, settings: settings)
 
 		return GroupingResult(
 			photos: photos,
@@ -398,11 +481,30 @@ public enum PhotoGrouping
 			links: links,
 			unassigned: absorbed.unassigned.sorted(),
 			rooms: rooms,
+			overlap: measured ?? graph,
 			usedEvidence: EvidenceKind.allCases.filter { usable.contains($0) },
 			evidenceCoverage: coverage,
 			threshold: threshold,
-			thresholdWasAutomatic: settings.threshold == nil,
+			thresholdWasAutomatic: thresholdWasAutomatic,
 			scoreHistogram: histogram)
+	}
+
+	/// 重なりを証拠として使えるか。**判定できた組を 1 つでも持つ写真の割合**で測る
+	/// （他の証拠の coverage と揃えて「その項目を持つ写真の割合」にする）。
+	static func overlapCoverage(graph: OverlapGraph) -> Double
+	{
+		guard graph.photoCount > 0
+		else
+		{
+			return 0
+		}
+		var decided = [Bool](repeating: false, count: graph.photoCount)
+		for (key, verdict) in graph.verdicts where verdict != .undecided
+		{
+			decided[key / graph.photoCount] = true
+			decided[key % graph.photoCount] = true
+		}
+		return Double(decided.filter { $0 }.count) / Double(graph.photoCount)
 	}
 
 	/// group-01 形式の識別子。100 グループを超えても桁が増えるだけで壊れない。
