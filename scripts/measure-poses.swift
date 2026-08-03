@@ -46,6 +46,9 @@
 //                           medium / full ほどメッシュ側が重くなるので、
 //                           reduced で得た倍率は二巡構成に最も不利な値になる）
 //    --subject scene|object 既定 scene（建物・部屋。object マスキングを切る）
+//    --list                 添字 → ファイル名の対応を出して終わる。どの写真が
+//                           start=N にあるかを手元で確かめるため（**ファイル名を
+//                           含むので共有向けではない**）
 //
 
 import Foundation
@@ -70,6 +73,9 @@ var detailName = "reduced"
 var subjectName = "scene"
 var orderingName = "unordered"
 var sensitivityName = "normal"
+/// 添字とファイル名の対応を出して終わる（`--list`）。**ファイル名を含むので
+/// 手元で見るためのもの**で、共有する出力ではない。
+var listOnly = false
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -104,12 +110,14 @@ while !arguments.isEmpty
 			orderingName = value()
 		case "--sensitivity":
 			sensitivityName = value()
+		case "--list":
+			listOnly = true
 		case "-h", "--help":
 			print("使い方: measure-poses <写真フォルダ> [--counts 100,200] "
 				+ "[--starts 0,400,600] [--mode poses|model|both] "
 				+ "[--ordering unordered|sequential|both] "
 				+ "[--sensitivity normal|high|both] [--detail reduced] "
-				+ "[--subject scene|object]")
+				+ "[--subject scene|object] [--list]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -184,8 +192,32 @@ func imageFiles(in folder: URL) -> [URL]
 	return result
 }
 
+/// "+09:00" 形式のオフセットを TimeZone にする（PhotoInspector と同じ）。
+func timeZone(fromOffset text: String) -> TimeZone?
+{
+	let trimmed = text.trimmingCharacters(in: .whitespaces)
+	guard trimmed.count >= 3, let sign = trimmed.first, sign == "+" || sign == "-"
+	else
+	{
+		return nil
+	}
+	let digits = trimmed.dropFirst().split(separator: ":")
+	guard let hours = Int(digits.first ?? "")
+	else
+	{
+		return nil
+	}
+	let minutes = digits.count > 1 ? Int(digits[1]) ?? 0 : 0
+	let seconds = (hours * 3600 + minutes * 60) * (sign == "-" ? -1 : 1)
+	return TimeZone(secondsFromGMT: seconds)
+}
+
 /// EXIF から撮影時刻と焦点距離を 1 回のオープンで読む。**窓は撮影順の連続区間
 /// なので、ここも撮影順で切り出す**（測定が本番とずれないように）。
+///
+/// **サブ秒とタイムゾーンまで読むのは measure-ordering.swift と揃えるため。**
+/// 片方だけがサブ秒を読むと、連写（この現場は 2 秒以内の組が 966 組ある）の
+/// 並びが食い違い、「区間ごとの中身」と「error 6 の地図」の添字がずれる。
 func readPhoto(_ url: URL) -> Photo
 {
 	guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -198,10 +230,20 @@ func readPhoto(_ url: URL) -> Photo
 	var date: Date?
 	if let text = exif[kCGImagePropertyExifDateTimeOriginal] as? String
 	{
+		let offset = exif[kCGImagePropertyExifOffsetTimeOriginal] as? String
 		let formatter = DateFormatter()
 		formatter.locale = Locale(identifier: "en_US_POSIX")
 		formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+		formatter.timeZone = offset.flatMap(timeZone(fromOffset:)) ?? TimeZone.current
 		date = formatter.date(from: text)
+		if let date, let subsecond = exif[kCGImagePropertyExifSubsecTimeOriginal] as? String,
+			let fraction = Double("0.\(subsecond)")
+		{
+			return Photo(
+				url: url,
+				date: date.addingTimeInterval(fraction),
+				focal35: (exif[kCGImagePropertyExifFocalLenIn35mmFilm] as? NSNumber)?.intValue)
+		}
 	}
 	let focal = (exif[kCGImagePropertyExifFocalLenIn35mmFilm] as? NSNumber)?.intValue
 	return Photo(url: url, date: date, focal35: focal)
@@ -233,6 +275,21 @@ let ordered = allFiles
 	}
 
 log("画像 \(ordered.count) 枚（撮影順）")
+
+// 添字 → ファイル名。error 6 になった区間の写真を実際に見るため。
+if listOnly
+{
+	let formatter = DateFormatter()
+	formatter.locale = Locale(identifier: "en_US_POSIX")
+	formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SS"
+	print("# index\tdate\tfocal35\tpath")
+	for (index, photo) in ordered.enumerated()
+	{
+		print("\(index)\t\(photo.date.map(formatter.string(from:)) ?? "-")"
+			+ "\t\(photo.focal35.map(String.init) ?? "-")\t\(photo.url.path)")
+	}
+	exit(0)
+}
 
 /// 指定区間の窓を作る。ハードリンク（同一ボリューム外ならコピー）。
 func makeWindow(start: Int, count: Int) throws -> URL
