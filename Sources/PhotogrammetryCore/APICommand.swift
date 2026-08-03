@@ -334,8 +334,8 @@ public enum APICommand: Equatable, Sendable
 				case "--no-overlap-check":
 					request.overlapCheck = false
 					index += 1
-				case "--no-overlap-grouping":
-					request.overlapGrouping = false
+				case "--overlap-grouping":
+					request.overlapGrouping = true
 					index += 1
 				case "--overlap-budget":
 					request.overlapBudget = try intValue(
@@ -425,9 +425,9 @@ public enum APICommand: Equatable, Sendable
 		{
 			result.append("--no-overlap-check")
 		}
-		if !request.overlapGrouping
+		if request.overlapGrouping
 		{
-			result.append("--no-overlap-grouping")
+			result.append("--overlap-grouping")
 		}
 		if let budget = request.overlapBudget
 		{

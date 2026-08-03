@@ -59,11 +59,16 @@ public struct SortRequest: Equatable, Sendable
 	/// nil なら既定値（`SortPlanner.Settings`）。上げるほど確かになるが繋がりは減る。
 	/// **画素 1 枚ずつの一致度ではない**（設計メモ §4.9.1）。
 	public var overlapInliers: Double?
-	/// **グループ分けそのもの**を実際の重なりで決めるか（既定は true。設計メモ
-	/// §4.9）。時刻・GPS・露出・見た目は「どのペアを確かめるか」の順番付けへ降り、
-	/// 繋ぐかどうかは実測が決める。切るとフェーズ 2 と同じ合算スコアで分ける
-	/// （速いが、隣り合う部屋を続けて撮った写真は 1 つのグループに混ざりやすい）。
-	/// `overlapCheck` が false ならこの指示も効かない（確認そのものを行わないため）。
+	/// **グループ分けそのもの**を実際の重なりで決めるか（設計メモ §4.9）。
+	///
+	/// **既定は false。この測り方は実データで棄却された（§4.9.2）。** 画素の相関は
+	/// 3 次元の場面を別の立ち位置から撮った 2 枚では成立せず、実写真 1424 枚で
+	/// 撮影順に隣り合う写真の的中率が 1.1%、93% の写真がどの写真とも重ならない、
+	/// という結果になった（仕分けの出力は 1 枚のグループ 1 つと未割当 1,360 枚）。
+	///
+	/// **true にすると仕分けは実用にならない。** 残してあるのは、次の設計で判定の
+	/// 手段を差し替えたときに配管（`OverlapSurvey` の予算配分・統計・診断）を
+	/// そのまま使えるようにするため。
 	public var overlapGrouping: Bool
 	/// グループ分けで重なりを確かめる回数の上限。nil なら写真 1 枚あたり 16 組。
 	/// **ここが所要時間の上限**で、上げるほど繋がりを見落としにくくなる。
@@ -90,7 +95,7 @@ public struct SortRequest: Equatable, Sendable
 		visualThreshold: Double? = nil,
 		overlapCheck: Bool = true,
 		overlapInliers: Double? = nil,
-		overlapGrouping: Bool = true,
+		overlapGrouping: Bool = false,
 		overlapBudget: Int? = nil,
 		link: LinkStrategy = .hardlink,
 		recursive: Bool = true,
@@ -225,8 +230,9 @@ public struct SortRequest: Equatable, Sendable
 	}
 
 	/// グループ分けで重なりを確かめるか。**確認そのものを切っていれば当然行わない。**
-	/// 2 つの指示に分けてあるのは、「共有写真だけ確かめる」（フェーズ 2.5 と同じ
-	/// 動作・速い）を残すため。
+	///
+	/// 既定ではどちらも「共有写真だけ確かめる」（フェーズ 2.5・#11 と同じ動作）に
+	/// なる。グループ分けへ持ち上げる試みは §4.9.2 で棄却した。
 	public var usesOverlapGrouping: Bool
 	{
 		overlapCheck && overlapGrouping

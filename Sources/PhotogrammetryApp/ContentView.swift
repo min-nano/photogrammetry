@@ -323,12 +323,12 @@ struct ContentView: View
 					.font(.caption)
 					.foregroundColor(.secondary)
 
-				Toggle("重なりでグループ分けする", isOn: $model.overlapGrouping)
+				Toggle("重なりでグループ分けする（実験）", isOn: $model.overlapGrouping)
 					.disabled(!model.overlapCheck)
 				Text("どの写真どうしが実際に重なって写っているかでグループを決めます。"
-					+ "撮影時刻や GPS は「どの組を確かめるか」の順番付けに使います。"
-					+ "隣り合う部屋を続けて撮っても混ざらず、部屋を行き来しても分かれ"
-					+ "ません。写真の枚数に応じて数分〜十数分かかります。")
+					+ "**この方式は現場の写真では使いものになりませんでした**（隣り合う"
+					+ "写真すら 1% しか判定できず、ほとんどの写真がどこにも入りません）。"
+					+ "既定では切ってあります。")
 					.font(.caption)
 					.foregroundColor(.secondary)
 

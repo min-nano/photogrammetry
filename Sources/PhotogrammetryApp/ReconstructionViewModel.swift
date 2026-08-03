@@ -63,9 +63,9 @@ final class ReconstructionViewModel: ObservableObject
 	/// 共有写真の候補を実際に位置合わせして重なりを確かめる。既定で入れる —
 	/// これを切ると、白い壁ばかりの屋内で別の場所の写真が共有写真に混ざる。
 	@Published var overlapCheck = true
-	/// グループ分けそのものを実際の重なりで決める。既定で入れる — 切ると
-	/// 隣り合う部屋を続けて撮った写真が 1 つのグループに混ざりやすくなる。
-	@Published var overlapGrouping = true
+	/// グループ分けそのものを実際の重なりで決める。**既定で切る** — この測り方は
+	/// 実データで棄却されている（設計メモ §4.9.2）。入れると仕分けは実用にならない。
+	@Published var overlapGrouping = false
 
 	@Published var isProcessing = false
 	@Published var progress: Double = 0
