@@ -480,6 +480,25 @@ CLAUDE.md の「フレームワークはラッパーに閉じ込め、判断は�
 - まとめて渡して並行に処理する。同じ写真は 1 回だけデコードする
 - 平行移動でよく一致した組は射影の推定を省く
 
+#### 実データ（合成サンプル）での確認
+
+`scripts/make-sort-samples.swift` の 2 部屋ぶん（各部屋は同じ配置を横へずらした
+写真＝歩きながら撮った）を仕分けると、確認は狙いどおりに働いた
+（[run 30780241233](https://github.com/min-nano/photogrammetry/actions/runs/30780241233)）。
+
+```
+共有写真の候補 176 組を確認（重なりを確認 32 組・重なっていないので除外 144 組・判定できず保留 0 組）
+ adj group-01 group-02 shared=4 room=room-01 verified=True   ← 同じ部屋の隣り合う区間
+ adj group-03 group-04 shared=4 room=room-02 verified=True
+ adj group-03 group-05 shared=4 room=room-02 verified=True
+ adj group-04 group-05 shared=4 room=room-02 verified=True
+（部屋をまたぐ組は 1 つも隣接にならず、noVisualOverlap で名指しされる）
+```
+
+**同じ部屋の組は通し、別の部屋の組はすべて落ちる。** 保留が 0 なのは、この
+サンプルが十分な模様を持つため。実写真では白い壁だけの組が保留になりうるが、
+そのときは落とさず通す（下記）。
+
 #### 落としたことは必ず言う
 
 判定できなかった組（模様が無い・読めない）は**落とさない**。分からないことを
