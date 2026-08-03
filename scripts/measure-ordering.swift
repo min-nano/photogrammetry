@@ -1472,6 +1472,9 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	/// 1424 枚に対して窓 57 個・1 枚あたり平均 8.1 個の窓に入り、そのうち 33 個は
 	/// 新規が 5 枚未満だった。**重なりは意図して作るものであって、
 	/// 副作用で増えてよいものではない。**
+	/// 細い繋ぎ目（支持数 1 の候補しか無い状態）を越えた回数。窓ごとに数える。
+	var thinCrossings = 0
+
 	func grow(from seed: Int) -> [Int]
 	{
 		var inside: Set<Int> = [seed]
@@ -1500,20 +1503,21 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 
 		while inside.count < capacity, let candidate = best()
 		{
-			// **支持数 1 の候補しか残っていない ＝ 密な近傍を食べ尽くした**という
-			// 状態。その 1 本が本物の細い繋がりか空似かは**区別できない**ので、
-			// 容量をそこへ使わずに止める。
+			// **支持数 1 でも止めない。**
 			//
-			// **「支持数 1 ＝ ワームホール」ではない。** 合成グラフで測った
-			// ところ、かたまりの空似は支持数 4〜5 で入ってくる（孤立した空似は
-			// 支持数 1 のまま入れず、混入 0 になる）。支持数の順序が保証するのは
-			// 「より強い本物の前線がある限りワームホールは勝てない」ことだけ。
+			// 一度「支持数 2 未満なら止める」を入れたが、実データで窓が 71 個・
+			// 中央値 51 枚に砕けた（容量 200 に届いたのは 5 個だけ）。模擬実験で
+			// 混入 0 を確認したのは**止めない**支持成長のほうで、止める版は
+			// 検証していなかった。
 			//
-			// ここで止めると本物の細い繋がりを切る恐れがあるので、**切った先とは
-			// あとで繋ぎ目の写真を共有する**（下の「細い繋ぎ目の補修」）。
-			if candidate.support < 2, inside.count >= minimumWindow
+			// そもそも「支持数 1 ＝ ワームホール」ではない（かたまりの空似は
+			// 支持数 4〜5 で入る）。支持数 1 の候補しか無いのは「密な近傍を
+			// 食べ尽くした」という意味で、その 1 本が本物の細い繋がりか空似かは
+			// **区別できない**。§1.2 のとおり**混入より分断のほうが高くつく**ので、
+			// 迷ったら繋ぐ側へ倒す。**何本目で細い繋ぎ目を越えたかは記録して報告する。**
+			if candidate.support < 2
 			{
-				break
+				thinCrossings += 1
 			}
 			support.removeValue(forKey: candidate.node)
 			inside.insert(candidate.node)
@@ -1527,14 +1531,20 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	}
 
 	var windows: [[Int]] = []
-	while let seed = nextSeed()
+	var crossingsPerWindow: [Int] = []
+	// **残りが下限を割ったら打ち切る。** 最後の数枚のために「既存の写真ばかりの
+	// 窓」をもう 1 つ作るのが、窓が増えすぎるいちばんの原因だった。残りは
+	// はぐれとして最も近い窓へ入れる。
+	while (0 ..< total).filter({ !covered[$0] }).count >= minimumWindow, let seed = nextSeed()
 	{
+		thinCrossings = 0
 		let window = grow(from: seed)
 		for node in window
 		{
 			covered[node] = true
 		}
 		windows.append(window)
+		crossingsPerWindow.append(thinCrossings)
 	}
 
 	// --- はぐれの吸収 ---
@@ -1544,7 +1554,7 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	// 必ず出るので、ここを塞がないと「1 枚の窓」を Object Capture へ投げることに
 	// なる。**最も見た目の近い写真がいる窓へ入れる**（設計 §1.2 のとおり、混ぜる
 	// コストは低い）。
-	var strays: [Int] = []
+	var strays = (0 ..< total).filter { !covered[$0] }
 	var kept: [[Int]] = []
 	for window in windows
 	{
@@ -1752,7 +1762,7 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		}
 	}
 
-	print("  番号  枚数  重なり  コンダクタンス  撮影順の塊  最大の塊  時刻なし")
+	print("  番号  枚数  重なり  細い繋ぎ目  コンダクタンス  撮影順の塊  最大の塊  時刻なし")
 	for (index, window) in windows.enumerated()
 	{
 		let sequence = localOrder(window)
@@ -1785,9 +1795,10 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		}
 		let largest = runs.max() ?? 0
 		let share = positions.isEmpty ? 0.0 : Double(largest) / Double(positions.count)
+		let crossings = index < crossingsPerWindow.count ? crossingsPerWindow[index] : 0
 		print(String(
-			format: "  %4d %5d %7d %13@ %11d %9@ %8d",
-			index + 1, window.count, maximumShared[index],
+			format: "  %4d %5d %7d %11d %13@ %11d %9@ %8d",
+			index + 1, window.count, maximumShared[index], crossings,
 			format(conductance(window), 3) as NSString,
 			runs.count, format(share, 2) as NSString,
 			window.count - positions.count))
