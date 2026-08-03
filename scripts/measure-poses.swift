@@ -47,6 +47,9 @@
 //                           reduced で得た倍率は二巡構成に最も不利な値になる）
 //    --subject scene|object 既定 scene（建物・部屋。object マスキングを切る）
 //    --timeout 1800         1 回の実行の上限（秒）。超えたら中断して次へ進む
+//    --window-dir DIR       measure-ordering --windows が書き出した窓を順に投げる。
+//                           **支持成長で作った窓が実際に通るかの検証**（設計 §9-1）
+//    --window-file FILE     窓を 1 つだけ投げる（複数指定可）
 //    --drop-blurriest 20    窓の中でブレの大きい下位 N% を落としてから投げる。
 //                           既存の QualityFilter が error 6 を救えるかを試す
 //    --download             iCloud Drive の未ダウンロードをまとめて落としてから進む
@@ -90,6 +93,10 @@ var downloadFirst = false
 /// 窓の中で**ブレの大きい下位 N%** を落としてから投げる（`--drop-blurriest`）。
 /// 既存の QualityFilter が error 6 を救えるかを直接試すための設定。
 var dropBlurriestPercent = 0
+/// **窓の一覧ファイル**（`--window-file` / `--window-dir`）。
+/// measure-ordering --windows が書き出したもの。1 行 1 パスで、**その順序が
+/// そのまま Object Capture へ渡す並び**になる（`sequential` の中身）。
+var windowFiles: [String] = []
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -130,6 +137,15 @@ while !arguments.isEmpty
 			downloadFirst = true
 		case "--drop-blurriest":
 			dropBlurriestPercent = Int(value()) ?? 0
+		case "--window-file":
+			windowFiles.append(value())
+		case "--window-dir":
+			let directory = value()
+			let names = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
+			for name in names.sorted() where name.hasPrefix("window-") && name.hasSuffix(".txt")
+			{
+				windowFiles.append((directory as NSString).appendingPathComponent(name))
+			}
 		case "--timeout":
 			timeoutSeconds = Double(value()) ?? timeoutSeconds
 		case "-h", "--help":
@@ -138,7 +154,7 @@ while !arguments.isEmpty
 				+ "[--ordering unordered|sequential|both] "
 				+ "[--sensitivity normal|high|both] [--detail reduced] "
 				+ "[--subject scene|object] [--drop-blurriest 20] [--timeout 1800] "
-				+ "[--download] [--list]")
+				+ "[--download] [--list] [--window-dir DIR] [--window-file FILE]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -476,6 +492,52 @@ if listOnly
 	return max(0, sumOfSquares / Double(count) - mean * mean)
 }
 
+/// 一覧ファイルから窓を作る。**行の順序をそのまま並びとして使う**
+/// （measure-ordering が窓の中の並びまで決めて書き出しているため）。
+func makeWindow(fromList path: String, label: String) throws -> (folder: URL, dropped: Int)
+{
+	let text = try String(contentsOfFile: path, encoding: .utf8)
+	let paths = text.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+	let folder = FileManager.default.temporaryDirectory
+		.appendingPathComponent("measure-poses-\(label)", isDirectory: true)
+	try? FileManager.default.removeItem(at: folder)
+	try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+	var kept = paths
+	var dropped = 0
+	if dropBlurriestPercent > 0, kept.count > 2
+	{
+		let lock = NSLock()
+		var values = [Double](repeating: 0, count: kept.count)
+		DispatchQueue.concurrentPerform(iterations: kept.count)
+		{ index in
+			let value = sharpness(of: URL(fileURLWithPath: kept[index]))
+			lock.lock()
+			values[index] = value
+			lock.unlock()
+		}
+		let threshold = values.sorted()[
+			min(values.count - 1, values.count * dropBlurriestPercent / 100)]
+		let survivors = kept.indices.filter { values[$0] > threshold }
+		dropped = kept.count - survivors.count
+		kept = survivors.map { kept[$0] }
+	}
+	for (index, source) in kept.enumerated()
+	{
+		let url = URL(fileURLWithPath: source)
+		let name = String(format: "%05d.%@", index, url.pathExtension)
+		let destination = folder.appendingPathComponent(name)
+		do
+		{
+			try FileManager.default.linkItem(at: url, to: destination)
+		}
+		catch
+		{
+			try? FileManager.default.copyItem(at: url, to: destination)
+		}
+	}
+	return (folder, dropped)
+}
+
 /// 指定区間の窓を作る。ハードリンク（同一ボリューム外ならコピー）。
 /// **ブレの大きい下位 N% を落とす**設定なら、ここで落としてから並べる。
 func makeWindow(start: Int, count: Int) throws -> (folder: URL, dropped: Int)
@@ -700,7 +762,8 @@ func stageName(_ stage: PhotogrammetrySession.Output.ProcessingStage) -> String
 }
 
 func measure(
-	mode: Mode, start: Int, count: Int, ordering: String, sensitivity: String) async -> Measurement
+	mode: Mode, start: Int, count: Int, ordering: String, sensitivity: String,
+	listPath: String? = nil) async -> Measurement
 {
 	var measurement = Measurement()
 	let began = Date()
@@ -708,7 +771,18 @@ func measure(
 	let folder: URL
 	do
 	{
-		let window = try makeWindow(start: start, count: count)
+		let window: (folder: URL, dropped: Int)
+		if let listPath
+		{
+			window = try makeWindow(
+				fromList: listPath,
+				label: (listPath as NSString).lastPathComponent.replacingOccurrences(
+					of: ".txt", with: ""))
+		}
+		else
+		{
+			window = try makeWindow(start: start, count: count)
+		}
 		folder = window.folder
 		measurement.dropped = window.dropped
 	}
@@ -887,6 +961,46 @@ Task
 	}
 	emit("# 入力 \(ordered.count) 枚 / detail=\(detailName) / subject=\(subjectName)")
 	emit("# ハードウェア上限 \(PhotogrammetrySession.limits.maximumNumberOfInputImages) 枚")
+
+	// **一覧ファイルが指定されていたら、そちらだけを投げる。**
+	// measure-ordering --windows が支持成長で作った窓が、実際に Object Capture を
+	// 通るかどうかがこの設計の合否を決める（設計 §9-1）。
+	if !windowFiles.isEmpty
+	{
+		emit("# 窓の一覧 \(windowFiles.count) 個 / ordering=\(orderingName) "
+			+ "/ sensitivity=\(sensitivityName) / drop-blurriest=\(dropBlurriestPercent)%")
+		for path in windowFiles
+		{
+			let name = (path as NSString).lastPathComponent
+			for ordering in orderings
+			{
+				for sensitivity in sensitivities
+				{
+					for mode in modes
+					{
+						log("測定中: \(name) mode=\(mode.rawValue) "
+							+ "ordering=\(ordering) sensitivity=\(sensitivity) …")
+						let measurement = await measure(
+							mode: mode, start: 0, count: 0, ordering: ordering,
+							sensitivity: sensitivity, listPath: path)
+						let stages = measurement.stageStarts
+							.map { String(format: "%@:%.0f", $0.0, $0.1) }
+							.joined(separator: ",")
+						emit(String(
+							format: "window name=%@ mode=%@ ordering=%@ sensitivity=%@ "
+								+ "elapsed=%.1f posed=%d skipped=%d invalid=%d dropped=%d "
+								+ "peak=%@ stages=%@ result=%@",
+							name, mode.rawValue, ordering, sensitivity, measurement.elapsed,
+							measurement.posed, measurement.skipped, measurement.invalid,
+							measurement.dropped, gigabytes(measurement.peakBytes),
+							stages.isEmpty ? "-" : stages, measurement.outcome))
+					}
+				}
+			}
+		}
+		emit("done")
+		exit(0)
+	}
 
 	for start in starts
 	{

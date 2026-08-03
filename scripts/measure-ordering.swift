@@ -31,6 +31,10 @@
 //    --segments N       撮影順を N 枚ずつに切って区間ごとの中身を出す
 //    --seriate 12       視覚特徴だけで並べ替える（スペクトル法）。EXIF 無しで
 //                       成立するかの検証。k は相互近傍の数
+//    --windows 200      **支持成長で窓を作って書き出す**（設計 §3.1）。容量を指定。
+//                       書き出した一覧は measure-poses --window-dir で OC へ投げる
+//    --window-dir DIR   書き出し先（既定 ./windows）
+//    --neighbours 12    共視グラフの相互近傍の数
 //    --download         iCloud Drive の未ダウンロードをまとめて落としてから進む
 //
 
@@ -56,6 +60,12 @@ var downloadFirst = false
 /// **視覚特徴だけで並べ替える**（`--seriate k`）。EXIF を一切使わずに
 /// 「隣り合う写真は重なっている」並びを作れるかを確かめる（設計 §3.9）。
 var seriateK: Int?
+/// **窓を作って書き出す**（`--windows N`）。N は窓の容量。設計 §3.1 の
+/// 支持成長をそのまま実行し、measure-poses へ渡せる一覧を書き出す。
+var windowCapacity: Int?
+var windowDirectory = "windows"
+/// 共視グラフの相互近傍の数（`--neighbours`）。
+var neighbourCount = 12
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -75,9 +85,16 @@ while !arguments.isEmpty
 			downloadFirst = true
 		case "--seriate":
 			seriateK = arguments.isEmpty ? 12 : (Int(arguments.removeFirst()) ?? 12)
+		case "--windows":
+			windowCapacity = arguments.isEmpty ? nil : Int(arguments.removeFirst())
+		case "--window-dir":
+			windowDirectory = arguments.isEmpty ? windowDirectory : arguments.removeFirst()
+		case "--neighbours":
+			neighbourCount = (arguments.isEmpty ? nil : Int(arguments.removeFirst())) ?? neighbourCount
 		case "-h", "--help":
 			print("使い方: measure-ordering <写真フォルダ> [--no-recursive] [--limit N] "
-				+ "[--max-pairs N] [--segments N] [--seriate 12] [--download]")
+				+ "[--max-pairs N] [--segments N] [--seriate 12] "
+				+ "[--windows 200] [--window-dir DIR] [--neighbours 12] [--download]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -1300,6 +1317,265 @@ if let neighbourCount = seriateK, neighbourCount > 0, count > 10
 	print("  → 隔たり 1 の距離が撮影順のときと同等以下なら、**EXIF 無しで同じ品質の")
 	print("    並びが作れている**。一致率そのものは高くなくてよい（別の道順でも")
 	print("    「隣は重なっている」が成り立てば窓としては等価）")
+}
+
+
+// ---------------------------------------------------------------------
+// 窓を作って書き出す（--windows）
+//
+// **設計 §3.1 の支持成長をそのまま実装したもの。** EXIF を一切使わないので、
+// 撮影時刻の無い写真も同じ経路で窓に入る（そこが検証したい点）。
+// 書き出したファイル一覧は measure-poses --window-dir で Object Capture へ
+// 投げられる。**本格実装の前に、この窓が実際に通るかを確かめるための道具。**
+// ---------------------------------------------------------------------
+
+if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
+{
+	let members = photos.filter { ($0.elements?.count ?? 0) == dominantDimension }
+	let total = members.count
+	let width = dominantDimension
+	log("窓を作ります（対象 \(total) 枚・容量 \(capacity)・近傍 \(neighbourCount)）")
+
+	var vectors = [Float](repeating: 0, count: total * width)
+	for (index, record) in members.enumerated()
+	{
+		vectors.replaceSubrange(index * width ..< (index + 1) * width, with: record.elements ?? [])
+	}
+
+	// --- 相互 k 近傍グラフ（閾値を持たない） ---
+	var topNeighbours = [[Int]](repeating: [], count: total)
+	let topLock = NSLock()
+	vectors.withUnsafeBufferPointer
+	{ buffer in
+		guard let base = buffer.baseAddress
+		else
+		{
+			return
+		}
+		DispatchQueue.concurrentPerform(iterations: total)
+		{ index in
+			var best: [(Int, Double)] = []
+			for other in 0 ..< total where other != index
+			{
+				let value = distance(base, index, other, width)
+				if best.count < neighbourCount
+				{
+					best.append((other, value))
+					best.sort { $0.1 < $1.1 }
+				}
+				else if value < best[best.count - 1].1
+				{
+					best[best.count - 1] = (other, value)
+					best.sort { $0.1 < $1.1 }
+				}
+			}
+			topLock.lock()
+			topNeighbours[index] = best.map(\.0)
+			topLock.unlock()
+		}
+	}
+
+	var mutual = [[Int]](repeating: [], count: total)
+	for index in 0 ..< total
+	{
+		for other in topNeighbours[index]
+			where other > index && topNeighbours[other].contains(index)
+		{
+			mutual[index].append(other)
+			mutual[other].append(index)
+		}
+	}
+	let edgesBefore = mutual.reduce(0) { $0 + $1.count } / 2
+
+	// --- 共通近傍フィルタ（設計 §2.2） ---
+	let neighbourSets = mutual.map { Set($0) }
+	var graph = [[Int]](repeating: [], count: total)
+	for index in 0 ..< total
+	{
+		for other in mutual[index]
+			where neighbourSets[index].intersection(neighbourSets[other]).count >= 2
+		{
+			graph[index].append(other)
+		}
+	}
+	let edgesAfter = graph.reduce(0) { $0 + $1.count } / 2
+
+	// --- 支持成長（設計 §3.1）---
+	var covered = [Bool](repeating: false, count: total)
+
+	/// まだ覆われていない写真のうち、次数が最大のもの。**同数なら添字の小さいほう**
+	/// （設計 §3.1.1-(1)。乱数を使わず、同じ入力からは同じ窓を作る）。
+	func nextSeed() -> Int?
+	{
+		var best: Int?
+		for index in 0 ..< total where !covered[index]
+		{
+			guard let current = best
+			else
+			{
+				best = index
+				continue
+			}
+			if graph[index].count > graph[current].count
+			{
+				best = index
+			}
+		}
+		return best
+	}
+
+	/// 支持数（いまの集合へ何本つながっているか）が多い順に足す。
+	func grow(from seed: Int) -> [Int]
+	{
+		var inside: Set<Int> = [seed]
+		var order = [seed]
+		var support: [Int: Int] = [:]
+		for node in graph[seed]
+		{
+			support[node, default: 0] += 1
+		}
+		while inside.count < capacity, !support.isEmpty
+		{
+			var bestNode = -1
+			var bestSupport = -1
+			for (node, value) in support
+			{
+				if value > bestSupport || (value == bestSupport && node < bestNode)
+				{
+					bestNode = node
+					bestSupport = value
+				}
+			}
+			support.removeValue(forKey: bestNode)
+			inside.insert(bestNode)
+			order.append(bestNode)
+			for node in graph[bestNode] where !inside.contains(node)
+			{
+				support[node, default: 0] += 1
+			}
+		}
+		return order
+	}
+
+	var windows: [[Int]] = []
+	while let seed = nextSeed()
+	{
+		let window = grow(from: seed)
+		for node in window
+		{
+			covered[node] = true
+		}
+		windows.append(window)
+	}
+
+	// --- 窓の中の並び（設計 §3.4）: 端から端への幅優先 ---
+	func localOrder(_ window: [Int]) -> [Int]
+	{
+		let inside = Set(window)
+		func distances(from start: Int) -> [Int: Int]
+		{
+			var result = [start: 0]
+			var queue = [start]
+			var head = 0
+			while head < queue.count
+			{
+				let node = queue[head]
+				head += 1
+				for next in graph[node] where inside.contains(next) && result[next] == nil
+				{
+					result[next] = (result[node] ?? 0) + 1
+					queue.append(next)
+				}
+			}
+			return result
+		}
+		let fromSeed = distances(from: window[0])
+		var far = window[0]
+		var farthest = -1
+		for (node, value) in fromSeed where value > farthest || (value == farthest && node < far)
+		{
+			far = node
+			farthest = value
+		}
+		let fromEnd = distances(from: far)
+		return window.sorted
+		{ left, right in
+			let a = fromEnd[left] ?? Int.max
+			let b = fromEnd[right] ?? Int.max
+			return a == b ? left < right : a < b
+		}
+	}
+
+	/// 窓から外へ出る辺の割合（設計 §3.1.1-(2)）。**停止条件ではなく指標**。
+	func conductance(_ window: [Int]) -> Double
+	{
+		let inside = Set(window)
+		var cut = 0
+		var volume = 0
+		for node in window
+		{
+			for next in graph[node]
+			{
+				volume += 1
+				if !inside.contains(next)
+				{
+					cut += 1
+				}
+			}
+		}
+		return volume > 0 ? Double(cut) / Double(volume) : 0
+	}
+
+	// --- 書き出し ---
+	let directory = URL(fileURLWithPath: windowDirectory, isDirectory: true)
+	try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+	var multiplicity = [Int](repeating: 0, count: total)
+	/// 撮影順での位置（**検算にだけ使う**。窓を作るのには使っていない）。
+	var captureIndex: [String: Int] = [:]
+	for (index, record) in ordered.enumerated()
+	{
+		captureIndex[record.relativePath] = index
+	}
+
+	print("")
+	print("■ 支持成長で作った窓（EXIF 不使用・設計 §3.1）")
+	print("  相互 \(neighbourCount) 近傍 \(edgesBefore) 本 → 共通近傍フィルタ後 \(edgesAfter) 本")
+	print("  窓 \(windows.count) 個")
+	print("  番号  枚数  新規  コンダクタンス  撮影順の中央値  撮影順の広がり  時刻なし")
+	for (index, window) in windows.enumerated()
+	{
+		let sequence = localOrder(window)
+		for node in window
+		{
+			multiplicity[node] += 1
+		}
+		let lines = sequence.map { root.appendingPathComponent(members[$0].relativePath).path }
+		let file = directory.appendingPathComponent(String(format: "window-%02d.txt", index + 1))
+		try? lines.joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+
+		let positions = window.compactMap { captureIndex[members[$0].relativePath] }.sorted()
+		let fresh = window.filter { multiplicity[$0] == 1 }.count
+		let median = positions.isEmpty ? -1 : positions[positions.count / 2]
+		let spread = positions.count > 4
+			? positions[positions.count * 3 / 4] - positions[positions.count / 4] : 0
+		print(String(
+			format: "  %4d %5d %5d %13@ %15d %15d %9d",
+			index + 1, window.count, fresh,
+			format(conductance(window), 3) as NSString,
+			median, spread, window.count - positions.count))
+	}
+
+	var histogram: [Int: Int] = [:]
+	for value in multiplicity
+	{
+		histogram[value, default: 0] += 1
+	}
+	print("  所属する窓の数の分布: "
+		+ histogram.sorted { $0.key < $1.key }.map { "\($0.key)個×\($0.value)枚" }
+			.joined(separator: " "))
+	print("  → **0 個が 1 枚でもあれば被覆が壊れている**（設計 §3.2）")
+	print("  → 撮影順の広がりは検算用。窓が撮影順のひと続きに近ければ小さくなる")
+	print("  書き出し先: \(directory.path)")
 }
 
 print("")
