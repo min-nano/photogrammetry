@@ -1477,20 +1477,34 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 
 	func grow(from seed: Int) -> [Int]
 	{
+		// **段階 1: まだ覆われていない写真だけで育てる**（容量 ×(1 - 重なり率)）。
+		// **段階 2: 襟（既に覆われた写真）を容量まで足す。ただし支持数 1 しか
+		// 残っていなければ埋めずに止める。**
+		//
+		// 両方の失敗を踏まえた形。段階を分けないと、覆い終わったあとに残った
+		// 写真を種にするたび既存の写真ばかりの窓ができる（実データで 57 個）。
+		// 逆に止め方を「支持数 2 未満」だけにすると窓が砕ける（同 71 個・中央値
+		// 51 枚）。**枠は段階 1 にだけ課し、段階 2 は良い材料がある間だけ埋める。**
+		//
+		// 合成グラフでの見積もり（n=1337・容量 200・重なり 30%）:
+		//   窓 9〜10 個・各 200 枚・延べ 1.35〜1.50 倍・隣接の重なり 60〜118 枚
+		//   （かたまりの空似を入れても同じ）
+		let freshTarget = max(1, Int(Double(capacity) * (1 - overlapRatio)))
 		var inside: Set<Int> = [seed]
 		var order = [seed]
+		var fresh = 1
 		var support: [Int: Int] = [:]
 		for node in graph[seed]
 		{
 			support[node, default: 0] += 1
 		}
 
-		/// 支持数が最大の候補と、その支持数。**同数なら添字の小さいほう**。
-		func best() -> (node: Int, support: Int)?
+		/// 支持数が最大の候補。**同数なら添字の小さいほう**（決定的にする）。
+		func best(freshOnly: Bool) -> (node: Int, support: Int)?
 		{
 			var bestNode = -1
 			var bestSupport = -1
-			for (node, value) in support
+			for (node, value) in support where !freshOnly || !covered[node]
 			{
 				if value > bestSupport || (value == bestSupport && node < bestNode)
 				{
@@ -1501,31 +1515,39 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 			return bestNode >= 0 ? (bestNode, bestSupport) : nil
 		}
 
-		while inside.count < capacity, let candidate = best()
+		func add(_ node: Int, _ value: Int)
 		{
-			// **支持数 1 でも止めない。**
-			//
-			// 一度「支持数 2 未満なら止める」を入れたが、実データで窓が 71 個・
-			// 中央値 51 枚に砕けた（容量 200 に届いたのは 5 個だけ）。模擬実験で
-			// 混入 0 を確認したのは**止めない**支持成長のほうで、止める版は
-			// 検証していなかった。
-			//
-			// そもそも「支持数 1 ＝ ワームホール」ではない（かたまりの空似は
-			// 支持数 4〜5 で入る）。支持数 1 の候補しか無いのは「密な近傍を
-			// 食べ尽くした」という意味で、その 1 本が本物の細い繋がりか空似かは
-			// **区別できない**。§1.2 のとおり**混入より分断のほうが高くつく**ので、
-			// 迷ったら繋ぐ側へ倒す。**何本目で細い繋ぎ目を越えたかは記録して報告する。**
-			if candidate.support < 2
+			if value < 2
 			{
 				thinCrossings += 1
 			}
-			support.removeValue(forKey: candidate.node)
-			inside.insert(candidate.node)
-			order.append(candidate.node)
-			for next in graph[candidate.node] where !inside.contains(next)
+			support.removeValue(forKey: node)
+			inside.insert(node)
+			order.append(node)
+			if !covered[node]
+			{
+				fresh += 1
+			}
+			for next in graph[node] where !inside.contains(next)
 			{
 				support[next, default: 0] += 1
 			}
+		}
+
+		while fresh < freshTarget, inside.count < capacity, let candidate = best(freshOnly: true)
+		{
+			add(candidate.node, candidate.support)
+		}
+		while inside.count < capacity, let candidate = best(freshOnly: false)
+		{
+			// **襟は良い材料がある間だけ。** 支持数 1 しか残っていないなら、
+			// 枠を埋めるために弱い繋がりを引き込まずに止める。切れた先とは
+			// あとで繋ぎ目の写真を共有する（「細い繋ぎ目の補修」）。
+			if candidate.support < 2
+			{
+				break
+			}
+			add(candidate.node, candidate.support)
 		}
 		return order
 	}
