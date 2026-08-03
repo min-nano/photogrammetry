@@ -172,16 +172,19 @@ final class PhotoGroupingTests: XCTestCase
 		XCTAssertGreaterThanOrEqual(result.links.count, result.groups.count - 1)
 	}
 
-	func testSmallGroupIsAbsorbedIntoStrongestNeighbour()
+	func testSmallGroupThatMatchesNothingGoesToUnassigned()
 	{
-		// 30 枚 + 3 枚。3 枚では再構成が成立しないので隣へ吸収される。
+		// 30 枚 + 3 枚。3 枚は 12 分後・見た目もまるで違う（別の場所を数枚だけ
+		// 撮った、あるいは SNS 経由で紛れ込んだ写真）。**3 枚では再構成が成立
+		// しないが、だからといって隣のグループへ混ぜてよいことにはならない**
+		// （設計メモ §4.6.2）。黙って混ぜず _unassigned へ送り、診断で伝える。
 		let photos = SamplePhoto.sequence(start: 1, count: 30, startTime: 0, hashSeed: 0)
 			+ SamplePhoto.sequence(
 				start: 101, count: 3, startTime: 700, hashSeed: 0xFFFF_FFFF_0000_0000)
 		let result = PhotoGrouping.group(photos: photos)
 		XCTAssertEqual(result.groups.count, 1)
-		XCTAssertEqual(result.groups.first?.members.count, 33)
-		XCTAssertTrue(result.unassigned.isEmpty)
+		XCTAssertEqual(result.groups.first?.members.count, 30)
+		XCTAssertEqual(result.unassigned.count, 3)
 	}
 
 	// -----------------------------------------------------------------
@@ -496,9 +499,11 @@ final class PhotoGroupingTests: XCTestCase
 		XCTAssertEqual(result.evidenceCoverage[.gps], 1)
 	}
 
-	func testSmallGroupBetweenTwoNeighboursPicksTheStrongerOne()
+	func testSmallGroupBetweenTwoUnrelatedNeighboursIsNotForcedIntoEither()
 	{
-		// 両隣に繋がる小さな塊。どちらへ寄せるかを結び付きの強さで決める。
+		// 両隣のどちらとも似ていない小さな塊。**どちらか近いほうへ入れる**のが
+		// 以前の動きだったが、それは無関係な写真を持ち込むだけで再構成の役に
+		// 立たない（設計メモ §4.6.2）。どちらのグループも汚さずに退避する。
 		var settings = GroupingSettings()
 		settings.minPerGroup = 8
 		settings.maxPerGroup = 20
@@ -508,10 +513,11 @@ final class PhotoGroupingTests: XCTestCase
 			+ SamplePhoto.sequence(
 				start: 201, count: 12, startTime: 6000, hashSeed: 0xFFFF_FFFF_FFFF_FFFF)
 		let result = PhotoGrouping.group(photos: photos, settings: settings)
-		XCTAssertEqual(result.groups.count, 2)
-		XCTAssertTrue(result.unassigned.isEmpty)
-		// 3 枚だけのグループは残らない（吸収されている）。
-		XCTAssertEqual(result.groups.map { $0.members.count }.sorted(), [12, 15])
+		XCTAssertEqual(result.groups.map { $0.members.count }.sorted(), [12, 12])
+		XCTAssertEqual(result.unassigned.count, 3)
+		// 写真は 1 枚も消えない（どこかに必ず現れる）。
+		let assigned = result.groups.flatMap(\.members) + result.unassigned
+		XCTAssertEqual(Set(assigned).count, photos.count)
 	}
 
 	func testStartsBeforeHandlesEmptySets()

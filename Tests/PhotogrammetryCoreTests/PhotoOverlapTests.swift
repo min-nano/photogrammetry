@@ -29,13 +29,15 @@ final class PhotoOverlapTests: XCTestCase
 			for x in 0 ..< width
 			{
 				// 撮影内容の座標（ずらすぶんを引く）から決まる模様。周期の異なる
-				// 波を混ぜて、平行移動に対して一意に決まる模様にする。
+				// 波を混ぜて、平行移動に対して一意に決まる模様にする。**種を変えると
+				// 周期ごと変わる**（位相だけずらすと「別の写真」にならない）。
 				let u = Double(x + shiftX)
 				let v = Double(y + shiftY)
+				let scale = 1 + Double(seed) * 0.37
 				let value = 128
-					+ 60 * sin(u * 0.21 + v * 0.07)
-					+ 40 * cos(u * 0.05 - v * 0.17)
-					+ 20 * sin((u + v) * 0.4 + Double(seed))
+					+ 60 * sin(u * 0.21 * scale + v * 0.07 / scale)
+					+ 40 * cos(u * 0.05 / scale - v * 0.17 * scale)
+					+ 20 * sin((u + v) * 0.4 * scale)
 				pixels[y * width + x] = UInt8(min(255, max(0, value)))
 			}
 		}
