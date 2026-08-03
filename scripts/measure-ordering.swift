@@ -425,7 +425,7 @@ final class Collector: @unchecked Sendable
 }
 
 /// 縮小画像からグレースケール画素を取り出す（PhotoInspector と同じ）。
-func grayscale(image: CGImage) -> (pixels: [UInt8], width: Int, height: Int)?
+@Sendable func grayscale(image: CGImage) -> (pixels: [UInt8], width: Int, height: Int)?
 {
 	let width = image.width
 	let height = image.height
@@ -457,7 +457,7 @@ func grayscale(image: CGImage) -> (pixels: [UInt8], width: Int, height: Int)?
 
 /// ラプラシアン分散。**ImageStatistics.laplacianVariance と同じ式**にしてある
 /// （ここで測った値をそのまま `--min-sharpness` の検討に使えるように）。
-func laplacianVariance(gray: [UInt8], width: Int, height: Int) -> Double
+@Sendable func laplacianVariance(gray: [UInt8], width: Int, height: Int) -> Double
 {
 	guard width > 2, height > 2, gray.count >= width * height
 	else
