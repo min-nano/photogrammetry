@@ -71,10 +71,12 @@ final class OverlapStub: @unchecked Sendable
 
 	/// 実際に重なっている 2 枚。**判定に効くのはインライア率**（設計メモ §4.9.1）。
 	static let overlapping = PhotoOverlap(
-		agreement: 0.92, sharedArea: 0.6, inlierRatio: 0.9, evaluatedBlocks: 40)
+		agreement: 0.92, sharedArea: 0.6, inlierRatio: 0.9,
+		evaluatedBlocks: 40, coherentBlocks: 36)
 	/// 無関係な 2 枚。ブロック単位でもどこも揃わない。
 	static let separate = PhotoOverlap(
-		agreement: 0.04, sharedArea: 0.5, inlierRatio: 0.02, evaluatedBlocks: 40)
+		agreement: 0.04, sharedArea: 0.5, inlierRatio: 0.02,
+		evaluatedBlocks: 40, coherentBlocks: 1)
 }
 
 /// 撮影 1 区画ぶんの設計図。
@@ -155,12 +157,12 @@ final class OverlapGraphTests: XCTestCase
 		// 局所的には揃っているが**帯のように少ししか重なっていない**組は対応点に
 		// ならない。
 		let narrow = PhotoOverlap(
-			agreement: 0.9, sharedArea: 0.05, inlierRatio: 0.9, evaluatedBlocks: 8)
+			agreement: 0.9, sharedArea: 0.05, inlierRatio: 0.9, evaluatedBlocks: 8, coherentBlocks: 7)
 		XCTAssertEqual(criteria.judge(narrow), .separate(narrow))
 		// **全体の相関が低くても、局所が揃っていれば重なっている。** 視差のある
 		// 2 枚がこれで、当初の測り方ではここを取りこぼしていた（§4.9.1）。
 		let parallax = PhotoOverlap(
-			agreement: 0.22, sharedArea: 0.6, inlierRatio: 0.55, evaluatedBlocks: 30)
+			agreement: 0.22, sharedArea: 0.6, inlierRatio: 0.55, evaluatedBlocks: 30, coherentBlocks: 17)
 		XCTAssertTrue(criteria.judge(parallax).isOverlapping)
 		XCTAssertTrue(criteria.judge(OverlapStub.overlapping).isOverlapping)
 	}

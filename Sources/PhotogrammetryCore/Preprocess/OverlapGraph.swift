@@ -40,11 +40,22 @@ public struct OverlapCriteria: Equatable, Sendable
 	/// 重なりの広さ（基準画像の面積比）の下限。帯のように少ししか重なっていない
 	/// 組は対応点にならない。
 	public var minimumSharedArea: Double
+	/// 一致して揃っていたブロック数の下限（**割合ではなく実数**）。
+	///
+	/// 割合だけを課すと「判定に使えたブロックが 6 つで 2 つ揃えば 0.33」が通って
+	/// しまう。絵のごく一部がたまたま合っただけの組がここを抜けると、無関係な
+	/// 場所どうしが繋がる。格子は 8×6 なので、重なりが広ければ揃うブロックは
+	/// 必ずこれ以上ある。
+	public var minimumCoherentBlocks: Int
 
-	public init(minimumInlierRatio: Double = 0.3, minimumSharedArea: Double = 0.15)
+	public init(
+		minimumInlierRatio: Double = 0.3,
+		minimumSharedArea: Double = 0.15,
+		minimumCoherentBlocks: Int = 6)
 	{
 		self.minimumInlierRatio = minimumInlierRatio
 		self.minimumSharedArea = minimumSharedArea
+		self.minimumCoherentBlocks = minimumCoherentBlocks
 	}
 
 	/// 測った重なりを 3 つのどれかに振り分ける。
@@ -56,7 +67,8 @@ public struct OverlapCriteria: Equatable, Sendable
 			return .undecided
 		}
 		guard overlap.inlierRatio >= minimumInlierRatio,
-			overlap.sharedArea >= minimumSharedArea
+			overlap.sharedArea >= minimumSharedArea,
+			overlap.coherentBlocks >= minimumCoherentBlocks
 		else
 		{
 			return .separate(overlap)

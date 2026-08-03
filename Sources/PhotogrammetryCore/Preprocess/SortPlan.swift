@@ -168,6 +168,9 @@ public enum SortPlanner
 		/// 同じく、重なりの広さ（基準画像の面積比）。一致度ほど強い手がかりでは
 		/// ないが、**帯のように少ししか重なっていない組**は対応点にならない。
 		public var minimumSharedArea: Double
+		/// 一致して揃っていたブロック数の下限（**割合ではなく実数**）。絵のごく
+		/// 一部がたまたま合っただけの組を通さないための歯止め。
+		public var minimumCoherentBlocks: Int
 		/// 隣接 1 本あたりに重なりを確かめる候補の上限。**これがコストの上限**で、
 		/// 必要な枚数が集まればここまで使わずに切り上げる。
 		public var maximumOverlapChecks: Int
@@ -183,6 +186,7 @@ public enum SortPlanner
 			diversitySceneDistance: Double = 0.12,
 			minimumInlierRatio: Double = 0.3,
 			minimumSharedArea: Double = 0.15,
+			minimumCoherentBlocks: Int = 6,
 			maximumOverlapChecks: Int = 24,
 			overlapCheckBatch: Int = 8)
 		{
@@ -193,6 +197,7 @@ public enum SortPlanner
 			self.diversitySceneDistance = diversitySceneDistance
 			self.minimumInlierRatio = minimumInlierRatio
 			self.minimumSharedArea = minimumSharedArea
+			self.minimumCoherentBlocks = minimumCoherentBlocks
 			self.maximumOverlapChecks = maximumOverlapChecks
 			self.overlapCheckBatch = overlapCheckBatch
 		}
@@ -203,7 +208,8 @@ public enum SortPlanner
 		{
 			OverlapCriteria(
 				minimumInlierRatio: minimumInlierRatio,
-				minimumSharedArea: minimumSharedArea)
+				minimumSharedArea: minimumSharedArea,
+				minimumCoherentBlocks: minimumCoherentBlocks)
 		}
 	}
 

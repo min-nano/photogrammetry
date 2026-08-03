@@ -70,21 +70,29 @@ public struct PhotoOverlap: Equatable, Sendable
 	/// （0.0〜1.0）。実質的にインライア率で、視差があっても局所的には合うので
 	/// 落ちない一方、無関係な 2 枚では 1 ブロックも揃わない。
 	public var inlierRatio: Double
-	/// 判定に使えたブロック数（重なりの中にあって、かつ模様のあるブロック）。
+	/// 判定に使えたブロック数（重なりの中にあって、模様があり、一致が曖昧でない）。
 	/// 少なすぎるときは測定側が nil（判定できなかった）を返すので、ここに 0 が
 	/// 入った値が外へ出ることはない。
 	public var evaluatedBlocks: Int
+	/// うち、実際に一致して隣とずれ方も揃っていたブロック数。
+	///
+	/// **割合だけでは足りない。** 判定に使えたブロックが 6 つで 2 つ揃えば割合は
+	/// 0.33 だが、それは「絵のごく一部がたまたま合った」でしかない。本当に重なって
+	/// いるなら、重なった範囲ぜんたいで揃うのでもっと多い。
+	public var coherentBlocks: Int
 
 	public init(
 		agreement: Double,
 		sharedArea: Double,
 		inlierRatio: Double = 0,
-		evaluatedBlocks: Int = 0)
+		evaluatedBlocks: Int = 0,
+		coherentBlocks: Int = 0)
 	{
 		self.agreement = agreement
 		self.sharedArea = sharedArea
 		self.inlierRatio = inlierRatio
 		self.evaluatedBlocks = evaluatedBlocks
+		self.coherentBlocks = coherentBlocks
 	}
 
 	/// 位置合わせは走ったが重なりが見つからなかった、という結果。
@@ -247,7 +255,8 @@ public enum OverlapMeasurement
 			agreement: global.agreement,
 			sharedArea: min(1, global.sharedArea),
 			inlierRatio: Double(blocks.coherent) / Double(blocks.evaluated),
-			evaluatedBlocks: blocks.evaluated)
+			evaluatedBlocks: blocks.evaluated,
+			coherentBlocks: blocks.coherent)
 	}
 
 	/// 変換 1 つで全画素を突き合わせた相関と、重なりの広さ。

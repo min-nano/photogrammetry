@@ -58,7 +58,8 @@ final class FakeOverlapVerifier: PhotoOverlapVerifying, @unchecked Sendable
 
 	/// 実際に重なっている 2 枚の代表値。**判定に効くのはインライア率**（§4.9.1）。
 	static let sample = PhotoOverlap(
-		agreement: 0.9, sharedArea: 0.6, inlierRatio: 0.85, evaluatedBlocks: 40)
+		agreement: 0.9, sharedArea: 0.6, inlierRatio: 0.85,
+		evaluatedBlocks: 40, coherentBlocks: 34)
 
 	func overlap(between a: URL, and b: URL) -> PhotoOverlap?
 	{
