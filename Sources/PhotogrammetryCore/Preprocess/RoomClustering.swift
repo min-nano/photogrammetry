@@ -334,6 +334,13 @@ public enum RoomClustering
 	/// 谷がはっきりしていればそこで切る。1 つの山しか無いとき（＝一続きの場所を
 	/// 撮り歩いた）は**ほぼ全ての近傍を残す**。近傍グラフは元々その写真から見て
 	/// 近い相手しか持たないので、ここで切りすぎると同じ部屋が割れてしまう。
+	///
+	/// **判別分析の答えは、中央値より上にあるときだけ採る。** 距離の閾値は
+	/// 「低いほど切る」ので、結合スコアの閾値（`PhotoGrouping.automaticThreshold`）
+	/// とは安全な向きが逆になる。近傍は元々その写真にとって最も近い相手なのだから、
+	/// その半分以上を切る閾値は、それだけで同じ場所を必ず割る。実際この歯止めが
+	/// 無いと、判別分析が山の裾に谷を見つけて 1 つの部屋を刻んだ（ci-debug で確認）。
+	/// 切ってしまった繋がりは取り戻せない、という §4.3 と同じ判断。
 	static func automaticThreshold(
 		distances: [Double],
 		estimate: ThresholdEstimator.Estimate?,
@@ -343,10 +350,15 @@ public enum RoomClustering
 		{
 			min(settings.maximumThreshold, max(settings.minimumThreshold, value))
 		}
-		if let estimate, estimate.separability >= settings.requiredSeparability
+		let median = ThresholdEstimator.median(distances)
+		if let estimate, let median,
+			estimate.separability >= settings.requiredSeparability,
+			estimate.threshold > median
 		{
 			return clamp(estimate.threshold)
 		}
+		// 谷が無い（一続きの場所）か、谷が低すぎて信用できない。どちらも
+		// **ほぼ全ての近傍を残す**側へ倒す。
 		guard let percentile = ThresholdEstimator.percentile(distances, settings.fallbackPercentile)
 		else
 		{

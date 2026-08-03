@@ -91,8 +91,8 @@ func makeImage(room: Int, step: Int, flat: Bool) -> CGImage
 		// 「ほぼ同一」として品質フィルタに落とされてしまう**ので、ここは
 		// 実際の歩行と同じくらい動かす。
 		context.fill(CGRect(
-			x: Double(Int((value >> 33) % 860) - step * 24),
-			y: Double(Int((value >> 13) % 620) + (index % 5) * step * 3),
+			x: Double(Int((value >> 33) % 860) - step * 18),
+			y: Double(Int((value >> 13) % 620) + (index % 3) * step),
 			width: 70,
 			height: 50))
 	}

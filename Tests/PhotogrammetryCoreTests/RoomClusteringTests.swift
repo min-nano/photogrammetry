@@ -155,6 +155,29 @@ final class RoomClusteringTests: XCTestCase
 			settings.maximumThreshold)
 	}
 
+	func testAutomaticThresholdIgnoresAValleyBelowTheMedian()
+	{
+		// 判別分析が山の裾で谷を見つけることがある。そのまま採ると近傍の
+		// 大半を切ってしまい、1 つの部屋が刻まれる（実際に起きた）。中央値より
+		// 下の谷は信用せず、ほぼ全ての近傍を残す側（95 パーセンタイル）へ倒す。
+		let distances = [0.01, 0.02, 0.30, 0.31, 0.32, 0.33]
+		let low = ThresholdEstimator.Estimate(
+			threshold: 0.05, separability: 0.9, lowerFraction: 0.33)
+		let settings = RoomClustering.Settings()
+		XCTAssertEqual(
+			RoomClustering.automaticThreshold(distances: distances, estimate: low, settings: settings),
+			ThresholdEstimator.percentile(distances, settings.fallbackPercentile) ?? 0,
+			accuracy: 1e-9)
+
+		// 中央値より上の谷ははっきりした切れ目なので採る。
+		let high = ThresholdEstimator.Estimate(
+			threshold: 0.6, separability: 0.9, lowerFraction: 0.6)
+		XCTAssertEqual(
+			RoomClustering.automaticThreshold(distances: distances, estimate: high, settings: settings),
+			0.6,
+			accuracy: 1e-9)
+	}
+
 	func testNearestSkipsPhotosWithoutFeaturePrints()
 	{
 		let base = SamplePhoto.featurePrint(room: 0, step: 0)
