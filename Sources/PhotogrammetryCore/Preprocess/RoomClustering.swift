@@ -383,16 +383,16 @@ public enum RoomClustering
 			}
 			// 対象は「小さくて、まだ諦めていない」クラスタのうち先頭のもの。
 			// 根は添字の最小値なので、これで撮影順に処理できる。
-			guard let root = membersByRoot
+			guard let smallest = membersByRoot
 				.filter({ $0.value.count < minimumSize && !frozen.contains($0.key) })
-				.map(\.key)
-				.min()
+				.min(by: { $0.key < $1.key })
 			else
 			{
 				return
 			}
+			let root = smallest.key
 			var target: (root: Int, distance: Double)?
-			for member in membersByRoot[root] ?? []
+			for member in smallest.value
 			{
 				for neighbor in neighbors[member]
 				{

@@ -262,7 +262,18 @@ public enum SortDiagnostics
 			return diagnostics
 		}
 
-		guard rooms.clusters.count > 1
+		if rooms.clusters.count > 1
+		{
+			let breakdown = rooms.clusters.map { "\($0.id) \($0.members.count) 枚" }
+				.joined(separator: "・")
+			diagnostics.append(SortDiagnostic(
+				severity: .info,
+				code: "roomsFound",
+				message: "視覚的に \(rooms.clusters.count) か所を見分けました（\(breakdown)）"
+					+ String(format: "。距離の閾値 %.2f%@",
+						rooms.threshold,
+						rooms.thresholdWasAutomatic ? "・自動決定" : "・指定値")))
+		}
 		else
 		{
 			diagnostics.append(SortDiagnostic(
@@ -270,20 +281,10 @@ public enum SortDiagnostics
 				code: "singleRoom",
 				message: "視覚的にはひと続きの場所と判定しました"
 					+ "（部屋・面の切り替わりは見つかりませんでした）。"))
-			return diagnostics
 		}
 
-		let breakdown = rooms.clusters.map { "\($0.id) \($0.members.count) 枚" }
-			.joined(separator: "・")
-		diagnostics.append(SortDiagnostic(
-			severity: .info,
-			code: "roomsFound",
-			message: "視覚的に \(rooms.clusters.count) か所を見分けました（\(breakdown)）"
-				+ String(format: "。距離の閾値 %.2f%@",
-					rooms.threshold,
-					rooms.thresholdWasAutomatic ? "・自動決定" : "・指定値")))
-
 		// --- 1 つのグループに複数の場所が混ざっていないか ---
+		// 場所が 1 つしか無ければ何も出ない（下の合流点まで素通りする）。
 		for group in grouping.groups
 		{
 			let counts = roomCounts(members: group.members, rooms: rooms)
@@ -311,6 +312,8 @@ public enum SortDiagnostics
 		}
 
 		// --- 同じ場所が別々のグループに分かれ、しかも繋がっていないか ---
+		// **場所が 1 つのときこそ効く。** 上限枚数で割られた区間どうしが隣接を
+		// 持てなかった、という一番ありふれた失敗がここで見つかる。
 		diagnostics.append(contentsOf: splitRoomDiagnostics(plan: plan, grouping: grouping))
 		return diagnostics
 	}

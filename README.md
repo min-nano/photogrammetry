@@ -123,7 +123,7 @@ photogrammetry-cli sort <入力フォルダ> <仕分け先フォルダ> \
   group-02/
   _excluded/      品質フィルタで落とした写真（理由別のサブフォルダ）
   _unassigned/    どのグループにも入らなかった写真
-  manifest.json   グループ・隣接・除外・診断の記録
+  manifest.json   グループ・隣接・場所（room-NN）・除外・診断の記録
 ```
 
 仕分けの要点は 4 つです。

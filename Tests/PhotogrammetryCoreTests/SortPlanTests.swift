@@ -104,14 +104,20 @@ final class SortPlanTests: XCTestCase
 
 	func testSharedRoomIsRecordedWhenBothGroupsSeeTheSamePlace()
 	{
+		// 場所は 1 つでも、上限枚数で複数のグループに割れる（分割は撮影順の
+		// 最も弱い切れ目で行うので、均等に 2 つとは限らない）。
 		let grouping = makeSingleRoomGrouping()
 		XCTAssertEqual(grouping.rooms.clusters.count, 1)
-		XCTAssertEqual(grouping.groups.count, 2)
+		XCTAssertGreaterThan(grouping.groups.count, 1)
 
 		let plan = SortPlanner.plan(grouping: grouping)
+		XCTAssertFalse(plan.adjacency.isEmpty)
 		// **合成では最も信頼できる繋ぎ目。** 同じ場所を写しているグループ同士だと
 		// 分かっていれば、対応点が期待できる。
-		XCTAssertEqual(plan.adjacency.first?.sharedRoom, "room-01")
+		for adjacency in plan.adjacency
+		{
+			XCTAssertEqual(adjacency.sharedRoom, "room-01")
+		}
 		for group in plan.groups
 		{
 			XCTAssertEqual(group.rooms, ["room-01"])
