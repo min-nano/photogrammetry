@@ -17,7 +17,12 @@ import Foundation
 public struct SortManifest: Codable, Equatable, Sendable
 {
 	/// 形式のバージョン。互換性を壊す変更を入れるときだけ上げる。
-	public static let currentVersion = 1
+	///
+	/// 2 = フェーズ 2。視覚クラスタ（`groups[].rooms` / `adjacency[].sharedRoom` /
+	/// `statistics.roomCount`）と視覚解析の設定を足した。項目が増えたので
+	/// バージョン 1 の manifest はそのままでは読み戻せない。読み手はまだ
+	/// 存在しない（`merge` はフェーズ 3）ので、移行の仕組みは持たない。
+	public static let currentVersion = 2
 
 	public var version: Int
 	/// 書き出した時刻。
@@ -76,6 +81,12 @@ public struct SortManifest: Codable, Equatable, Sendable
 		public var sharpnessThreshold: Double?
 		/// ほぼ同一とみなしたハミング距離。
 		public var duplicateDistance: Int
+		/// 視覚解析（Vision の feature print）を使ったか。
+		public var visualEvidence: Bool
+		/// 同じ場所とみなした視覚特徴の距離。使わなかった場合も実際の値を残す
+		/// （後から同じ結果を再現できるようにするため）。
+		public var visualThreshold: Double
+		public var visualThresholdWasAutomatic: Bool
 		/// ファイルの配置方法。
 		public var link: LinkStrategy
 
@@ -88,6 +99,9 @@ public struct SortManifest: Codable, Equatable, Sendable
 			groupThresholdWasAutomatic: Bool,
 			sharpnessThreshold: Double?,
 			duplicateDistance: Int,
+			visualEvidence: Bool,
+			visualThreshold: Double,
+			visualThresholdWasAutomatic: Bool,
 			link: LinkStrategy)
 		{
 			self.overlap = overlap
@@ -98,6 +112,9 @@ public struct SortManifest: Codable, Equatable, Sendable
 			self.groupThresholdWasAutomatic = groupThresholdWasAutomatic
 			self.sharpnessThreshold = sharpnessThreshold
 			self.duplicateDistance = duplicateDistance
+			self.visualEvidence = visualEvidence
+			self.visualThreshold = visualThreshold
+			self.visualThresholdWasAutomatic = visualThresholdWasAutomatic
 			self.link = link
 		}
 	}
@@ -127,10 +144,15 @@ public struct SortManifest: Codable, Equatable, Sendable
 		/// 品質フィルタを通過した枚数。
 		public var keptCount: Int
 		public var groupCount: Int
+		/// 視覚的に見分けた場所の数（グループとは別の軸）。
+		public var roomCount: Int
 		/// 除外の理由ごとの枚数。
 		public var excludedByReason: [String: Int]
 		/// 結合スコアの分布（0.0〜1.0 を 20 分割）。
 		public var scoreHistogram: [Int]
+		/// 視覚特徴の近傍距離の分布（同上）。視覚解析の閾値を写真無しで
+		/// 検討するための材料。
+		public var visualDistanceHistogram: [Int]
 		/// 鮮鋭度の中央値。閾値の妥当性を見るための基準。
 		public var sharpnessMedian: Double?
 
@@ -138,15 +160,19 @@ public struct SortManifest: Codable, Equatable, Sendable
 			inputCount: Int,
 			keptCount: Int,
 			groupCount: Int,
+			roomCount: Int,
 			excludedByReason: [String: Int],
 			scoreHistogram: [Int],
+			visualDistanceHistogram: [Int],
 			sharpnessMedian: Double?)
 		{
 			self.inputCount = inputCount
 			self.keptCount = keptCount
 			self.groupCount = groupCount
+			self.roomCount = roomCount
 			self.excludedByReason = excludedByReason
 			self.scoreHistogram = scoreHistogram
+			self.visualDistanceHistogram = visualDistanceHistogram
 			self.sharpnessMedian = sharpnessMedian
 		}
 	}
@@ -159,6 +185,9 @@ public struct SortManifest: Codable, Equatable, Sendable
 		public var photos: [String]
 		public var shared: [String]
 		public var evidence: [String]
+		/// このグループが写している場所（視覚クラスタ）の識別子。枚数の多い順。
+		/// 2 つ以上並んでいれば、そのグループには別の場所が混ざっている。
+		public var rooms: [String]
 		public var captureStart: Date?
 		public var captureEnd: Date?
 
@@ -167,6 +196,7 @@ public struct SortManifest: Codable, Equatable, Sendable
 			photos: [String],
 			shared: [String],
 			evidence: [String],
+			rooms: [String],
 			captureStart: Date?,
 			captureEnd: Date?)
 		{
@@ -174,6 +204,7 @@ public struct SortManifest: Codable, Equatable, Sendable
 			self.photos = photos
 			self.shared = shared
 			self.evidence = evidence
+			self.rooms = rooms
 			self.captureStart = captureStart
 			self.captureEnd = captureEnd
 		}
@@ -188,19 +219,24 @@ public struct SortManifest: Codable, Equatable, Sendable
 		public var confidence: Double
 		/// 共有写真の視点の散らばり（低いと合成が退化しやすい）。
 		public var viewpointSpread: Double?
+		/// 両方のグループが写している共通の場所（視覚クラスタ）。**時刻が
+		/// 離れていても成立する繋ぎ目**なので、合成では最も信頼できる。
+		public var sharedRoom: String?
 
 		public init(
 			a: String,
 			b: String,
 			sharedPhotos: [String],
 			confidence: Double,
-			viewpointSpread: Double?)
+			viewpointSpread: Double?,
+			sharedRoom: String?)
 		{
 			self.a = a
 			self.b = b
 			self.sharedPhotos = sharedPhotos
 			self.confidence = confidence
 			self.viewpointSpread = viewpointSpread
+			self.sharedRoom = sharedRoom
 		}
 	}
 

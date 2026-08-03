@@ -49,6 +49,10 @@ struct PhotogrammetryCLI
 		  出力する。この共有写真が、あとで各モデルを 1 つの座標系へ合成する
 		  ときの手がかりになる。
 
+		  写真の見た目からは**同じ場所（部屋・面）を写した写真の集まり**も
+		  見分ける（room-01 …）。時刻が離れていても同じ場所ならまとめ、時刻が
+		  近くても別の場所なら分ける。部屋を行き来しながら撮った現場で効く。
+
 		      --overlap <n>               隣接グループ間で共有する枚数（既定: 15）
 		      --max-per-group <n>         1 グループの上限枚数（既定: 150）
 		      --min-per-group <n>         1 グループの下限枚数（既定: 20）
@@ -56,6 +60,9 @@ struct PhotogrammetryCLI
 		      --group-threshold <値>      結合スコアの閾値（既定: 分布から自動決定）
 		      --min-sharpness <値>        ブレ判定の閾値（既定: 分布から自動決定）
 		      --duplicate-distance <n>    ほぼ同一とみなす距離 0〜64（既定: 4）
+		      --visual-threshold <値>     同じ場所とみなす視覚特徴の距離 0.0〜1.0
+		                                  （既定: 分布から自動決定）
+		      --no-visual                 視覚解析を使わない（速いが精度は落ちる）
 		      --link <値>                 hardlink | copy | symlink（既定: hardlink）
 		      --no-recursive              サブフォルダを走査しない
 		      --dry-run                   ファイルを作らず診断だけ出す

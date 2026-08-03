@@ -158,8 +158,12 @@ public struct PhotoMetadata: Equatable, Sendable
 	/// 露出値 EV（ISO 100 換算）。屋外 → 床下のような環境の切り替わりが
 	/// 数段の差になって現れるので、時刻も GPS も無いときの区切りの手がかりになる。
 	public var exposureValue: Double?
-	/// 知覚ハッシュ。
+	/// 知覚ハッシュ。**ほぼ同一**の判定に使う（連写の間引き）。
 	public var fingerprint: PerceptualHash?
+	/// Vision の視覚特徴（フェーズ 2）。**同じ場所を別の角度から撮った写真**が
+	/// 近くなるので、「同じ部屋か」の判定はこちらが担う（RoomClustering）。
+	/// 取れないことはある（Vision が使えない・`--no-visual`）ので Optional。
+	public var featurePrint: FeaturePrint?
 	/// 画素から測った品質。
 	public var quality: PhotoQuality?
 	/// ファイル名に含まれる連番（IMG_0123 → 123）。EXIF が剥がされた写真でも
@@ -180,6 +184,7 @@ public struct PhotoMetadata: Equatable, Sendable
 		pixelHeight: Int = 0,
 		exposureValue: Double? = nil,
 		fingerprint: PerceptualHash? = nil,
+		featurePrint: FeaturePrint? = nil,
 		quality: PhotoQuality? = nil,
 		sequenceNumber: Int? = nil)
 	{
@@ -196,6 +201,7 @@ public struct PhotoMetadata: Equatable, Sendable
 		self.pixelHeight = pixelHeight
 		self.exposureValue = exposureValue
 		self.fingerprint = fingerprint
+		self.featurePrint = featurePrint
 		self.quality = quality
 		self.sequenceNumber = sequenceNumber
 	}

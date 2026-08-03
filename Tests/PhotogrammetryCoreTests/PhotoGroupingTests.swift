@@ -227,6 +227,102 @@ final class PhotoGroupingTests: XCTestCase
 	}
 
 	// -----------------------------------------------------------------
+	// 視覚特徴（フェーズ 2）
+	//
+	// フェーズ 1 の手がかりは「撮影の流れ」しか見ておらず、**場所そのものの
+	// 同一性**を判定できない。ここで見るのは、実写真で実際に起きる 2 つの
+	// 取り違えを視覚特徴が是正することと、特徴が無い現場ではフェーズ 1 と
+	// まったく同じ挙動に戻ること。
+	// -----------------------------------------------------------------
+
+	/// 「隣り合う部屋を続けて撮った」。**時刻は途切れず、白い壁ばかりで知覚
+	/// ハッシュもまったく変化しない**現場で、フェーズ 1 の手がかりでは
+	/// 見分けようがない（実際に精度が出なかったのはこの形）。
+	func makeAdjacentRooms(withFeaturePrints: Bool) -> [PhotoMetadata]
+	{
+		(0 ..< 60).map
+		{ index in
+			SamplePhoto.make(
+				index: index + 1,
+				secondsFromEpoch: Double(index) * 3,
+				hash: 0x0F0F_0F0F_0F0F_0F0F,
+				featurePrint: withFeaturePrints
+					? SamplePhoto.featurePrint(room: index < 30 ? 0 : 6, step: index % 30)
+					: nil)
+		}
+	}
+
+	func testVisualSceneSeparatesRoomsThatTimeAndHashCannot()
+	{
+		// フェーズ 1 の手がかりだけでは 1 つの塊にしか見えない。
+		let withoutPrints = PhotoGrouping.group(photos: makeAdjacentRooms(withFeaturePrints: false))
+		XCTAssertEqual(withoutPrints.groups.count, 1)
+		XCTAssertFalse(withoutPrints.usedEvidence.contains(.scene))
+		XCTAssertFalse(withoutPrints.usedEvidence.contains(.room))
+
+		// 視覚特徴を足すと、同じ入力が場所ごとに分かれる。
+		let result = PhotoGrouping.group(photos: makeAdjacentRooms(withFeaturePrints: true))
+		XCTAssertTrue(result.usedEvidence.contains(.scene))
+		XCTAssertTrue(result.usedEvidence.contains(.room))
+		XCTAssertEqual(result.rooms.clusters.count, 2)
+		XCTAssertEqual(result.groups.count, 2)
+		XCTAssertEqual(result.groups.map { $0.members.count }, [30, 30])
+		// 切ったところに隣接がある（＝あとで合成できる）。
+		XCTAssertEqual(result.links.count, 1)
+	}
+
+	func testReturningToTheSameRoomIsGroupedTogether()
+	{
+		// 部屋 A → 部屋 B → 部屋 A。時刻でも位置でも A の 2 区画は繋がらないが、
+		// 見た目では同じ場所だと分かる。
+		let photos = SamplePhoto.sequence(
+			start: 1, count: 20, startTime: 0, hashSeed: 0, room: 0)
+			+ SamplePhoto.sequence(
+				start: 101, count: 20, startTime: 3000, hashSeed: 0xFFFF_FFFF_0000_0000, room: 6)
+			+ SamplePhoto.sequence(
+				start: 201, count: 20, startTime: 6000, hashSeed: 0, room: 0)
+		let result = PhotoGrouping.group(photos: photos)
+		XCTAssertEqual(result.rooms.clusters.count, 2)
+		// 部屋 A の 2 区画が 1 つのクラスタに入っている。
+		XCTAssertEqual(result.rooms.labels[0], result.rooms.labels[59])
+		XCTAssertNotEqual(result.rooms.labels[0], result.rooms.labels[20])
+		// そして同じグループになる（＝あとで 1 つのモデルとして再構成できる）。
+		XCTAssertEqual(result.groups.count, 2)
+		let first = result.groups[0].members
+		XCTAssertTrue(first.contains(0))
+		XCTAssertTrue(first.contains(59))
+	}
+
+	func testSceneAndRoomCoverageIsReported()
+	{
+		let result = PhotoGrouping.group(photos: makeAdjacentRooms(withFeaturePrints: true))
+		XCTAssertEqual(result.evidenceCoverage[.scene], 1)
+		XCTAssertEqual(result.evidenceCoverage[.room], 1)
+
+		// 場所が 1 つしか見つからなければ、room は何も区別しない証拠になる。
+		let single = PhotoGrouping.group(
+			photos: SamplePhoto.sequence(start: 1, count: 20, startTime: 0, hashSeed: 0, room: 2))
+		XCTAssertEqual(single.rooms.clusters.count, 1)
+		XCTAssertEqual(single.evidenceCoverage[.room], 0)
+		XCTAssertTrue(single.usedEvidence.contains(.scene))
+		XCTAssertFalse(single.usedEvidence.contains(.room))
+	}
+
+	func testVisualEvidenceCanBeTurnedOffByWeight()
+	{
+		// `--no-visual` は SortRequest が重みを 0 にすることで効く。特徴が
+		// 付いている写真を渡されても使わない。
+		var settings = GroupingSettings()
+		settings.weights[.scene] = 0
+		settings.weights[.room] = 0
+		let result = PhotoGrouping.group(
+			photos: makeAdjacentRooms(withFeaturePrints: true), settings: settings)
+		XCTAssertFalse(result.usedEvidence.contains(.scene))
+		XCTAssertFalse(result.usedEvidence.contains(.room))
+		XCTAssertEqual(result.groups.count, 1)
+	}
+
+	// -----------------------------------------------------------------
 	// 部品
 	// -----------------------------------------------------------------
 

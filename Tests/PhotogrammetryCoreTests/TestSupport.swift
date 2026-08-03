@@ -118,6 +118,23 @@ enum SamplePhoto
 	/// 起点の時刻（固定値。テストを時計に依存させない）。
 	static let epoch = Date(timeIntervalSince1970: 1_700_000_000)
 
+	/// 合成の視覚特徴。**同じ `room` の写真どうしは近く、違う部屋とはほぼ直交する。**
+	///
+	/// 本物の feature print は 2048 次元だが、ここで使うのは距離の性質だけなので、
+	/// 部屋ごとに 2 軸だけ与えて「撮り進むにつれ向きが少しずつ変わる」を円運動で
+	/// 表す。こうすると隣り合う写真ほど近く、離れるほど遠い（同じ部屋の中では
+	/// 単調）という、実写真と同じ性質になる。
+	static func featurePrint(room: Int, step: Int) -> FeaturePrint?
+	{
+		let dimension = 32
+		var elements = [Float](repeating: 0, count: dimension)
+		let axis = (room * 2) % dimension
+		let angle = Double(step) * 0.02
+		elements[axis] = Float(cos(angle))
+		elements[(axis + 1) % dimension] = Float(sin(angle))
+		return FeaturePrint(elements: elements)
+	}
+
 	/// 1 枚分のメタデータ。指定しない項目は「その手がかりが無い写真」になる。
 	static func make(
 		index: Int,
@@ -132,6 +149,7 @@ enum SamplePhoto
 		cameraModel: String? = nil,
 		exposureValue: Double? = nil,
 		hash: UInt64? = nil,
+		featurePrint: FeaturePrint? = nil,
 		sharpness: Double = 100,
 		clippedHighlights: Double = 0,
 		clippedShadows: Double = 0,
@@ -163,6 +181,7 @@ enum SamplePhoto
 			pixelHeight: pixelHeight,
 			exposureValue: exposureValue,
 			fingerprint: hash.map(PerceptualHash.init(bits:)),
+			featurePrint: featurePrint,
 			quality: PhotoQuality(
 				sharpness: sharpness,
 				clippedHighlights: clippedHighlights,
@@ -180,6 +199,9 @@ enum SamplePhoto
 	///   - startTime: 先頭の時刻（epoch からの秒）。
 	///   - interval: 1 枚あたりの間隔（秒）。
 	///   - hashSeed: 見た目の起点。区画ごとに大きく離すと別の場所になる。
+	///   - room: 視覚特徴を付ける場合の部屋番号。**同じ番号を離れた時刻の
+	///     区画に与えると「一度離れて戻ってきた撮影」になる**（フェーズ 2 が
+	///     解こうとしている状況そのもの）。nil なら視覚特徴を持たない写真になる。
 	static func sequence(
 		start: Int,
 		count: Int,
@@ -188,7 +210,8 @@ enum SamplePhoto
 		hashSeed: UInt64,
 		folder: String = "",
 		heading: Double? = nil,
-		exposureValue: Double? = nil) -> [PhotoMetadata]
+		exposureValue: Double? = nil,
+		room: Int? = nil) -> [PhotoMetadata]
 	{
 		(0 ..< count).map
 		{ offset in
@@ -203,6 +226,7 @@ enum SamplePhoto
 				heading: heading.map { $0 + Double(offset) * 4 },
 				exposureValue: exposureValue,
 				hash: hashSeed ^ ((1 << drift) &- 1),
+				featurePrint: room.flatMap { featurePrint(room: $0, step: offset) },
 				sharpness: 100 + Double(offset % 5))
 		}
 	}

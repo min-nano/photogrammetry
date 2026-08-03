@@ -48,8 +48,8 @@ public enum APICommand: Equatable, Sendable
 	//   photogrammetry://sort?input=<パス>&output=<パス>
 	//                   [&overlap=15][&maxPerGroup=150][&minPerGroup=20]
 	//                   [&timeGap=300][&groupThreshold=0.4][&minSharpness=12]
-	//                   [&duplicateDistance=4][&link=hardlink][&recursive=true]
-	//                   [&dryRun=false]
+	//                   [&duplicateDistance=4][&visual=true][&visualThreshold=0.4]
+	//                   [&link=hardlink][&recursive=true][&dryRun=false]
 	// パスはパーセントエンコード済みの絶対パス。
 	// -----------------------------------------------------------------
 	public static func parse(url: URL) throws -> APICommand
@@ -142,6 +142,14 @@ public enum APICommand: Equatable, Sendable
 				if let raw = parameters["duplicateDistance"]
 				{
 					request.duplicateDistance = try intValue(raw, parameter: "duplicateDistance")
+				}
+				if let raw = parameters["visual"]
+				{
+					request.visualEvidence = try boolValue(raw, parameter: "visual")
+				}
+				if let raw = parameters["visualThreshold"]
+				{
+					request.visualThreshold = try doubleValue(raw, parameter: "visualThreshold")
 				}
 				if let raw = parameters["link"]
 				{
@@ -294,6 +302,13 @@ public enum APICommand: Equatable, Sendable
 					request.duplicateDistance = try intValue(
 						optionValue(arguments, at: index, name: argument), parameter: argument)
 					index += 2
+				case "--visual-threshold":
+					request.visualThreshold = try doubleValue(
+						optionValue(arguments, at: index, name: argument), parameter: argument)
+					index += 2
+				case "--no-visual":
+					request.visualEvidence = false
+					index += 1
 				case "--link":
 					request.link = try enumValue(
 						optionValue(arguments, at: index, name: argument), parameter: argument)
@@ -361,6 +376,14 @@ public enum APICommand: Equatable, Sendable
 		if let sharpness = request.minimumSharpness
 		{
 			result += ["--min-sharpness", String(sharpness)]
+		}
+		if let threshold = request.visualThreshold
+		{
+			result += ["--visual-threshold", String(threshold)]
+		}
+		if !request.visualEvidence
+		{
+			result.append("--no-visual")
 		}
 		if !request.recursive
 		{

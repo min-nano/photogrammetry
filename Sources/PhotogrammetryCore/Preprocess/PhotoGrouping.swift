@@ -41,6 +41,10 @@ public enum EvidenceKind: String, Codable, CaseIterable, Equatable, Sendable
 	case exposure
 	/// 知覚ハッシュによる見た目の近さ。
 	case visual
+	/// Vision の視覚特徴の近さ（同じ場所を別の角度から撮った写真が近くなる）。
+	case scene
+	/// 視覚クラスタリングで「同じ場所」と判定されたか（RoomClustering）。
+	case room
 
 	/// 診断レポートに出す日本語名。
 	public var displayName: String
@@ -63,6 +67,10 @@ public enum EvidenceKind: String, Codable, CaseIterable, Equatable, Sendable
 				return "露出"
 			case .visual:
 				return "見た目の近さ"
+			case .scene:
+				return "視覚特徴の近さ"
+			case .room:
+				return "同じ場所の判定"
 		}
 	}
 }
@@ -84,6 +92,10 @@ public struct GroupingSettings: Equatable, Sendable
 	public var exposureSpan: Double
 	/// 知覚ハッシュの正規化距離の効き幅。
 	public var visualSpan: Double
+	/// 視覚特徴（feature print）の距離の効き幅。
+	public var sceneSpan: Double
+	/// 視覚クラスタリング（「同じ部屋」の判定）の設定。
+	public var roomClustering: RoomClustering.Settings
 	/// GPS をこの水平誤差（m）より悪いときは使わない。
 	public var maximumGPSAccuracy: Double
 	/// 測位時刻が撮影時刻からこれ以上ずれていたら使わない（秒）。
@@ -109,6 +121,15 @@ public struct GroupingSettings: Equatable, Sendable
 
 	/// 既定の重み。時刻と見た目を主軸にし、方位・露出は補助に留める
 	/// （どちらも単独では別の場所を同じと言いうるため）。
+	///
+	/// **フェーズ 2 で `room` を最も重くした。** 実写真では「同じ部屋を行き来
+	/// しながら撮る」「隣の部屋を続けて撮る」が普通に起き、時刻や露出だけでは
+	/// どちらも取り違える。場所そのものの同一性を言えるのは視覚特徴だけなので、
+	/// フォルダ分け（撮影者が既に分けている＝最も強い証拠）より重くする。
+	///
+	/// 既存の証拠の重みは**一切変えていない**。視覚特徴が取れない現場
+	/// （`--no-visual`・Vision が使えない）では、フェーズ 1 とまったく同じ
+	/// 重み配分に戻るようにするため。
 	public static let defaultWeights: [EvidenceKind: Double] = [
 		.folder: 1.0,
 		.time: 1.0,
@@ -118,6 +139,8 @@ public struct GroupingSettings: Equatable, Sendable
 		.heading: 0.3,
 		.exposure: 0.3,
 		.visual: 1.0,
+		.scene: 1.0,
+		.room: 1.5,
 	]
 
 	public init(
@@ -127,6 +150,8 @@ public struct GroupingSettings: Equatable, Sendable
 		floorHeight: Double = 2.0,
 		exposureSpan: Double = 3,
 		visualSpan: Double = 0.25,
+		sceneSpan: Double = 0.35,
+		roomClustering: RoomClustering.Settings = RoomClustering.Settings(),
 		maximumGPSAccuracy: Double = 30,
 		maximumGPSAge: TimeInterval = 120,
 		maxPerGroup: Int = 150,
@@ -144,6 +169,8 @@ public struct GroupingSettings: Equatable, Sendable
 		self.floorHeight = floorHeight
 		self.exposureSpan = exposureSpan
 		self.visualSpan = visualSpan
+		self.sceneSpan = sceneSpan
+		self.roomClustering = roomClustering
 		self.maximumGPSAccuracy = maximumGPSAccuracy
 		self.maximumGPSAge = maximumGPSAge
 		self.maxPerGroup = maxPerGroup
@@ -217,6 +244,11 @@ public struct GroupingResult: Equatable, Sendable
 	public var links: [GroupLink]
 	/// どのグループにも入らなかった写真（`_unassigned/` へ送る）。
 	public var unassigned: [Int]
+	/// 視覚クラスタリングの結果（＝見つかった「場所」。フェーズ 2）。
+	/// グループとは別の軸で、**1 つの場所が複数のグループに分かれることも、
+	/// 1 つのグループが複数の場所を含むこともある**。前者は合成の手がかりに、
+	/// 後者は「混ざっている」という診断になる。
+	public var rooms: RoomClusteringResult
 	/// 実際に使った証拠。
 	public var usedEvidence: [EvidenceKind]
 	/// 証拠ごとの「その項目を持つ写真の割合」。診断で「なぜ GPS を使わなかったか」
@@ -235,6 +267,7 @@ public struct GroupingResult: Equatable, Sendable
 		groups: [PhotoGroup],
 		links: [GroupLink],
 		unassigned: [Int],
+		rooms: RoomClusteringResult,
 		usedEvidence: [EvidenceKind],
 		evidenceCoverage: [EvidenceKind: Double],
 		threshold: Double,
@@ -245,6 +278,7 @@ public struct GroupingResult: Equatable, Sendable
 		self.groups = groups
 		self.links = links
 		self.unassigned = unassigned
+		self.rooms = rooms
 		self.usedEvidence = usedEvidence
 		self.evidenceCoverage = evidenceCoverage
 		self.threshold = threshold
@@ -263,7 +297,11 @@ public enum PhotoGrouping
 		-> GroupingResult
 	{
 		let photos = PhotoOrdering.sorted(input)
-		let coverage = evidenceCoverage(photos: photos, settings: settings)
+		// **視覚クラスタリングが先。** 「同じ場所か」はペアの結合スコアの証拠に
+		// なるうえ、近傍の計算結果は候補ペアの選定にもそのまま使い回す。
+		let rooms = RoomClustering.cluster(
+			prints: photos.map(\.featurePrint), settings: settings.roomClustering)
+		let coverage = evidenceCoverage(photos: photos, rooms: rooms, settings: settings)
 		let usable = usableEvidence(coverage: coverage, settings: settings)
 
 		guard photos.count > 1
@@ -275,6 +313,7 @@ public enum PhotoGrouping
 				groups: groups,
 				links: [],
 				unassigned: [],
+				rooms: rooms,
 				usedEvidence: EvidenceKind.allCases.filter { usable.contains($0) },
 				evidenceCoverage: coverage,
 				threshold: 0,
@@ -283,12 +322,17 @@ public enum PhotoGrouping
 		}
 
 		// --- ペアの結合スコア ---
-		let scored = candidatePairs(photos: photos, settings: settings).map
+		let scored = candidatePairs(photos: photos, rooms: rooms, settings: settings).map
 		{ pair in
 			PairScore(
 				i: pair.0,
 				j: pair.1,
-				score: affinity(photos[pair.0], photos[pair.1], settings: settings, usable: usable))
+				score: affinity(
+					photos[pair.0],
+					photos[pair.1],
+					rooms: (rooms.labels[pair.0], rooms.labels[pair.1]),
+					settings: settings,
+					usable: usable))
 		}
 		let histogram = ThresholdEstimator.histogram(
 			values: scored.map(\.score), bins: histogramBins, lower: 0, upper: 1)
@@ -317,13 +361,14 @@ public enum PhotoGrouping
 			PhotoGroup(id: identifier(index), members: members)
 		}
 
-		let links = buildLinks(groups: groups, edges: scored, settings: settings)
+		let links = buildLinks(groups: groups, edges: scored, rooms: rooms, settings: settings)
 
 		return GroupingResult(
 			photos: photos,
 			groups: groups,
 			links: links,
 			unassigned: absorbed.unassigned.sorted(),
+			rooms: rooms,
 			usedEvidence: EvidenceKind.allCases.filter { usable.contains($0) },
 			evidenceCoverage: coverage,
 			threshold: threshold,
@@ -362,7 +407,10 @@ public enum PhotoGrouping
 	// -----------------------------------------------------------------
 
 	/// 証拠ごとに「その項目を持つ写真の割合」を数える。
-	static func evidenceCoverage(photos: [PhotoMetadata], settings: GroupingSettings)
+	static func evidenceCoverage(
+		photos: [PhotoMetadata],
+		rooms: RoomClusteringResult,
+		settings: GroupingSettings)
 		-> [EvidenceKind: Double]
 	{
 		guard !photos.isEmpty
@@ -389,6 +437,10 @@ public enum PhotoGrouping
 			.heading: Double(photos.filter { $0.heading != nil }.count) / count,
 			.exposure: Double(photos.filter { $0.exposureValue != nil }.count) / count,
 			.visual: Double(photos.filter { $0.fingerprint != nil }.count) / count,
+			.scene: Double(photos.filter { $0.featurePrint != nil }.count) / count,
+			// 場所が 1 つしか見つからなければ、フォルダと同じで何も区別しない
+			// 証拠になる（全ペアで 1 になるだけ）。
+			.room: rooms.clusters.count > 1 ? rooms.coverage : 0,
 		]
 	}
 
@@ -422,9 +474,12 @@ public enum PhotoGrouping
 	}
 
 	/// 2 枚の結合スコア（0.0〜1.0）。使える証拠だけを重み付き平均する。
+	///
+	/// - Parameter rooms: 2 枚それぞれの視覚クラスタの添字（判定できなければ nil）。
 	static func affinity(
 		_ a: PhotoMetadata,
 		_ b: PhotoMetadata,
+		rooms: (Int?, Int?),
 		settings: GroupingSettings,
 		usable: Set<EvidenceKind>) -> Double
 	{
@@ -482,6 +537,17 @@ public enum PhotoGrouping
 		{
 			add(.visual, exp(-left.normalizedDistance(to: right) / max(0.01, settings.visualSpan)))
 		}
+		if let left = a.featurePrint, let right = b.featurePrint
+		{
+			add(.scene, exp(-left.distance(to: right) / max(0.01, settings.sceneSpan)))
+		}
+		if let left = rooms.0, let right = rooms.1
+		{
+			// 同じ場所と判定されたかどうか。フォルダ分けと同じ二値の証拠で、
+			// **時刻が離れていても同じ部屋なら繋ぎ、時刻が近くても別の部屋なら
+			// 引き離す**という、フェーズ 1 に無かった働きをする。
+			add(.room, left == right ? 1 : 0)
+		}
 
 		guard total > 0
 		else
@@ -506,7 +572,15 @@ public enum PhotoGrouping
 	/// なくなる（設計メモ §10-6）。撮影順の窓と、見た目が近い上位数件だけに
 	/// 絞ることで O(n·(窓+K)) に落とす。**見た目の近傍を入れているのは、
 	/// 一度離れた場所へ行って戻ってきた撮影を繋ぐため。**
-	static func candidatePairs(photos: [PhotoMetadata], settings: GroupingSettings) -> [(Int, Int)]
+	///
+	/// 近傍は 2 種類入れる。知覚ハッシュ（ほぼ同じ構図で撮り直した写真に強い）と、
+	/// 視覚特徴（同じ場所を別の角度から撮った写真に強い）。**後者が
+	/// フェーズ 2 の肝で**、部屋を出入りしながら撮った現場でここが効く。
+	/// 視覚特徴の近傍は RoomClustering が既に計算しているのでそのまま使う。
+	static func candidatePairs(
+		photos: [PhotoMetadata],
+		rooms: RoomClusteringResult,
+		settings: GroupingSettings) -> [(Int, Int)]
 	{
 		let count = photos.count
 		var seen = Set<Int>()
@@ -575,6 +649,14 @@ public enum PhotoGrouping
 				{
 					add(index, entry.index)
 				}
+			}
+		}
+
+		for index in 0 ..< min(count, rooms.neighbors.count)
+		{
+			for neighbor in rooms.neighbors[index]
+			{
+				add(index, neighbor.index)
 			}
 		}
 
@@ -805,7 +887,11 @@ public enum PhotoGrouping
 
 	/// グループ間の隣接を作る。**閾値を下回ったエッジも含める**のが要点で、
 	/// 切れ目をまたぐ写真こそが合成の対応点になる（設計メモ §4.4）。
-	static func buildLinks(groups: [PhotoGroup], edges: [PairScore], settings: GroupingSettings)
+	static func buildLinks(
+		groups: [PhotoGroup],
+		edges: [PairScore],
+		rooms: RoomClusteringResult,
+		settings: GroupingSettings)
 		-> [GroupLink]
 	{
 		guard groups.count > 1
@@ -837,7 +923,13 @@ public enum PhotoGrouping
 			buckets[min(left, right) * groups.count + max(left, right), default: []].append(ordered)
 		}
 
-		var all: [GroupLink] = []
+		// 同じ場所（視覚クラスタ）を含むグループの組を先に知っておく。
+		let roomsByGroup = groups.map
+		{ group in
+			Set(group.members.compactMap { rooms.labels[$0] })
+		}
+
+		var all: [(link: GroupLink, sharesRoom: Bool)] = []
 		for (key, candidates) in buckets
 		{
 			let sorted = candidates.sorted
@@ -846,33 +938,44 @@ public enum PhotoGrouping
 			}
 			let top = sorted.prefix(5)
 			let confidence = top.isEmpty ? 0 : top.map(\.score).reduce(0, +) / Double(top.count)
-			all.append(GroupLink(
-				a: key / groups.count,
-				b: key % groups.count,
-				confidence: confidence,
-				candidates: sorted))
+			let a = key / groups.count
+			let b = key % groups.count
+			all.append((
+				GroupLink(a: a, b: b, confidence: confidence, candidates: sorted),
+				!roomsByGroup[a].isDisjoint(with: roomsByGroup[b])))
 		}
+		// 並べる順がそのまま「上限に達したときどれを残すか」になる。**同じ場所を
+		// 含むグループ同士の隣接を最優先**にするのがフェーズ 2 の要点で、これは
+		// 合成でいうループ閉じ込み — 一度離れて戻ってきた撮影の繋ぎ目にあたる。
+		// 結合スコアだけで並べると、撮影順に隣り合う組に上限を使い切られて
+		// 真っ先に落ちる（＝一番欲しい繋ぎが消える）。
 		all.sort
-		{
-			$0.confidence == $1.confidence
-				? ($0.a == $1.a ? $0.b < $1.b : $0.a < $1.a)
-				: $0.confidence > $1.confidence
+		{ left, right in
+			if left.sharesRoom != right.sharesRoom
+			{
+				return left.sharesRoom
+			}
+			if left.link.confidence != right.link.confidence
+			{
+				return left.link.confidence > right.link.confidence
+			}
+			return left.link.a == right.link.a ? left.link.b < right.link.b : left.link.a < right.link.a
 		}
 
 		// 各グループが持つ隣接を上位のみに絞る（総当たりだと共有写真が増えすぎる）。
 		var counts = [Int](repeating: 0, count: groups.count)
 		var kept: [GroupLink] = []
-		for link in all
+		for entry in all
 		{
-			guard counts[link.a] < settings.maxLinksPerGroup,
-				counts[link.b] < settings.maxLinksPerGroup
+			guard counts[entry.link.a] < settings.maxLinksPerGroup,
+				counts[entry.link.b] < settings.maxLinksPerGroup
 			else
 			{
 				continue
 			}
-			counts[link.a] += 1
-			counts[link.b] += 1
-			kept.append(link)
+			counts[entry.link.a] += 1
+			counts[entry.link.b] += 1
+			kept.append(entry.link)
 		}
 		kept.sort { $0.a == $1.a ? $0.b < $1.b : $0.a < $1.a }
 		return kept

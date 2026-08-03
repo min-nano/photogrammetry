@@ -16,7 +16,7 @@ struct FakePhotoReader: PhotoMetadataReading
 {
 	var photos: [String: PhotoMetadata]
 
-	func read(_ file: PhotoFile) throws -> PhotoMetadata
+	func read(_ file: PhotoFile, options: PhotoInspectionOptions) throws -> PhotoMetadata
 	{
 		guard var metadata = photos[file.relativePath]
 		else
@@ -25,6 +25,12 @@ struct FakePhotoReader: PhotoMetadataReading
 		}
 		// URL だけは実物に差し替える（配置はこの URL を使う）。
 		metadata.url = file.url
+		// 本物の読み手（PhotoInspector）と同じく、指示が無ければ視覚特徴は
+		// 付けない。`--no-visual` が実際に効いていることを確かめるため。
+		if !options.featurePrints
+		{
+			metadata.featurePrint = nil
+		}
 		return metadata
 	}
 }
@@ -101,6 +107,51 @@ final class PhotoSorterTests: XCTestCase
 		}
 		XCTAssertTrue(manager.fileExists(
 			atPath: output.appendingPathComponent(SortManifest.fileName).path))
+	}
+
+	/// 部屋 2 つを、**時刻も知覚ハッシュも切れ目を示さない**形で撮ったもの。
+	/// 見た目は少しずつ変わるが、その変化は部屋の境目とは関係が無い
+	/// （壁と床ばかりの屋内で実際に起きる）。
+	func makeTwoRoomPhotos() throws -> [PhotoMetadata]
+	{
+		let photos = (0 ..< 60).map
+		{ index in
+			SamplePhoto.make(
+				index: index + 1,
+				secondsFromEpoch: Double(index) * 3,
+				hash: ((1 as UInt64) << UInt64(index % 64)) &- 1,
+				featurePrint: SamplePhoto.featurePrint(room: index < 30 ? 0 : 6, step: index % 30))
+		}
+		for photo in photos
+		{
+			try Data("dummy".utf8).write(to: input.appendingPathComponent(photo.relativePath))
+		}
+		return photos
+	}
+
+	func testVisualAnalysisIsRecordedInTheManifest() throws
+	{
+		let photos = try makeTwoRoomPhotos()
+		let manifest = try makeSorter(photos).run(makeRequest())
+		XCTAssertTrue(manifest.settings.visualEvidence)
+		XCTAssertEqual(manifest.statistics.roomCount, 2)
+		XCTAssertEqual(manifest.groups.count, 2)
+		XCTAssertEqual(manifest.groups.map(\.rooms), [["room-01"], ["room-02"]])
+		XCTAssertFalse(manifest.statistics.visualDistanceHistogram.isEmpty)
+	}
+
+	func testNoVisualSkipsFeaturePrintsEntirely() throws
+	{
+		// `--no-visual` は読み取りまで届く（読んでから捨てるのでは意味が無い）。
+		// **同じ入力がフェーズ 1 と同じ 1 グループに戻る**ことも同時に見る。
+		let photos = try makeTwoRoomPhotos()
+		var request = makeRequest()
+		request.visualEvidence = false
+		let manifest = try makeSorter(photos).run(request)
+		XCTAssertFalse(manifest.settings.visualEvidence)
+		XCTAssertEqual(manifest.statistics.roomCount, 0)
+		XCTAssertFalse(manifest.evidence.used.contains("scene"))
+		XCTAssertEqual(manifest.groups.count, 1)
 	}
 
 	func testSharedPhotosArePlacedInBothFolders() throws

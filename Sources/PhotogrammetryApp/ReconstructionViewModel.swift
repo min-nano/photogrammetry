@@ -57,6 +57,9 @@ final class ReconstructionViewModel: ObservableObject
 	@Published var linkStrategy: LinkStrategy = .hardlink
 	@Published var sortRecursive = true
 	@Published var sortDryRun = false
+	/// 視覚解析（同じ場所かどうかの判定）。既定で入れる。切れるようにしてあるのは
+	/// 「解析を速く済ませたい」ときの逃げ道で、精度は落ちる。
+	@Published var visualEvidence = true
 
 	@Published var isProcessing = false
 	@Published var progress: Double = 0
@@ -194,6 +197,7 @@ final class ReconstructionViewModel: ObservableObject
 			maxPerGroup: maxPerGroup,
 			minPerGroup: minPerGroup,
 			timeGap: timeGap,
+			visualEvidence: visualEvidence,
 			link: linkStrategy,
 			recursive: sortRecursive,
 			dryRun: sortDryRun))
@@ -227,6 +231,7 @@ final class ReconstructionViewModel: ObservableObject
 					maxPerGroup = request.maxPerGroup
 					minPerGroup = request.minPerGroup
 					timeGap = request.timeGap
+					visualEvidence = request.visualEvidence
 					linkStrategy = request.link
 					sortRecursive = request.recursive
 					sortDryRun = request.dryRun

@@ -1,8 +1,9 @@
 # 設計メモ: 建築物・外構向けのプリ／ポストプロセッシング
 
-**状態: 設計確定。フェーズ 0（§11 進捗表示）とフェーズ 1（`sort`）を実装済み。
-`merge`（フェーズ 3）は未実装。** 設計上の未解決事項（§10 の 1〜4）はすべて解消
-済み。残る項目は実装しながら実データを見て詰めるもの。
+**状態: 設計確定。フェーズ 0（§11 進捗表示）・フェーズ 1（`sort`）・フェーズ 2
+（視覚クラスタリング）を実装済み。`merge`（フェーズ 3）は未実装。** 設計上の
+未解決事項（§10 の 1〜4）はすべて解消済み。残る項目は実装しながら実データを
+見て詰めるもの。
 
 実装が設計から動いた点は本文中に「実装」として注記してある（主なもの: §4.1 の
 証拠に「フォルダ分け」「露出」を追加、§4.3 の分割を撮影順の最弱シームに確定、
@@ -141,6 +142,28 @@ ImageIO だけで取れて Vision が要らず、屋内撮影で実際に効く�
 feature print までの代役だが、**ほぼ同一の重複検出には feature print より安く
 確実**なのでフェーズ 2 以降も残す。
 
+**フェーズ 2 で証拠を 2 つ足した。** 実写真で仕分けの精度が出なかった原因は、
+上表の手がかりが**どれも「撮影の流れ」しか見ていない**ことにあった。場所その
+ものの同一性を判定できないので、次の 2 つを両方とも取り違える。
+
+- 同じ部屋を行き来しながら撮ると、時刻が離れた写真が別グループへ分かれる
+- 隣り合う部屋を続けて撮ると、時刻が近いだけで別の場所が 1 つになる
+
+| 証拠 | 取得元 | 強さ | 使えない条件 |
+| --- | --- | --- | --- |
+| 視覚特徴の近さ | Vision feature print | 強 | Vision が使えない／`--no-visual` |
+| 同じ場所の判定 | 上の特徴の視覚クラスタリング | 最も強い | 同上・場所が 1 つしか無い |
+
+前者は連続値（`exp(-距離 / sceneSpan)`）、後者は二値（同じクラスタなら 1）で、
+フォルダ分けと同じ扱い。**既存の証拠の重みは 1 つも変えていない** — 視覚特徴が
+取れない現場では、フェーズ 1 とまったく同じ重み配分に戻る。
+
+クラスタリング（`RoomClustering`）は **k 近傍の相互リンクの連結成分**で、閾値で
+全ペアを切るのではないのが要点。部屋どうしが数枚の似た写真（白い壁・同じ建具）で
+数珠つなぎになりにくく、部屋の枚数が k を超えていれば近傍は自然にその部屋の中で
+閉じる。閾値は例によって分布から決め、**山が 1 つなら切らない**（一続きの場所を
+刻まない）。距離は単位ベクトル化してからのユークリッド距離 ÷ 2 で 0.0〜1.0。
+
 また GPS は「付いていること」を信用の根拠にしない。**水平誤差
 （`GPSHPositioningError`）と測位時刻の古さで足切りする**（`PhotoMetadata
 .hasTrustworthyLocation`）。iPhone は屋内で直前の屋外の測位をそのまま書き込む
@@ -199,6 +222,14 @@ feature print までの代役だが、**ほぼ同一の重複検出には featur
 - **1 の候補ペアは「撮影順の窓（既定 60）＋ 知覚ハッシュの近傍上位 12 件」**に
   絞る。後者は「一度離れた場所へ行って戻ってきた撮影」を繋ぐために要る。
   ハッシュ距離の全ペア走査は 64 bit の XOR なので数千枚でも軽い。
+  **フェーズ 2 で「視覚特徴の近傍上位 8 件」を足した**（クラスタリングが計算した
+  近傍をそのまま使い回すので追加コストは無い）。構図が変わると崩れる知覚ハッシュ
+  と違い、こちらは同じ場所を別の角度から撮った写真を拾えるので、戻ってきた撮影を
+  繋ぐ役はフェーズ 2 以降こちらが主になる。
+- **フェーズ 2 で、隣接（4.4）の取捨に「同じ場所を含むか」を最優先で効かせた。**
+  1 グループが持つ隣接には上限があり（既定 4 本）、結合スコアだけで並べると
+  撮影順に隣り合う組で埋まって、**一度離れて戻ってきた繋ぎ目**が真っ先に落ちる。
+  それは合成でいうループの閉じ込みで、いちばん失いたくないものだった。
 
 **グループサイズの上限は設計上の制約として明示する。** 上限は
 `PhotogrammetrySession.limits.maximumNumberOfInputImages` と、実用域（〜200 枚程度）の
@@ -235,32 +266,40 @@ feature print までの代役だが、**ほぼ同一の重複検出には featur
 
 ```jsonc
 {
-  "version": 1,
+  "version": 2,
   "generatedAt": "2026-08-02T09:00:00Z",
   "source": "/Users/me/現場写真",
   "settings": {
     "overlap": 15, "maxPerGroup": 150, "minPerGroup": 20, "timeGap": 300,
     // 結合スコアの閾値。自動決定した実際の値をここに残す（再現のため）
     "groupThreshold": 0.38, "groupThresholdWasAutomatic": true,
-    "sharpnessThreshold": 12.5, "duplicateDistance": 4, "link": "hardlink"
+    "sharpnessThreshold": 12.5, "duplicateDistance": 4,
+    // 視覚解析（フェーズ 2）。同じ場所とみなした距離も同様に残す
+    "visualEvidence": true, "visualThreshold": 0.31,
+    "visualThresholdWasAutomatic": true, "link": "hardlink"
   },
   // どの手がかりを使い、どれをなぜ使わなかったか
-  "evidence": { "used": ["time", "visual"], "coverage": { "time": 1.0, "gps": 0.0 } },
+  "evidence": { "used": ["time", "visual", "scene", "room"],
+                "coverage": { "time": 1.0, "gps": 0.0, "scene": 1.0 } },
   // 写真そのものを含まない統計（実写真を共有せずに閾値を検討するため。§10-10）
   "statistics": {
-    "inputCount": 812, "keptCount": 770, "groupCount": 8,
+    "inputCount": 812, "keptCount": 770, "groupCount": 8, "roomCount": 6,
     "excludedByReason": { "blur": 30, "duplicate": 12 },
-    "scoreHistogram": [0, 3, 17, "…"], "sharpnessMedian": 40.2
+    "scoreHistogram": [0, 3, 17, "…"], "visualDistanceHistogram": [41, 92, "…"],
+    "sharpnessMedian": 40.2
   },
   "groups": [
-    // photos はフォルダの中身そのもの（共有写真を含む）。shared はそのうち借りたぶん
+    // photos はフォルダの中身そのもの（共有写真を含む）。shared はそのうち借りたぶん。
+    // rooms は写している場所（枚数の多い順。2 つ以上なら別の場所が混ざっている）
     { "id": "group-01", "photos": ["IMG_0001.HEIC", "…"], "shared": ["IMG_0118.HEIC"],
-      "evidence": ["time", "visual"],
+      "evidence": ["time", "visual", "scene", "room"], "rooms": ["room-01"],
       "captureStart": "2026-08-02T01:00:00Z", "captureEnd": "2026-08-02T01:12:00Z" }
   ],
   "adjacency": [
+    // sharedRoom は「両方のグループが写している場所」。時刻が離れていても成立する
+    // 繋ぎ目で、合成では最も信頼できる
     { "a": "group-01", "b": "group-02", "sharedPhotos": ["IMG_0118.HEIC", "…"],
-      "confidence": 0.82, "viewpointSpread": 0.31 }
+      "confidence": 0.82, "viewpointSpread": 0.31, "sharedRoom": "room-01" }
   ],
   "excluded": [ { "photo": "IMG_0044.HEIC", "reason": "blur", "score": 0.12 } ],
   "unassigned": ["IMG_0500.HEIC"],
@@ -272,8 +311,11 @@ feature print までの代役だが、**ほぼ同一の重複検出には featur
 
 **実装での変更点**: 設計時の `visualThreshold` は `groupThreshold` に改めた。
 フェーズ 1 で閾値が掛かるのは「見た目の距離」ではなく**結合スコア**（全証拠の
-重み付き平均）だからで、名前と意味を一致させた。`visualThreshold`（feature print
-の閾値）はフェーズ 2 で別途必要になれば追加する。`statistics` / `diagnostics` /
+重み付き平均）だからで、名前と意味を一致させた。`visualThreshold` の名前は
+フェーズ 2 で本来の意味（feature print の距離＝「同じ場所」とみなす閾値）に
+使った。フェーズ 2 で `rooms` / `sharedRoom` / `roomCount` /
+`visualDistanceHistogram` を足したのでバージョンは 2 に上げてある（読み手は
+まだ存在しないので移行の仕組みは持たない）。`statistics` / `diagnostics` /
 `evidence` は設計時に無かったが、§4.6 の診断と §10-10 の「写真を共有せずに調整
 する」を成立させるために必須なので加えた。
 
@@ -310,6 +352,19 @@ feature print までの代役だが、**ほぼ同一の重複検出には featur
 - **撮影時刻が読めない**（転送アプリで EXIF が失われた可能性を指摘する）
 - **焦点距離の混在**（iPhone は寄ると超広角へ自動で切り替わる）と機材の混在
 - **グループ全体が複数の島に分かれている**（1 つの座標系にまとめられない = error）
+
+**フェーズ 2 で、場所についての 3 つを足した。** グループは「上限枚数で切った
+区間」でしかないが、場所は「同じ部屋を写している写真の集まり」なので、
+**仕分けの結果を撮影者の言葉で説明できるのはここだけ**になる。
+
+- **視覚的に何か所を見分けたか**（`roomsFound` / 一続きなら `singleRoom`）
+- **1 つのグループに別の場所が混ざっている**（`groupMixesRooms`）
+  例: `group-02 は視覚的に別の場所の写真が混ざっています（room-01 55%・room-04 45%）`
+  — 1 回のセッションでは位置合わせが途切れやすい、という予告になる
+- **同じ場所が別々のグループに分かれ、しかも繋がっていない**（`roomSplitWithoutLink`）
+  — 一度離れて戻ってきた撮影で起きる。**合成が別々の島に割れる前に言う。**
+- 視覚解析を使わなかった場合はその旨（`noVisualAnalysis`）。黙って使わないのが
+  いちばん困る（なぜ仕分けが悪いのか分からなくなる）
 
 これらはいずれも**統計と名前だけで、写真そのものを含まない**（§10-10）。
 
@@ -614,9 +669,12 @@ Sources/PhotogrammetryCore/
   ReconstructionRequest.swift        既存
   APICommand.swift                   既存（7 で拡張）
   PhotogrammetryEngine.swift         既存（poses 出力を追加）
-  Preprocess/                  ← フェーズ 1 で実装済み
+  Preprocess/                  ← フェーズ 1・2 で実装済み
     PhotoMetadata.swift        1 枚分のメタ + 指紋 + 品質（値型・Sendable）
     PhotoInspector.swift       ImageIO / CoreGraphics を叩く唯一の層     ← ラッパー
+    FeaturePrinter.swift       Vision を叩く唯一の層（フェーズ 2）       ← ラッパー
+    FeaturePrint.swift         視覚特徴の値型と距離                      ← 純ロジック
+    RoomClustering.swift       視覚特徴 → 同じ場所（部屋）の集まり        ← 純ロジック
     ImageStatistics.swift      画素 → ブレ・露出・知覚ハッシュ           ← 純ロジック
     ThresholdEstimator.swift   分布 → 閾値（判別分析・分位点）           ← 純ロジック
     QualityFilter.swift        寄与しない写真の除外                      ← 純ロジック
@@ -670,6 +728,7 @@ CLI（サブコマンド名が無ければ従来どおり `process` として扱
 photogrammetry-cli sort  <入力フォルダ> <仕分け先フォルダ> \
     [--overlap N] [--max-per-group N] [--min-per-group N] [--time-gap 秒] \
     [--group-threshold f] [--min-sharpness f] [--duplicate-distance N] \
+    [--visual-threshold f] [--no-visual] \
     [--link copy|hardlink|symlink] [--no-recursive] [--dry-run]
 
 photogrammetry-cli merge <グループ出力フォルダ> <出力.usda|出力.usdz> \
@@ -706,6 +765,8 @@ CLAUDE.md のテスト方針をそのまま適用する。**純ロジックを `
 | 対象 | テスト内容 |
 | --- | --- |
 | `ImageStatistics` | 合成画素 → 鮮鋭度の大小関係、明るさを変えてもハッシュが不変、縮小の平均 |
+| `FeaturePrint` | 尺度に依らない距離、直交・真逆、次元違いは「最も遠い」、長さ 0 は作らない |
+| `RoomClustering` | 合成ベクトル → 別の部屋は別のクラスタ。**一続きの場所は割らない**。戻ってきた撮影が同じクラスタになる。小さすぎるクラスタの吸収 |
 | `ThresholdEstimator` | 2 山の分布で谷を当てる。**1 山の分布では分離度が低くなる**（＝切らない判断ができる） |
 | `QualityFilter` | ブレ・露出・パノラマ・ほぼ同一の除外。**ブレが無い現場で良品を落とさない**。安全弁 |
 | `PhotoGrouping` | 合成メタデータ（時刻・GPS・距離行列）→ 期待するグループと隣接。証拠が欠けた場合のフォールバック |
@@ -718,8 +779,8 @@ CLAUDE.md のテスト方針をそのまま適用する。**純ロジックを `
 | `PoseGraph` | 木の伝播、閉路のループ誤差検出、非連結グラフの検出 |
 | `APICommand` | 新しい語彙のパース、既存の位置引数の後方互換 |
 
-`PhotoInspector` / `SceneAssembler`（フレームワークを叩く層）は既存の
-`PhotogrammetryEngine` と同じくテストしない。挙動確認は実機、または ci-debug の
+`PhotoInspector` / `FeaturePrinter` / `SceneAssembler`（フレームワークを叩く層）は
+既存の `PhotogrammetryEngine` と同じくテストしない。挙動確認は実機、または ci-debug の
 `run-cli` で行う。
 
 ## 9. フェーズ計画
@@ -728,7 +789,7 @@ CLAUDE.md のテスト方針をそのまま適用する。**純ロジックを `
 | --- | --- | --- |
 | **0** | 進捗表示の改善（残り時間・処理段階）。§11 | **実装済み** |
 | **1** | 品質フィルタ、時刻／GPS／露出／知覚ハッシュ／フォルダによる分割、重複付きチャンク、manifest、診断モード、CLI `sort`、URL スキーム `sort` | **実装済み**（Vision 不要。単独で「枚数上限超え」を解決する） |
-| **2** | Vision feature print による視覚クラスタリングを証拠として統合 | 1 |
+| **2** | Vision feature print による視覚クラスタリングを証拠として統合 | **実装済み**（`FeaturePrint` / `RoomClustering`、`scene` / `room` の証拠、`--no-visual` / `--visual-threshold`、manifest の `rooms` / `sharedRoom`、場所の診断） |
 | **3** | `--emit-poses`、`SimilarityTransform` / `PointSetAlignment` / `PoseGraph` / `SceneAssembler`、CLI `merge` | 1（重複付き分割が前提） |
 | **4** | 手動対応点の GUI、実寸スケール指定、ICP による精密化、ループ最適化 | 3 |
 | **5** | メッシュ結合（要検討。本設計では非推奨） | 3 |
@@ -755,10 +816,13 @@ CLAUDE.md のテスト方針をそのまま適用する。**純ロジックを `
    （`ThresholdEstimator`）。加えて**山が 1 つのときは切らない**判断ができるよう
    分離度を返す — これが無いと、ブレた写真が無い現場で良品を捨ててしまう。手動
    での上書きは `--group-threshold` / `--min-sharpness` として残した。
-6. **n が数千を超えたときの O(n²) 距離計算。** フェーズ 1 では候補ペアを
-   「撮影順の窓 + ハッシュ近傍上位」に絞ることで実質 O(n·k) にした（ハッシュ距離
-   の全ペア走査だけは O(n²) だが 64 bit の XOR なので軽い）。Vision の feature
-   print を入れるフェーズ 2 では計算量が桁で変わるので、そこで改めて詰める。
+6. ~~n が数千を超えたときの O(n²) 距離計算~~ → **フェーズ 2 で結論を出した。
+   全ペアをそのまま計算する。** フェーズ 1 では候補ペアを「撮影順の窓 + ハッシュ
+   近傍上位」に絞って実質 O(n·k) にしてある（ハッシュ距離の全ペア走査だけは
+   O(n²) だが 64 bit の XOR なので軽い）。feature print の距離は O(n² × 次元) に
+   なるが、数千枚でも数秒で、支配的なのは写真のデコードと Vision の推論のほう。
+   近似（射影や候補の絞り込み）を入れて**同じ部屋を見つけそこねる**ほうが害が
+   大きいと判断した。桁がもう 1 つ上がったら、そのときに候補の絞り込みを入れる。
 7. **共有写真の共線退化。** 廊下の直進区間など。4.4 の選び方ヒューリスティクスと
    5.3 の退化検出の両方で守る。
 8. **あるグループの再構成が失敗すると、そのノードがポーズグラフから欠ける。**

@@ -34,7 +34,10 @@ Sources/
     Preprocess/            大量の写真の仕分け（sort。docs/design-preprocess-merge.md）
       PhotoMetadata        写真 1 枚分の事実（値型・Sendable）
       PhotoInspector       ImageIO / CoreGraphics を叩く唯一の層  ← ラッパー
+      FeaturePrinter       Vision を叩く唯一の層                  ← ラッパー
       ImageStatistics      画素 → ブレ・露出・知覚ハッシュ        ← 純ロジック
+      FeaturePrint         視覚特徴の値型と距離                  ← 純ロジック
+      RoomClustering       視覚特徴 → 同じ場所（部屋）の集まり    ← 純ロジック
       ThresholdEstimator   分布 → 閾値（判別分析）               ← 純ロジック
       QualityFilter        寄与しない写真の除外                  ← 純ロジック
       PhotoGrouping        証拠の合算 → グループ + 隣接           ← 純ロジック
@@ -55,6 +58,9 @@ Sources/
 - `PhotogrammetryCore` / `PhotogrammetryUpdater` は SwiftUI / AppKit を import しない。
 - RealityKit の型は `PhotogrammetryEngine.swift` の外に漏らさない
   （API 表現は `ReconstructionRequest` の自前 enum。変換表はエンジン内に 1 つだけ）。
+- 同様に、ImageIO / CoreGraphics は `PhotoInspector.swift`、Vision は
+  `FeaturePrinter.swift` の中だけ。外へ出るのは値型（`PhotoMetadata` /
+  `FeaturePrint`）だけで、**判断はすべて純ロジック側に置く**。
 - 外部連携のパラメータ語彙（`input` / `output` / `detail` / `ordering` /
   `sensitivity` / `subject` / `overlap` / `maxPerGroup` / …）は `APICommand` に
   **1 か所だけ**定義する。入口（URL / CLI）やコマンド（`process` / `sort`）を
@@ -66,7 +72,8 @@ Sources/
   片方を変えるときは必ず両方＋テストを更新する。
 - **仕分けは別プロセスにしなくてよい。** 別プロセス化が要るのは
   `CorePhotogrammetry` が `abort()` しうる生成だけで、`sort` は RealityKit を
-  使わない（ImageIO / CoreGraphics のみ）。GUI からは同一プロセスで実行する。
+  使わない（ImageIO / CoreGraphics / Vision のみ）。GUI からは同一プロセスで
+  実行する。
   ただし数千枚のデコードは数分かかるので、中断（`SortCancellation`）は用意する
   — GUI に「キャンセル」を出す以上、効かないボタンにはしない。
 - **Core に機能を足したら GUI の入口も同時に足す。** ライブラリ / CLI / URL
@@ -109,8 +116,8 @@ Sources/
   を分けているのは「テスト（または llvm-cov/diff-cover）が壊れた」のか
   「しきい値を下回った」のかを一目で区別するため。`PhotogrammetryEngine.swift`
   （RealityKit/GPU 依存）・`UpdaterService.swift`（ネットワーク I/O）・
-  `PhotoInspector.swift`（ImageIO/CoreGraphics 依存）は上記の「自動テスト
-  しない」方針どおり集計から除外している — 含めると分母が常に薄まりしきい値が
+  `PhotoInspector.swift`（ImageIO/CoreGraphics 依存）・`FeaturePrinter.swift`
+  （Vision 依存）は上記の「自動テストしない」方針どおり集計から除外している — 含めると分母が常に薄まりしきい値が
   意味を失うため。**フレームワークを叩くラッパーを新しく足したら、除外にも
   同時に足す**（除外を足すということは「その層に判断を置かない」という約束
   でもある。判断は必ず純ロジック側へ下ろすこと）。しきい値・除外規則は

@@ -272,4 +272,160 @@ final class SortDiagnosticsTests: XCTestCase
 			unassigned: ["x.HEIC"])
 		XCTAssertTrue(codes(evaluate(plan: plan)).contains("unassigned"))
 	}
+
+	// -----------------------------------------------------------------
+	// 視覚的に見つけた場所（フェーズ 2）
+	//
+	// グループは「上限枚数で切った区間」でしかないが、場所は「同じ部屋を
+	// 写している写真の集まり」なので、**仕分けの結果を撮影者の言葉で説明できる**。
+	// -----------------------------------------------------------------
+
+	/// グループ分けと場所の割り当てを直接指定した結果を作る（実写真も
+	/// クラスタリングも通さずに、診断だけを固定するため）。
+	func manualGrouping(groups: [[Int]], labels: [Int]) -> GroupingResult
+	{
+		let photos = labels.indices.map { SamplePhoto.make(index: $0) }
+		let clusterCount = (labels.max() ?? -1) + 1
+		let clusters = (0 ..< clusterCount).map
+		{ label in
+			RoomCluster(
+				id: RoomClustering.identifier(label),
+				members: labels.indices.filter { labels[$0] == label })
+		}
+		let rooms = RoomClusteringResult(
+			clusters: clusters,
+			labels: labels.map { Optional($0) },
+			neighbors: [[SceneNeighbor]](repeating: [], count: labels.count),
+			threshold: 0.3,
+			thresholdWasAutomatic: true,
+			separability: 0.6,
+			distanceHistogram: [],
+			coverage: 1)
+		return GroupingResult(
+			photos: photos,
+			groups: groups.enumerated().map
+			{
+				PhotoGroup(id: PhotoGrouping.identifier($0.offset), members: $0.element)
+			},
+			links: [],
+			unassigned: [],
+			rooms: rooms,
+			usedEvidence: [.time, .scene, .room],
+			evidenceCoverage: [.scene: 1, .room: 1],
+			threshold: 0.5,
+			thresholdWasAutomatic: true,
+			scoreHistogram: [])
+	}
+
+	func evaluate(plan: SortPlan, grouping: GroupingResult) -> [SortDiagnostic]
+	{
+		SortDiagnostics.evaluate(
+			plan: plan,
+			grouping: grouping,
+			quality: QualityFilter.Outcome(kept: grouping.photos, excluded: []),
+			request: makeRequest())
+	}
+
+	func testVisualAnalysisIsReportedAsUnusedWhenThereAreNoFeaturePrints()
+	{
+		// 黙って使わないのが一番困る（なぜ仕分けが悪いのか分からなくなる）。
+		let plan = SortPlan(groups: [group("group-01", count: 40)], adjacency: [], unassigned: [])
+		let diagnostics = evaluate(plan: plan)
+		XCTAssertTrue(codes(diagnostics).contains("noVisualAnalysis"))
+	}
+
+	func testRoomsFoundIsReported()
+	{
+		let grouping = manualGrouping(
+			groups: [Array(0 ..< 20), Array(20 ..< 40)],
+			labels: (0 ..< 40).map { $0 < 20 ? 0 : 1 })
+		let plan = SortPlan(
+			groups: [group("group-01", count: 20), group("group-02", count: 20)],
+			adjacency: [
+				SortPlan.Adjacency(
+					a: "group-01", b: "group-02",
+					sharedPhotos: (0 ..< 12).map { "s\($0).HEIC" },
+					confidence: 0.7,
+					viewpointSpread: 0.5),
+			],
+			unassigned: [])
+		let diagnostics = evaluate(plan: plan, grouping: grouping)
+		let message = diagnostics.first { $0.code == "roomsFound" }?.message ?? ""
+		XCTAssertTrue(message.contains("2 か所"))
+		XCTAssertTrue(message.contains("room-01"))
+		XCTAssertFalse(codes(diagnostics).contains("groupMixesRooms"))
+		XCTAssertFalse(codes(diagnostics).contains("roomSplitWithoutLink"))
+	}
+
+	func testSingleRoomIsReported()
+	{
+		let grouping = manualGrouping(
+			groups: [Array(0 ..< 20)],
+			labels: [Int](repeating: 0, count: 20))
+		let plan = SortPlan(groups: [group("group-01", count: 20)], adjacency: [], unassigned: [])
+		XCTAssertTrue(codes(evaluate(plan: plan, grouping: grouping)).contains("singleRoom"))
+	}
+
+	func testGroupMixingPlacesIsReported()
+	{
+		// 1 つのグループに 2 か所が半々で混ざっている。1 回のセッションでは
+		// 位置合わせが途切れやすいので警告する。
+		let grouping = manualGrouping(
+			groups: [Array(0 ..< 40)],
+			labels: (0 ..< 40).map { $0 < 20 ? 0 : 1 })
+		let plan = SortPlan(groups: [group("group-01", count: 40)], adjacency: [], unassigned: [])
+		let diagnostics = evaluate(plan: plan, grouping: grouping)
+		let message = diagnostics.first { $0.code == "groupMixesRooms" }?.message ?? ""
+		XCTAssertTrue(message.contains("group-01"))
+		XCTAssertTrue(message.contains("room-01"))
+		XCTAssertTrue(message.contains("50%"))
+	}
+
+	func testDominantRoomIsNotReportedAsMixed()
+	{
+		// 大半が同じ場所なら混在とは言わない（境目の数枚で警告を出さない）。
+		let grouping = manualGrouping(
+			groups: [Array(0 ..< 40)],
+			labels: (0 ..< 40).map { $0 < 36 ? 0 : 1 })
+		let plan = SortPlan(groups: [group("group-01", count: 40)], adjacency: [], unassigned: [])
+		XCTAssertFalse(codes(evaluate(plan: plan, grouping: grouping)).contains("groupMixesRooms"))
+	}
+
+	func testSamePlaceSplitAcrossUnlinkedGroupsIsReported()
+	{
+		// **一度離れて戻ってきた撮影。** 同じ場所なのに共有写真が無ければ、
+		// 合成は別々の島に割れる。撮影者に言えるのはここだけ。
+		let grouping = manualGrouping(
+			groups: [Array(0 ..< 20), Array(20 ..< 40)],
+			labels: [Int](repeating: 0, count: 40))
+		let plan = SortPlan(
+			groups: [group("group-01", count: 20), group("group-02", count: 20)],
+			adjacency: [],
+			unassigned: [])
+		let diagnostics = evaluate(plan: plan, grouping: grouping)
+		let message = diagnostics.first { $0.code == "roomSplitWithoutLink" }?.message ?? ""
+		XCTAssertTrue(message.contains("room-01"))
+		XCTAssertTrue(message.contains("group-01"))
+		XCTAssertTrue(message.contains("group-02"))
+	}
+
+	func testSamePlaceSplitButLinkedIsNotReported()
+	{
+		let grouping = manualGrouping(
+			groups: [Array(0 ..< 20), Array(20 ..< 40)],
+			labels: [Int](repeating: 0, count: 40))
+		let plan = SortPlan(
+			groups: [group("group-01", count: 20), group("group-02", count: 20)],
+			adjacency: [
+				SortPlan.Adjacency(
+					a: "group-01", b: "group-02",
+					sharedPhotos: (0 ..< 12).map { "s\($0).HEIC" },
+					confidence: 0.9,
+					viewpointSpread: 0.5,
+					sharedRoom: "room-01"),
+			],
+			unassigned: [])
+		XCTAssertFalse(codes(evaluate(plan: plan, grouping: grouping))
+			.contains("roomSplitWithoutLink"))
+	}
 }

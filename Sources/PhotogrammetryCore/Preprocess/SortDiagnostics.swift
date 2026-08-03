@@ -51,6 +51,10 @@ public enum SortDiagnostics
 	/// 共有写真の視点の散らばりの下限。これを下回ると対応点が一直線に並び、
 	/// 相似変換の解が一意に定まらなくなる（設計メモ §5.3 の退化）。
 	public static let minimumViewpointSpread = 0.15
+	/// グループの写真のうち、最も多い場所（視覚クラスタ）が占めるべき割合。
+	/// これを下回るグループは別々の場所が混ざっており、1 回のセッションでは
+	/// 位置合わせが途切れやすい。
+	public static let minimumRoomPurity = 0.7
 
 	/// 仕分け結果を診断する。
 	///
@@ -209,6 +213,9 @@ public enum SortDiagnostics
 					+ "--min-sharpness で閾値を明示してください。"))
 		}
 
+		// --- 視覚的に見つけた場所（フェーズ 2） ---
+		diagnostics.append(contentsOf: roomDiagnostics(plan: plan, grouping: grouping))
+
 		// --- 使えた証拠 ---
 		diagnostics.append(contentsOf: evidenceDiagnostics(grouping: grouping))
 
@@ -224,6 +231,184 @@ public enum SortDiagnostics
 					+ "（_unassigned/ に退避）。他と繋がらない単発の写真です。"))
 		}
 
+		return diagnostics
+	}
+
+	/// 視覚的に見つけた「場所」についての診断（フェーズ 2）。
+	///
+	/// **仕分けの結果を撮影者の言葉で説明できるのはここだけ。** グループは
+	/// 「上限枚数で切った区間」でしかないが、場所（視覚クラスタ）は
+	/// 「同じ部屋を写している写真の集まり」なので、
+	///
+	///   - グループに別の場所が混ざっている（＝1 回のセッションで解けない）
+	///   - 同じ場所が別々のグループに分かれていて繋がっていない（＝合成できない）
+	///
+	/// のどちらも、撮り直しではなく**仕分けの設定で直せる**問題として名指しできる。
+	static func roomDiagnostics(plan: SortPlan, grouping: GroupingResult) -> [SortDiagnostic]
+	{
+		var diagnostics: [SortDiagnostic] = []
+		let rooms = grouping.rooms
+
+		guard grouping.usedEvidence.contains(.scene)
+		else
+		{
+			diagnostics.append(SortDiagnostic(
+				severity: .info,
+				code: "noVisualAnalysis",
+				message: "視覚解析（同じ場所かどうかの判定）は使いませんでした"
+					+ "（視覚特徴を取れた写真は \(percent(rooms.coverage))）。"
+					+ "--no-visual を外すと、部屋を行き来しながら撮った写真でも"
+					+ "同じ場所どうしをまとめられます。"))
+			return diagnostics
+		}
+
+		guard rooms.clusters.count > 1
+		else
+		{
+			diagnostics.append(SortDiagnostic(
+				severity: .info,
+				code: "singleRoom",
+				message: "視覚的にはひと続きの場所と判定しました"
+					+ "（部屋・面の切り替わりは見つかりませんでした）。"))
+			return diagnostics
+		}
+
+		let breakdown = rooms.clusters.map { "\($0.id) \($0.members.count) 枚" }
+			.joined(separator: "・")
+		diagnostics.append(SortDiagnostic(
+			severity: .info,
+			code: "roomsFound",
+			message: "視覚的に \(rooms.clusters.count) か所を見分けました（\(breakdown)）"
+				+ String(format: "。距離の閾値 %.2f%@",
+					rooms.threshold,
+					rooms.thresholdWasAutomatic ? "・自動決定" : "・指定値")))
+
+		// --- 1 つのグループに複数の場所が混ざっていないか ---
+		for group in grouping.groups
+		{
+			let counts = roomCounts(members: group.members, rooms: rooms)
+			guard counts.count > 1, let dominant = counts.map(\.value).max()
+			else
+			{
+				continue
+			}
+			let total = counts.map(\.value).reduce(0, +)
+			let purity = Double(dominant) / Double(total)
+			guard purity < minimumRoomPurity
+			else
+			{
+				continue
+			}
+			let mix = counts.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+				.map { "\(rooms.clusters[$0.key].id) \(percent(Double($0.value) / Double(total)))" }
+				.joined(separator: "・")
+			diagnostics.append(SortDiagnostic(
+				severity: .warning,
+				code: "groupMixesRooms",
+				message: "\(group.id) は視覚的に別の場所の写真が混ざっています（\(mix)）"
+					+ " — 1 回のセッションでは位置合わせが途切れることがあります。"
+					+ "--max-per-group を下げると場所ごとに分かれやすくなります。"))
+		}
+
+		// --- 同じ場所が別々のグループに分かれ、しかも繋がっていないか ---
+		diagnostics.append(contentsOf: splitRoomDiagnostics(plan: plan, grouping: grouping))
+		return diagnostics
+	}
+
+	/// 写真の集合が属する場所ごとの枚数（クラスタ添字 → 枚数）。
+	static func roomCounts(members: [Int], rooms: RoomClusteringResult) -> [Int: Int]
+	{
+		var counts: [Int: Int] = [:]
+		for member in members
+		{
+			guard let label = rooms.labels[member]
+			else
+			{
+				continue
+			}
+			counts[label, default: 0] += 1
+		}
+		return counts
+	}
+
+	/// 同じ場所を写しているのに、共有写真で繋がっていないグループの組を報告する。
+	///
+	/// **これが「視覚的に同じ部屋を見つける」ことの実利。** 一度離れて戻ってきた
+	/// 撮影は時刻でも位置でも繋がらないが、見た目では同じ場所だと分かる。繋がって
+	/// いなければ合成は 2 つの島に割れるので、そうなる前に名指しで伝える。
+	static func splitRoomDiagnostics(plan: SortPlan, grouping: GroupingResult) -> [SortDiagnostic]
+	{
+		var diagnostics: [SortDiagnostic] = []
+		var groupIndex: [String: Int] = [:]
+		for (position, group) in grouping.groups.enumerated()
+		{
+			groupIndex[group.id] = position
+		}
+		// 共有写真で実際に繋がっている組。
+		var linked = Set<Int>()
+		for adjacency in plan.adjacency where !adjacency.sharedPhotos.isEmpty
+		{
+			guard let a = groupIndex[adjacency.a], let b = groupIndex[adjacency.b]
+			else
+			{
+				continue
+			}
+			linked.insert(min(a, b) * grouping.groups.count + max(a, b))
+		}
+
+		for (label, cluster) in grouping.rooms.clusters.enumerated()
+		{
+			var members: [Int] = []
+			for (position, group) in grouping.groups.enumerated()
+				where group.members.contains(where: { grouping.rooms.labels[$0] == label })
+			{
+				members.append(position)
+			}
+			guard members.count > 1
+			else
+			{
+				continue
+			}
+			// この場所を写すグループどうしが、隣接をたどって 1 つに繋がるか。
+			// 総当たりで繋がっている必要は無い（鎖状でも 1 つの座標系に載る）。
+			var parent = Array(0 ..< members.count)
+			func find(_ value: Int) -> Int
+			{
+				var root = value
+				while parent[root] != root
+				{
+					parent[root] = parent[parent[root]]
+					root = parent[root]
+				}
+				return root
+			}
+			for left in 0 ..< members.count
+			{
+				for right in (left + 1) ..< members.count
+					where linked.contains(
+						members[left] * grouping.groups.count + members[right])
+				{
+					let a = find(left)
+					let b = find(right)
+					if a != b
+					{
+						parent[max(a, b)] = min(a, b)
+					}
+				}
+			}
+			guard Set((0 ..< members.count).map(find)).count > 1
+			else
+			{
+				continue
+			}
+			let list = members.map { grouping.groups[$0].id }.joined(separator: "・")
+			diagnostics.append(SortDiagnostic(
+				severity: .warning,
+				code: "roomSplitWithoutLink",
+				message: "\(cluster.id) は同じ場所ですが \(list) に分かれ、共有写真で"
+					+ "繋がっていません — このままでは合成が別々の島になります。"
+					+ "--overlap を増やすか、この場所を一度に撮り通してください。"))
+		}
 		return diagnostics
 	}
 

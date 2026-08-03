@@ -310,6 +310,12 @@ struct ContentView: View
 						Text(Self.label(for: value)).tag(value)
 					}
 				}
+				Toggle("見た目から同じ場所を見分ける", isOn: $model.visualEvidence)
+				Text("同じ部屋・同じ面を写した写真をまとめます。部屋を行き来しながら"
+					+ "撮った写真ほど効きます（1 枚あたりの解析は少し遅くなります）。")
+					.font(.caption)
+					.foregroundColor(.secondary)
+
 				Toggle("サブフォルダも対象にする", isOn: $model.sortRecursive)
 				Toggle("確認のみ（ファイルを作らず診断だけ）", isOn: $model.sortDryRun)
 				Text("撮り直しが要るかはここで分かります。仕分けは数分ですが、再構成は数時間かかります。")

@@ -265,6 +265,7 @@ final class APICommandTests: XCTestCase
 			string: "photogrammetry://sort?input=/tmp/photos&output=/tmp/sorted"
 				+ "&overlap=8&maxPerGroup=120&minPerGroup=15&timeGap=120"
 				+ "&groupThreshold=0.4&minSharpness=12.5&duplicateDistance=6"
+				+ "&visual=false&visualThreshold=0.45"
 				+ "&link=copy&recursive=false&dryRun=true")!
 		let request = try parseSort(url: url)
 		XCTAssertEqual(request.inputFolder.path, "/tmp/photos")
@@ -276,6 +277,8 @@ final class APICommandTests: XCTestCase
 		XCTAssertEqual(request.groupThreshold, 0.4)
 		XCTAssertEqual(request.minimumSharpness, 12.5)
 		XCTAssertEqual(request.duplicateDistance, 6)
+		XCTAssertFalse(request.visualEvidence)
+		XCTAssertEqual(request.visualThreshold, 0.45)
 		XCTAssertEqual(request.link, .copy)
 		XCTAssertFalse(request.recursive)
 		XCTAssertTrue(request.dryRun)
@@ -290,6 +293,9 @@ final class APICommandTests: XCTestCase
 		// 閾値は既定で「分布から自動決定」。固定値を持たない（設計メモ §10-5）。
 		XCTAssertNil(request.groupThreshold)
 		XCTAssertNil(request.minimumSharpness)
+		XCTAssertNil(request.visualThreshold)
+		// 視覚解析は既定で入れる（切るのは逃げ道）。
+		XCTAssertTrue(request.visualEvidence)
 		XCTAssertTrue(request.recursive)
 		XCTAssertFalse(request.dryRun)
 	}
@@ -329,6 +335,8 @@ final class APICommandTests: XCTestCase
 			"--group-threshold", "0.4",
 			"--min-sharpness", "12.5",
 			"--duplicate-distance", "6",
+			"--visual-threshold", "0.45",
+			"--no-visual",
 			"--link", "symlink",
 			"--no-recursive",
 			"--dry-run",
@@ -336,6 +344,8 @@ final class APICommandTests: XCTestCase
 		XCTAssertEqual(request.inputFolder.path, "/tmp/photos")
 		XCTAssertEqual(request.outputFolder.path, "/tmp/sorted")
 		XCTAssertEqual(request.overlap, 8)
+		XCTAssertEqual(request.visualThreshold, 0.45)
+		XCTAssertFalse(request.visualEvidence)
 		XCTAssertEqual(request.link, .symlink)
 		XCTAssertFalse(request.recursive)
 		XCTAssertTrue(request.dryRun)
@@ -388,6 +398,8 @@ final class APICommandTests: XCTestCase
 			groupThreshold: 0.35,
 			minimumSharpness: 8,
 			duplicateDistance: 5,
+			visualEvidence: false,
+			visualThreshold: 0.45,
 			link: .copy,
 			recursive: false,
 			dryRun: true)
@@ -396,9 +408,13 @@ final class APICommandTests: XCTestCase
 		// 自動決定に任せた項目は引数に出さない（出すと「自動」が失われる）。
 		request.groupThreshold = nil
 		request.minimumSharpness = nil
+		request.visualThreshold = nil
+		request.visualEvidence = true
 		let arguments = APICommand.arguments(for: request)
 		XCTAssertFalse(arguments.contains("--group-threshold"))
 		XCTAssertFalse(arguments.contains("--min-sharpness"))
+		XCTAssertFalse(arguments.contains("--visual-threshold"))
+		XCTAssertFalse(arguments.contains("--no-visual"))
 		XCTAssertEqual(try parseSort(arguments: arguments), request)
 	}
 

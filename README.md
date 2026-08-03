@@ -101,15 +101,15 @@ stdout に機械可読な `key=value` 行を逐次出力します（`progress=0.
 1 つの座標系へ合成できる形で書き出します。
 
 GUI（画面上部で「写真を仕分ける」に切り替え）・CLI・URL スキームのどれからでも
-実行できます。仕分けは RealityKit を使わない（ImageIO / CoreGraphics のみ）ので、
-**Object Capture 非対応の Mac でも動きます**。
+実行できます。仕分けは RealityKit を使わない（ImageIO / CoreGraphics / Vision の
+み）ので、**Object Capture 非対応の Mac でも動きます**。
 
 ```bash
 photogrammetry-cli sort <入力フォルダ> <仕分け先フォルダ> \
     [--overlap 15] [--max-per-group 150] [--min-per-group 20] \
     [--time-gap 300] [--group-threshold 0.4] [--min-sharpness 12] \
-    [--duplicate-distance 4] [--link hardlink|copy|symlink] \
-    [--no-recursive] [--dry-run]
+    [--duplicate-distance 4] [--visual-threshold 0.4] [--no-visual] \
+    [--link hardlink|copy|symlink] [--no-recursive] [--dry-run]
 ```
 
 ```
@@ -121,20 +121,28 @@ photogrammetry-cli sort <入力フォルダ> <仕分け先フォルダ> \
   manifest.json   グループ・隣接・除外・診断の記録
 ```
 
-仕分けの要点は 3 つです。
+仕分けの要点は 4 つです。
 
 1. **手がかりに依存しない。** 撮影時刻・GPS（水平誤差と測位時刻で足切り）・
    高度・方位・露出・知覚ハッシュ・サブフォルダ分けを**並列の証拠**として扱い、
    その現場で使えるものだけを重み付けして合算します。EXIF が失われた写真でも
    見た目とファイル名の連番だけで仕分きます。屋内（床下・小屋裏）では GPS が
    直前の屋外の測位のまま残るので、**位置が付いていること自体は信用しません**。
-2. **隣り合うグループに同じ写真を重複させる**（`--overlap`、既定 15 枚）。この
+2. **見た目から「同じ場所」を見分ける**（`room-01` …）。上の手がかりはどれも
+   「撮影の流れ」しか見ておらず、場所そのものの同一性は判定できません。
+   Vision の画像特徴を使うと、**時刻が離れていても同じ部屋ならまとめ、時刻が
+   近くても別の部屋なら引き離す**ことができます。部屋を行き来しながら撮った
+   現場、隣り合う部屋を続けて撮った現場で効きます。`--no-visual` で切れます
+   （速くなりますが精度は落ちます）。
+3. **隣り合うグループに同じ写真を重複させる**（`--overlap`、既定 15 枚）。この
    共有写真が、各グループを再構成したあとに 1 つの座標系へ合成するときの
    手がかりになります。選ぶときは視点が散らばるようにします（同じ場所から
-   向きだけ変えた写真ばかりだと、変換の推定が退化するため）。
-3. **閾値を固定しない。** ブレ判定もグループ分けの閾値も、その現場の分布から
-   自動決定します（分布の山が 1 つのときは切らないので、ブレた写真が無い現場で
-   良品を捨てません）。`--min-sharpness` / `--group-threshold` は逃げ道です。
+   向きだけ変えた写真ばかりだと、変換の推定が退化するため）。同じ場所を写して
+   いるグループ同士の隣接は最優先で残します（合成でいうループの閉じ込み）。
+4. **閾値を固定しない。** ブレ判定もグループ分けも「同じ場所」の判定も、その
+   現場の分布から自動決定します（分布の山が 1 つのときは切らないので、ブレた
+   写真が無い現場で良品を捨てず、一続きの場所を刻みません）。
+   `--min-sharpness` / `--group-threshold` / `--visual-threshold` は逃げ道です。
 
 `--dry-run` はファイルを作らず解析と診断だけを行います。**再構成は建築規模なら
 数時間かかりますが、`sort` は数分で終わります。**現場を出る前にこれを回せば、
@@ -143,10 +151,12 @@ photogrammetry-cli sort <入力フォルダ> <仕分け先フォルダ> \
 ```
 $ photogrammetry-cli sort ~/Pictures/現場 ~/Desktop/仕分け --dry-run
 note=770 枚を 8 グループに仕分けました（除外 42 枚）。
-note=使った手がかり: 撮影時刻・見た目の近さ（結合スコアの閾値 0.38・自動決定）
+note=視覚的に 6 か所を見分けました（room-01 128 枚・room-02 96 枚・…）。距離の閾値 0.31・自動決定
+note=使った手がかり: 撮影時刻・見た目の近さ・視覚特徴の近さ・同じ場所の判定（結合スコアの閾値 0.38・自動決定）
 note=警告: group-03 ↔ group-04: 共有 4 枚（推奨 10 枚以上） — 合成が不安定になります。…
 note=警告: group-05 ↔ group-06: 共有写真の視点がほぼ一直線です — …
 note=警告: group-07 はどのグループとも共有写真がありません — …
+note=警告: group-02 は視覚的に別の場所の写真が混ざっています（room-01 55%・room-04 45%）— …
 ```
 
 仕分けたあとは、グループごとに通常どおり生成します。グループは**撮影順の連続
@@ -187,7 +197,8 @@ open "photogrammetry://sort?input=/Users/me/現場&output=/Users/me/仕分け&ov
   `sensitivity` / `subject`
 - `sort`: `input`（必須）/ `output`（必須）/ `overlap` / `maxPerGroup` /
   `minPerGroup` / `timeGap` / `groupThreshold` / `minSharpness` /
-  `duplicateDistance` / `link` / `recursive` / `dryRun`
+  `duplicateDistance` / `visual` / `visualThreshold` / `link` / `recursive` /
+  `dryRun`
 
 語彙は CLI と共通で、解釈は `PhotogrammetryCore` の `APICommand` に一元化されて
 います。
@@ -314,7 +325,10 @@ Sources/
     Preprocess/            大量の写真の仕分け（sort）
       PhotoMetadata        写真 1 枚分の事実（時刻・位置・露出・指紋・品質）
       PhotoInspector       ImageIO / CoreGraphics の唯一のラッパー
+      FeaturePrinter       Vision（画像特徴）の唯一のラッパー
       ImageStatistics      ブレ・露出・知覚ハッシュの計算（純ロジック）
+      FeaturePrint         視覚特徴の値型と距離（純ロジック）
+      RoomClustering       視覚特徴から同じ場所を見分ける（純ロジック）
       ThresholdEstimator   分布から閾値を決める判別分析（純ロジック）
       QualityFilter        寄与しない写真の除外（純ロジック）
       PhotoGrouping        証拠の合算 → グループと隣接（純ロジック）

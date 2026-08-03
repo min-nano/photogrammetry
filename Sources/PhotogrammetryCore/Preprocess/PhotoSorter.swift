@@ -112,7 +112,11 @@ public struct PhotoSorter: Sendable
 		progress(.note("写真 \(files.count) 枚を解析します…"))
 
 		// --- 解析（時間の大半はここ） ---
-		let inspected = readAll(files, cancellation: cancellation, progress: progress)
+		let inspected = readAll(
+			files,
+			options: request.inspectionOptions,
+			cancellation: cancellation,
+			progress: progress)
 		try checkCancellation()
 		if !inspected.unreadable.isEmpty
 		{
@@ -196,6 +200,7 @@ public struct PhotoSorter: Sendable
 	/// 大半を占めるため。
 	func readAll(
 		_ files: [PhotoFile],
+		options: PhotoInspectionOptions,
 		cancellation: SortCancellation? = nil,
 		progress: @escaping @Sendable (ReconstructionEvent) -> Void)
 		-> (photos: [PhotoMetadata], unreadable: [String])
@@ -208,6 +213,7 @@ public struct PhotoSorter: Sendable
 		}
 		return reader.readAll(
 			files,
+			options: options,
 			isCancelled: { cancellation?.isCancelled == true })
 		{ done, total in
 			throttle.record(Double(done) / Double(total))
@@ -245,6 +251,9 @@ public struct PhotoSorter: Sendable
 				groupThresholdWasAutomatic: grouping.thresholdWasAutomatic,
 				sharpnessThreshold: quality.sharpnessThreshold,
 				duplicateDistance: request.duplicateDistance,
+				visualEvidence: request.visualEvidence,
+				visualThreshold: grouping.rooms.threshold,
+				visualThresholdWasAutomatic: grouping.rooms.thresholdWasAutomatic,
 				link: request.link),
 			evidence: SortManifest.Evidence(
 				used: grouping.usedEvidence.map(\.rawValue),
@@ -253,8 +262,10 @@ public struct PhotoSorter: Sendable
 				inputCount: inputCount,
 				keptCount: quality.kept.count,
 				groupCount: plan.groups.count,
+				roomCount: grouping.rooms.clusters.count,
 				excludedByReason: byReason,
 				scoreHistogram: grouping.scoreHistogram,
+				visualDistanceHistogram: grouping.rooms.distanceHistogram,
 				sharpnessMedian: quality.sharpnessMedian),
 			groups: plan.groups.map
 			{
@@ -263,6 +274,7 @@ public struct PhotoSorter: Sendable
 					photos: $0.photos,
 					shared: $0.shared,
 					evidence: $0.evidence.map(\.rawValue),
+					rooms: $0.rooms,
 					captureStart: $0.captureStart,
 					captureEnd: $0.captureEnd)
 			},
@@ -273,7 +285,8 @@ public struct PhotoSorter: Sendable
 					b: $0.b,
 					sharedPhotos: $0.sharedPhotos,
 					confidence: $0.confidence,
-					viewpointSpread: $0.viewpointSpread)
+					viewpointSpread: $0.viewpointSpread,
+					sharedRoom: $0.sharedRoom)
 			},
 			excluded: quality.excluded.map
 			{

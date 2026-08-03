@@ -102,6 +102,10 @@ final class SortRequestTests: XCTestCase
 		request = makeRequest()
 		request.groupThreshold = 1.5
 		XCTAssertThrowsError(try request.validate())
+
+		request = makeRequest()
+		request.visualThreshold = -0.1
+		XCTAssertThrowsError(try request.validate())
 	}
 
 	func testErrorDescriptions()
@@ -160,5 +164,23 @@ final class SortRequestTests: XCTestCase
 		XCTAssertEqual(request.qualitySettings.minimumSharpness, 30)
 		XCTAssertEqual(request.qualitySettings.duplicateDistance, 8)
 		XCTAssertEqual(request.plannerSettings.overlap, 7)
+	}
+
+	func testVisualSettingsAreCarriedIntoEachStage()
+	{
+		var request = makeRequest()
+		request.visualThreshold = 0.45
+		XCTAssertEqual(request.groupingSettings.roomClustering.threshold, 0.45)
+		XCTAssertTrue(request.inspectionOptions.featurePrints)
+		XCTAssertEqual(request.groupingSettings.weights[.room], GroupingSettings.defaultWeights[.room])
+
+		// 切ったときは読み取りでも重みでも使わない。
+		request.visualEvidence = false
+		XCTAssertFalse(request.inspectionOptions.featurePrints)
+		XCTAssertEqual(request.groupingSettings.weights[.scene], 0)
+		XCTAssertEqual(request.groupingSettings.weights[.room], 0)
+		// 既存の証拠の重みには手を触れない（フェーズ 1 と同じ配分に戻す）。
+		XCTAssertEqual(
+			request.groupingSettings.weights[.time], GroupingSettings.defaultWeights[.time])
 	}
 }

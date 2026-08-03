@@ -82,6 +82,59 @@ final class SortPlanTests: XCTestCase
 	}
 
 	// -----------------------------------------------------------------
+	// 視覚的に見つけた場所（フェーズ 2）
+	// -----------------------------------------------------------------
+
+	/// 1 つの部屋を 60 枚。上限で 2 グループに割れるが、**場所は 1 つ**。
+	func makeSingleRoomGrouping() -> GroupingResult
+	{
+		var settings = GroupingSettings()
+		settings.maxPerGroup = 30
+		settings.minPerGroup = 10
+		let photos = (0 ..< 60).map
+		{ index in
+			SamplePhoto.make(
+				index: index + 1,
+				secondsFromEpoch: Double(index) * 3,
+				hash: 0x0F0F_0F0F_0F0F_0F0F,
+				featurePrint: SamplePhoto.featurePrint(room: 0, step: index))
+		}
+		return PhotoGrouping.group(photos: photos, settings: settings)
+	}
+
+	func testSharedRoomIsRecordedWhenBothGroupsSeeTheSamePlace()
+	{
+		let grouping = makeSingleRoomGrouping()
+		XCTAssertEqual(grouping.rooms.clusters.count, 1)
+		XCTAssertEqual(grouping.groups.count, 2)
+
+		let plan = SortPlanner.plan(grouping: grouping)
+		// **合成では最も信頼できる繋ぎ目。** 同じ場所を写しているグループ同士だと
+		// 分かっていれば、対応点が期待できる。
+		XCTAssertEqual(plan.adjacency.first?.sharedRoom, "room-01")
+		for group in plan.groups
+		{
+			XCTAssertEqual(group.rooms, ["room-01"])
+		}
+	}
+
+	func testDifferentPlacesHaveNoSharedRoom()
+	{
+		let photos = (0 ..< 60).map
+		{ index in
+			SamplePhoto.make(
+				index: index + 1,
+				secondsFromEpoch: Double(index) * 3,
+				hash: 0x0F0F_0F0F_0F0F_0F0F,
+				featurePrint: SamplePhoto.featurePrint(room: index < 30 ? 0 : 6, step: index % 30))
+		}
+		let grouping = PhotoGrouping.group(photos: photos)
+		let plan = SortPlanner.plan(grouping: grouping)
+		XCTAssertEqual(plan.groups.map(\.rooms), [["room-01"], ["room-02"]])
+		XCTAssertNil(plan.adjacency.first?.sharedRoom)
+	}
+
+	// -----------------------------------------------------------------
 	// 視点の散らばり（共線退化の予防）
 	// -----------------------------------------------------------------
 
@@ -117,6 +170,26 @@ final class SortPlanTests: XCTestCase
 				SamplePhoto.make(index: 1, heading: 0, hash: 7),
 				SamplePhoto.make(index: 2, heading: 1, hash: 7),
 			])
+		XCTAssertNotNil(scattered)
+		XCTAssertNotNil(identical)
+		XCTAssertGreaterThan(scattered ?? 0, identical ?? 1)
+		XCTAssertLessThan(identical ?? 1, SortDiagnostics.minimumViewpointSpread)
+	}
+
+	func testViewpointSpreadCanBeJudgedFromFeaturePrintsAlone()
+	{
+		// 方位も知覚ハッシュも無い写真（EXIF が剥がれている）。視覚特徴だけでも
+		// 「立ち位置を変えたか」は言える。
+		let photos = [
+			SamplePhoto.make(index: 1, hash: nil, featurePrint: SamplePhoto.featurePrint(room: 0, step: 0)),
+			SamplePhoto.make(index: 2, hash: nil, featurePrint: SamplePhoto.featurePrint(room: 0, step: 40)),
+		]
+		let close = [
+			SamplePhoto.make(index: 3, hash: nil, featurePrint: SamplePhoto.featurePrint(room: 0, step: 0)),
+			SamplePhoto.make(index: 4, hash: nil, featurePrint: SamplePhoto.featurePrint(room: 0, step: 1)),
+		]
+		let scattered = SortPlanner.viewpointSpread(of: [0, 1], photos: photos)
+		let identical = SortPlanner.viewpointSpread(of: [0, 1], photos: close)
 		XCTAssertNotNil(scattered)
 		XCTAssertNotNil(identical)
 		XCTAssertGreaterThan(scattered ?? 0, identical ?? 1)

@@ -93,6 +93,10 @@ jobs:
       #                                scripts/make-sort-samples.swift と
       #                                ci-debug で確認する）。判定そのものは
       #                                ImageStatistics 以降の純ロジックが持つ。
+      #   FeaturePrinter.swift       — Vision 依存。同じ理由で対象外。判定は
+      #                                FeaturePrint / RoomClustering（純ロジック）
+      #                                が持つので、ここに残るのは「Vision の
+      #                                出力を Float の配列にする」だけ。
       # これらを含めると分母が常に薄まり、しきい値が意味を失う
       # （実測: 含めると lines 52% / functions 47%、除外すると lines 93% /
       # functions 78% — 除外後の数字がこのプロジェクトの「純ロジック」の
@@ -108,7 +112,7 @@ jobs:
           EXE="$XCTEST_BUNDLE/Contents/MacOS/$(basename "$XCTEST_BUNDLE" .xctest)"
           test -f "$PROFDATA" || { echo "::error::coverage profile not found at $PROFDATA"; exit 1; }
           test -x "$EXE" || { echo "::error::test binary not found at $EXE"; exit 1; }
-          IGNORE='(\.build/|/Tests/|/PhotogrammetryEngine\.swift$|/UpdaterService\.swift$|/PhotoInspector\.swift$)'
+          IGNORE='(\.build/|/Tests/|/PhotogrammetryEngine\.swift$|/UpdaterService\.swift$|/PhotoInspector\.swift$|/FeaturePrinter\.swift$)'
           xcrun llvm-cov export -format=text -instr-profile="$PROFDATA" -ignore-filename-regex="$IGNORE" "$EXE" \
             > coverage-summary.json
           xcrun llvm-cov export -format=lcov -instr-profile="$PROFDATA" -ignore-filename-regex="$IGNORE" "$EXE" \
@@ -264,8 +268,9 @@ jobs:
                   '`Sources/PhotogrammetryUpdater`\'s pure logic, plus ' +
                   'coverage of only the lines this PR changed (vs. the base ' +
                   'branch). `PhotogrammetryEngine.swift` (RealityKit/GPU), ' +
-                  '`UpdaterService.swift` (network I/O) and ' +
-                  '`PhotoInspector.swift` (ImageIO/CoreGraphics) are ' +
+                  '`UpdaterService.swift` (network I/O), ' +
+                  '`PhotoInspector.swift` (ImageIO/CoreGraphics) and ' +
+                  '`FeaturePrinter.swift` (Vision) are ' +
                   'excluded — CLAUDE.md keeps those out of automated ' +
                   'testing.',
                 '',

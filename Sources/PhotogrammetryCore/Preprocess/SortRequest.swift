@@ -45,6 +45,12 @@ public struct SortRequest: Equatable, Sendable
 	public var minimumSharpness: Double?
 	/// ほぼ同一とみなす知覚ハッシュのハミング距離。
 	public var duplicateDistance: Int
+	/// 視覚解析（Vision の feature print による「同じ場所」の判定）を使うか。
+	/// 既定は true。切ると 1 枚あたりの解析は速くなるが、部屋を行き来しながら
+	/// 撮った写真の仕分けは目に見えて悪くなる。
+	public var visualEvidence: Bool
+	/// 同じ場所とみなす視覚特徴の距離（0.0〜1.0）。nil なら分布から自動決定する。
+	public var visualThreshold: Double?
 	/// ファイルの配置方法。
 	public var link: LinkStrategy
 	/// サブフォルダも走査するか。撮影者が階・部屋で分けている場合、その分けかた
@@ -63,6 +69,8 @@ public struct SortRequest: Equatable, Sendable
 		groupThreshold: Double? = nil,
 		minimumSharpness: Double? = nil,
 		duplicateDistance: Int = 4,
+		visualEvidence: Bool = true,
+		visualThreshold: Double? = nil,
 		link: LinkStrategy = .hardlink,
 		recursive: Bool = true,
 		dryRun: Bool = false)
@@ -76,6 +84,8 @@ public struct SortRequest: Equatable, Sendable
 		self.groupThreshold = groupThreshold
 		self.minimumSharpness = minimumSharpness
 		self.duplicateDistance = duplicateDistance
+		self.visualEvidence = visualEvidence
+		self.visualThreshold = visualThreshold
 		self.link = link
 		self.recursive = recursive
 		self.dryRun = dryRun
@@ -116,6 +126,10 @@ public struct SortRequest: Equatable, Sendable
 		{
 			throw SortRequestError.invalidSetting("groupThreshold", "0.0〜1.0 を指定してください")
 		}
+		if let threshold = visualThreshold, !(0 ... 1).contains(threshold)
+		{
+			throw SortRequestError.invalidSetting("visualThreshold", "0.0〜1.0 を指定してください")
+		}
 		// 出力フォルダの中身を黙って混ぜない。既存の group-NN が残っていると
 		// 前回の仕分け結果と混ざり、どの写真がどのグループのものか分からなくなる。
 		if !dryRun, let contents = try? fileManager.contentsOfDirectory(atPath: outputFolder.path),
@@ -138,6 +152,12 @@ public struct SortRequest: Equatable, Sendable
 			duplicateDistance: duplicateDistance)
 	}
 
+	/// 写真の読み取りで何を測るかへ翻訳する。
+	public var inspectionOptions: PhotoInspectionOptions
+	{
+		PhotoInspectionOptions(featurePrints: visualEvidence)
+	}
+
 	/// グルーピングの設定へ翻訳する。
 	///
 	/// 上限枚数をそのまま渡さないのは、**あとから共有写真が両側へ入るため**。
@@ -149,11 +169,23 @@ public struct SortRequest: Equatable, Sendable
 	{
 		let reserved = maxPerGroup - overlap * 2
 		let effectiveMax = reserved >= max(minPerGroup, 10) ? reserved : maxPerGroup
+		// 視覚解析を切ったときは重みも 0 にする。読み取りで特徴を取らないので
+		// 実際には使われないが、**指示が「使わない」なら、たまたま特徴が付いて
+		// いる写真を渡されても使わない**のが筋（ライブラリとして直接
+		// PhotoGrouping を呼ばれる経路がある）。
+		var weights = GroupingSettings.defaultWeights
+		if !visualEvidence
+		{
+			weights[.scene] = 0
+			weights[.room] = 0
+		}
 		return GroupingSettings(
 			timeGap: timeGap,
+			roomClustering: RoomClustering.Settings(threshold: visualThreshold),
 			maxPerGroup: effectiveMax,
 			minPerGroup: minPerGroup,
-			threshold: groupThreshold)
+			threshold: groupThreshold,
+			weights: weights)
 	}
 
 	/// 仕分け計画の設定へ翻訳する。

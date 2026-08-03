@@ -50,12 +50,28 @@ public struct PhotoFile: Equatable, Sendable
 	}
 }
 
+/// 読み取りで何をどこまで測るか。
+///
+/// Vision の視覚特徴だけは**任意**にしてある。1 枚あたりの推論コストが
+/// デコードと同程度あり、フェーズ 1 相当の動作へ戻す逃げ道（`--no-visual`）を
+/// 残しておきたいため。
+public struct PhotoInspectionOptions: Equatable, Sendable
+{
+	/// Vision の feature print を取るか（「同じ部屋か」の判定に使う）。
+	public var featurePrints: Bool
+
+	public init(featurePrints: Bool = true)
+	{
+		self.featurePrints = featurePrints
+	}
+}
+
 /// 写真からメタデータを読む役。テストで差し替えられるようにプロトコルにして
 /// ある（PhotoSorter は実ファイルを読まずに検証できる）。
 public protocol PhotoMetadataReading: Sendable
 {
 	/// 1 枚読む。
-	func read(_ file: PhotoFile) throws -> PhotoMetadata
+	func read(_ file: PhotoFile, options: PhotoInspectionOptions) throws -> PhotoMetadata
 
 	/// まとめて読む。**並行読みにするかどうかは読み手の都合**なので、呼び出し側
 	/// （PhotoSorter）が実装の種類で分岐しなくて済むようにここに置く。
@@ -66,6 +82,7 @@ public protocol PhotoMetadataReading: Sendable
 	/// - Returns: 読めた写真と、読めなかったファイルの相対パス。
 	func readAll(
 		_ files: [PhotoFile],
+		options: PhotoInspectionOptions,
 		isCancelled: @Sendable () -> Bool,
 		progress: @Sendable (Int, Int) -> Void)
 		-> (photos: [PhotoMetadata], unreadable: [String])
@@ -77,6 +94,7 @@ public extension PhotoMetadataReading
 	/// デコードする PhotoInspector だけなので、そちらで差し替える。
 	func readAll(
 		_ files: [PhotoFile],
+		options: PhotoInspectionOptions,
 		isCancelled: @Sendable () -> Bool,
 		progress: @Sendable (Int, Int) -> Void)
 		-> (photos: [PhotoMetadata], unreadable: [String])
@@ -89,7 +107,7 @@ public extension PhotoMetadataReading
 			{
 				break
 			}
-			if let metadata = try? read(file)
+			if let metadata = try? read(file, options: options)
 			{
 				photos.append(metadata)
 			}
@@ -106,17 +124,21 @@ public extension PhotoMetadataReading
 
 public struct PhotoInspector: PhotoMetadataReading, Sendable
 {
-	/// 解析に使う縮小画像の最大辺（画素）。品質指標と知覚ハッシュはこの縮小
-	/// 画像から求める。原寸で計算しても判定は変わらないうえ、数千枚では
-	/// 時間が桁で変わるため。
+	/// 解析に使う縮小画像の最大辺（画素）。品質指標・知覚ハッシュ・視覚特徴は
+	/// すべてこの 1 枚から求める。原寸で計算しても判定は変わらないうえ、
+	/// 数千枚では時間が桁で変わるため。**縮小を 1 回で済ませる**のも要点で、
+	/// Vision 用にもう一度デコードするとそれだけで所要時間が倍になる。
 	public var thumbnailSize: Int
+	/// 視覚特徴を取る役（Vision）。Vision の型はこの向こうへ出ない。
+	public var featurePrinter: ImageFeaturePrinting
 
-	public init(thumbnailSize: Int = 256)
+	public init(thumbnailSize: Int = 256, featurePrinter: ImageFeaturePrinting = FeaturePrinter())
 	{
 		self.thumbnailSize = thumbnailSize
+		self.featurePrinter = featurePrinter
 	}
 
-	public func read(_ file: PhotoFile) throws -> PhotoMetadata
+	public func read(_ file: PhotoFile, options: PhotoInspectionOptions) throws -> PhotoMetadata
 	{
 		guard let source = CGImageSourceCreateWithURL(file.url as CFURL, nil),
 			CGImageSourceGetCount(source) > 0
@@ -148,17 +170,24 @@ public struct PhotoInspector: PhotoMetadataReading, Sendable
 			sequenceNumber: PhotoMetadata.sequenceNumber(
 				fromName: (file.relativePath as NSString).lastPathComponent))
 
-		if let gray = grayscale(source: source)
+		if let image = thumbnail(source: source)
 		{
-			let profile = ImageStatistics.luminanceProfile(gray: gray.pixels)
-			metadata.quality = PhotoQuality(
-				sharpness: ImageStatistics.laplacianVariance(
-					gray: gray.pixels, width: gray.width, height: gray.height),
-				clippedHighlights: profile.clippedHighlights,
-				clippedShadows: profile.clippedShadows,
-				meanLuminance: profile.mean)
-			metadata.fingerprint = ImageStatistics.differenceHash(
-				gray: gray.pixels, width: gray.width, height: gray.height)
+			if let gray = grayscale(image: image)
+			{
+				let profile = ImageStatistics.luminanceProfile(gray: gray.pixels)
+				metadata.quality = PhotoQuality(
+					sharpness: ImageStatistics.laplacianVariance(
+						gray: gray.pixels, width: gray.width, height: gray.height),
+					clippedHighlights: profile.clippedHighlights,
+					clippedShadows: profile.clippedShadows,
+					meanLuminance: profile.mean)
+				metadata.fingerprint = ImageStatistics.differenceHash(
+					gray: gray.pixels, width: gray.width, height: gray.height)
+			}
+			if options.featurePrints
+			{
+				metadata.featurePrint = featurePrinter.featurePrint(of: image)
+			}
 		}
 		return metadata
 	}
@@ -167,6 +196,7 @@ public struct PhotoInspector: PhotoMetadataReading, Sendable
 	/// 待ち時間が実用外になる（デコードが支配的なのでコア数だけ効く）。
 	public func readAll(
 		_ files: [PhotoFile],
+		options: PhotoInspectionOptions,
 		isCancelled: @Sendable () -> Bool,
 		progress: @Sendable (Int, Int) -> Void)
 		-> (photos: [PhotoMetadata], unreadable: [String])
@@ -188,7 +218,7 @@ public struct PhotoInspector: PhotoMetadataReading, Sendable
 			}
 			let file = files[index]
 			let done: Int
-			if let metadata = try? inspector.read(file)
+			if let metadata = try? inspector.read(file, options: options)
 			{
 				done = collector.add(metadata)
 			}
@@ -386,20 +416,25 @@ public struct PhotoInspector: PhotoMetadataReading, Sendable
 	// 画素
 	// -----------------------------------------------------------------
 
-	/// 縮小したグレースケール画素を取り出す。回転（Orientation）は ImageIO に
-	/// 正規化させる — 縦位置で撮った写真の指紋が横位置と食い違わないようにするため。
-	func grayscale(source: CGImageSource) -> (pixels: [UInt8], width: Int, height: Int)?
+	/// 解析用の縮小画像。回転（Orientation）は ImageIO に正規化させる — 縦位置で
+	/// 撮った写真の指紋・視覚特徴が横位置と食い違わないようにするため。
+	///
+	/// **品質指標も知覚ハッシュも視覚特徴もこの 1 枚から作る。** Vision 用に
+	/// 原寸を渡しても「同じ部屋か」の判定は変わらない一方、デコードの回数は
+	/// そのまま所要時間になる（数千枚を扱う前提）。
+	func thumbnail(source: CGImageSource) -> CGImage?
 	{
 		let options: [CFString: Any] = [
 			kCGImageSourceCreateThumbnailFromImageAlways: true,
 			kCGImageSourceCreateThumbnailWithTransform: true,
 			kCGImageSourceThumbnailMaxPixelSize: thumbnailSize,
 		]
-		guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
-		else
-		{
-			return nil
-		}
+		return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+	}
+
+	/// 縮小画像からグレースケール画素を取り出す。
+	func grayscale(image: CGImage) -> (pixels: [UInt8], width: Int, height: Int)?
+	{
 		let width = image.width
 		let height = image.height
 		guard width > 0, height > 0,

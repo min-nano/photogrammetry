@@ -25,23 +25,29 @@ final class SortManifestTests: XCTestCase
 				groupThresholdWasAutomatic: true,
 				sharpnessThreshold: 12.5,
 				duplicateDistance: 4,
+				visualEvidence: true,
+				visualThreshold: 0.38,
+				visualThresholdWasAutomatic: true,
 				link: .hardlink),
 			evidence: SortManifest.Evidence(
-				used: ["time", "visual"],
-				coverage: ["time": 1.0, "gps": 0.0]),
+				used: ["time", "visual", "scene", "room"],
+				coverage: ["time": 1.0, "gps": 0.0, "scene": 1.0]),
 			statistics: SortManifest.Statistics(
 				inputCount: 812,
 				keptCount: 770,
 				groupCount: 8,
+				roomCount: 5,
 				excludedByReason: ["blur": 30, "duplicate": 12],
 				scoreHistogram: [1, 2, 3],
+				visualDistanceHistogram: [4, 5, 6],
 				sharpnessMedian: 40),
 			groups: [
 				SortManifest.Group(
 					id: "group-01",
 					photos: ["IMG_0001.HEIC", "IMG_0118.HEIC"],
 					shared: ["IMG_0118.HEIC"],
-					evidence: ["time", "visual"],
+					evidence: ["time", "visual", "scene", "room"],
+					rooms: ["room-01", "room-02"],
 					captureStart: Date(timeIntervalSince1970: 1_700_000_100),
 					captureEnd: Date(timeIntervalSince1970: 1_700_000_200)),
 			],
@@ -51,7 +57,8 @@ final class SortManifestTests: XCTestCase
 					b: "group-02",
 					sharedPhotos: ["IMG_0118.HEIC"],
 					confidence: 0.82,
-					viewpointSpread: 0.31),
+					viewpointSpread: 0.31,
+					sharedRoom: "room-02"),
 			],
 			excluded: [
 				SortManifest.Excluded(photo: "IMG_0044.HEIC", reason: .blur, score: 0.12),
@@ -72,7 +79,8 @@ final class SortManifestTests: XCTestCase
 	func testVersionIsRecorded()
 	{
 		XCTAssertEqual(makeManifest().version, SortManifest.currentVersion)
-		XCTAssertEqual(SortManifest.currentVersion, 1)
+		// 2 = フェーズ 2（視覚クラスタを足したときに上げた）。
+		XCTAssertEqual(SortManifest.currentVersion, 2)
 	}
 
 	func testJSONKeysAreStable() throws
@@ -83,6 +91,9 @@ final class SortManifestTests: XCTestCase
 			"\"version\"", "\"source\"", "\"settings\"", "\"groups\"", "\"adjacency\"",
 			"\"excluded\"", "\"unassigned\"", "\"diagnostics\"", "\"sharedPhotos\"",
 			"\"confidence\"", "\"viewpointSpread\"", "\"overlap\"", "\"evidence\"",
+			// フェーズ 2。merge は「どのグループが同じ場所を写しているか」を
+			// ここから読む（時刻が離れていても成立する繋ぎ目）。
+			"\"rooms\"", "\"sharedRoom\"", "\"roomCount\"", "\"visualThreshold\"",
 		]
 		{
 			XCTAssertTrue(json.contains(key), "\(key) が manifest にありません")
@@ -97,11 +108,13 @@ final class SortManifestTests: XCTestCase
 		manifest.settings.sharpnessThreshold = nil
 		manifest.statistics.sharpnessMedian = nil
 		manifest.adjacency[0].viewpointSpread = nil
+		manifest.adjacency[0].sharedRoom = nil
 		manifest.groups[0].captureStart = nil
 		manifest.groups[0].captureEnd = nil
 		let restored = try SortManifest.decoded(from: manifest.encoded())
 		XCTAssertEqual(restored, manifest)
 		XCTAssertNil(restored.adjacency[0].viewpointSpread)
+		XCTAssertNil(restored.adjacency[0].sharedRoom)
 	}
 
 	func testFileName()
