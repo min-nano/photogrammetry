@@ -285,7 +285,7 @@ final class Collector: @unchecked Sendable
 }
 
 /// Vision の観測結果を Float の配列へ広げる（FeaturePrinter.elements と同じ）。
-func elements(of observation: VNFeaturePrintObservation) -> [Float]?
+@Sendable func elements(of observation: VNFeaturePrintObservation) -> [Float]?
 {
 	let count = observation.elementCount
 	guard count > 0
@@ -727,11 +727,29 @@ func format(_ value: Double, _ digits: Int = 3) -> String
 	value.isNaN ? "—" : String(format: "%.\(digits)f", value)
 }
 
+/// 端末上の表示幅。**全角は 2 桁**として数える。`String.count` で詰めると
+/// 見出しだけ半分の幅になって表が崩れる（実際に崩れた）。
+func displayWidth(_ text: String) -> Int
+{
+	text.unicodeScalars.reduce(0)
+	{ total, scalar in
+		switch scalar.value
+		{
+			case 0x1100 ... 0x115F, 0x2E80 ... 0xA4CF, 0xAC00 ... 0xD7A3,
+				0xF900 ... 0xFAFF, 0xFE30 ... 0xFE4F, 0xFF00 ... 0xFF60, 0xFFE0 ... 0xFFE6:
+				return total + 2
+			default:
+				return total + 1
+		}
+	}
+}
+
 /// 右詰めで桁を揃える。`String(format:)` の `%N@` は Darwin では幅指定が効かず、
 /// 表が崩れる（実際に崩れたので自前で詰める）。
 func pad(_ text: String, _ width: Int) -> String
 {
-	text.count >= width ? text : String(repeating: " ", count: width - text.count) + text
+	let current = displayWidth(text)
+	return current >= width ? text : String(repeating: " ", count: width - current) + text
 }
 
 let randomMedian = median(randomDistances)
