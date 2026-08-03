@@ -1500,10 +1500,17 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 
 		while inside.count < capacity, let candidate = best()
 		{
-			// **支持数 1 は「1 本の辺でぶら下がっているだけ」＝ワームホール。**
-			// そこを越えないのが支持成長の要点なので、それしか残っていなければ
-			// **そこが自然な境界**と見て止める。枠を埋めるために弱い繋がりを
-			// 引き込まない（孤立した区画は小さい窓のままでよい）。
+			// **支持数 1 の候補しか残っていない ＝ 密な近傍を食べ尽くした**という
+			// 状態。その 1 本が本物の細い繋がりか空似かは**区別できない**ので、
+			// 容量をそこへ使わずに止める。
+			//
+			// **「支持数 1 ＝ ワームホール」ではない。** 合成グラフで測った
+			// ところ、かたまりの空似は支持数 4〜5 で入ってくる（孤立した空似は
+			// 支持数 1 のまま入れず、混入 0 になる）。支持数の順序が保証するのは
+			// 「より強い本物の前線がある限りワームホールは勝てない」ことだけ。
+			//
+			// ここで止めると本物の細い繋がりを切る恐れがあるので、**切った先とは
+			// あとで繋ぎ目の写真を共有する**（下の「細い繋ぎ目の補修」）。
 			if candidate.support < 2, inside.count >= minimumWindow
 			{
 				break
@@ -1656,6 +1663,59 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		return volume > 0 ? Double(cut) / Double(volume) : 0
 	}
 
+	// --- 細い繋ぎ目の補修 ---
+	//
+	// **グラフ上では接しているのに写真を 1 枚も共有していない窓の対**を探し、
+	// 繋ぎ目の写真を両側へ少しだけ入れる。成長を支持数 1 で止めているので、
+	// 本物の細い繋がり（廊下の突き当たりなど）はここで切れている。共有写真が
+	// 無いと合成のポーズグラフが繋がらない — §1.2 でいう「分断」のいちばん
+	// 高くつく形なので、必ず塞ぐ。
+	//
+	// 空似だった場合のコストは「数枚の混入」と「merge の RANSAC が落とす偽の
+	// 隣接」だけで、どちらに転んでも安い側に倒れる。
+	var sets = windows.map { Set($0) }
+	var repairedPairs = 0
+	let linkCollar = max(4, minimumWindow / 2)
+	for left in 0 ..< windows.count
+	{
+		for right in (left + 1) ..< windows.count
+			where sets[left].intersection(sets[right]).isEmpty
+		{
+			// 2 つの窓をまたぐ辺の端点を、またぐ本数の多い順に採る。
+			var fromRight: [Int: Int] = [:]
+			var fromLeft: [Int: Int] = [:]
+			for node in windows[left]
+			{
+				for next in graph[node] where sets[right].contains(next)
+				{
+					fromRight[next, default: 0] += 1
+					fromLeft[node, default: 0] += 1
+				}
+			}
+			guard !fromRight.isEmpty
+			else
+			{
+				continue
+			}
+			func pick(_ counts: [Int: Int]) -> [Int]
+			{
+				counts.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+					.prefix(linkCollar).map(\.key)
+			}
+			for node in pick(fromRight)
+			{
+				windows[left].append(node)
+				sets[left].insert(node)
+			}
+			for node in pick(fromLeft)
+			{
+				windows[right].append(node)
+				sets[right].insert(node)
+			}
+			repairedPairs += 1
+		}
+	}
+
 	// --- 書き出し ---
 	let directory = URL(fileURLWithPath: windowDirectory, isDirectory: true)
 	try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1679,8 +1739,8 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	print("  次数 0（どこにも繋がらない写真）: \(isolated) 枚"
 		+ "  平均次数 \(String(format: "%.1f", Double(2 * edgesAfter) / Double(max(1, total))))")
 	print("  窓 \(windows.count) 個（小さすぎて解体し、最も近い窓へ入れた写真 \(strayCount) 枚）")
+	print("  細い繋ぎ目の補修: \(repairedPairs) 対（接しているのに共有ゼロだった窓の対）")
 	// 窓どうしの重なり（**枠で強制せず、ぶつかったところに自然にできたもの**）。
-	var sets = windows.map { Set($0) }
 	var maximumShared = [Int](repeating: 0, count: windows.count)
 	for left in 0 ..< windows.count
 	{
