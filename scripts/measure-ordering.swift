@@ -1409,26 +1409,57 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 
 	// --- 支持成長（設計 §3.1）---
 	var covered = [Bool](repeating: false, count: total)
+	/// これ未満の窓は解体して最も近い窓へ入れる。成長の下限でもある。
+	let minimumWindow = max(10, capacity / 10)
 
-	/// まだ覆われていない写真のうち、次数が最大のもの。**同数なら添字の小さいほう**
-	/// （設計 §3.1.1-(1)。乱数を使わず、同じ入力からは同じ窓を作る）。
+	/// 次の種。**既に覆われた領域からグラフ上で最も遠い写真**を選ぶ（最遠点
+	/// サンプリング）。
+	///
+	/// 種を「未被覆で次数最大」にしていたときは、覆い終わったあとに残った
+	/// 孤立気味の写真を種にするたびに既存の写真ばかりの窓ができ、実データで
+	/// 窓が 57 個になった。**遠いところから順に取れば、窓は自然に散らばり、
+	/// 重なりは窓どうしがぶつかったところにだけできる。**
+	///
+	/// 最遠点サンプリングは施設配置問題の標準的な貪欲法で、「最も近い種までの
+	/// 距離」の最大値を最適の 2 倍以内に抑える保証がある。乱数も要らない。
+	/// **同距離なら添字の小さいほう**（設計 §3.1.1-(1)）。
 	func nextSeed() -> Int?
 	{
-		var best: Int?
-		for index in 0 ..< total where !covered[index]
+		// 覆われた写真すべてを始点にした多重始点の幅優先で、各写真の
+		// 「覆われた領域までの距離」を求める。
+		var distanceToCovered = [Int](repeating: Int.max, count: total)
+		var queue: [Int] = []
+		for index in 0 ..< total where covered[index]
 		{
-			guard let current = best
-			else
+			distanceToCovered[index] = 0
+			queue.append(index)
+		}
+		var head = 0
+		while head < queue.count
+		{
+			let node = queue[head]
+			head += 1
+			for next in graph[node] where distanceToCovered[next] == Int.max
 			{
-				best = index
-				continue
-			}
-			if graph[index].count > graph[current].count
-			{
-				best = index
+				distanceToCovered[next] = distanceToCovered[node] + 1
+				queue.append(next)
 			}
 		}
-		return best
+		var best = -1
+		var bestDistance = -1
+		var bestDegree = -1
+		for index in 0 ..< total where !covered[index]
+		{
+			// 到達できない（別の連結成分）写真は最も遠いものとして扱う。
+			let value = distanceToCovered[index] == Int.max ? Int.max - 1 : distanceToCovered[index]
+			if value > bestDistance || (value == bestDistance && graph[index].count > bestDegree)
+			{
+				best = index
+				bestDistance = value
+				bestDegree = graph[index].count
+			}
+		}
+		return best >= 0 ? best : nil
 	}
 
 	/// 支持数（いまの集合へ何本つながっているか）が多い順に足す。
@@ -1443,23 +1474,20 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	/// 副作用で増えてよいものではない。**
 	func grow(from seed: Int) -> [Int]
 	{
-		let freshTarget = max(1, Int(Double(capacity) * (1 - overlapRatio)))
 		var inside: Set<Int> = [seed]
 		var order = [seed]
-		var fresh = 1
 		var support: [Int: Int] = [:]
 		for node in graph[seed]
 		{
 			support[node, default: 0] += 1
 		}
 
-		/// 支持数が最大の候補。**同数なら添字の小さいほう**（決定的にする）。
-		/// `freshOnly` なら、まだ覆われていない写真だけから選ぶ。
-		func best(freshOnly: Bool) -> Int?
+		/// 支持数が最大の候補と、その支持数。**同数なら添字の小さいほう**。
+		func best() -> (node: Int, support: Int)?
 		{
 			var bestNode = -1
 			var bestSupport = -1
-			for (node, value) in support where !freshOnly || !covered[node]
+			for (node, value) in support
 			{
 				if value > bestSupport || (value == bestSupport && node < bestNode)
 				{
@@ -1467,33 +1495,26 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 					bestSupport = value
 				}
 			}
-			return bestNode >= 0 ? bestNode : nil
+			return bestNode >= 0 ? (bestNode, bestSupport) : nil
 		}
 
-		func add(_ node: Int)
+		while inside.count < capacity, let candidate = best()
 		{
-			support.removeValue(forKey: node)
-			inside.insert(node)
-			order.append(node)
-			if !covered[node]
+			// **支持数 1 は「1 本の辺でぶら下がっているだけ」＝ワームホール。**
+			// そこを越えないのが支持成長の要点なので、それしか残っていなければ
+			// **そこが自然な境界**と見て止める。枠を埋めるために弱い繋がりを
+			// 引き込まない（孤立した区画は小さい窓のままでよい）。
+			if candidate.support < 2, inside.count >= minimumWindow
 			{
-				fresh += 1
+				break
 			}
-			for next in graph[node] where !inside.contains(next)
+			support.removeValue(forKey: candidate.node)
+			inside.insert(candidate.node)
+			order.append(candidate.node)
+			for next in graph[candidate.node] where !inside.contains(next)
 			{
 				support[next, default: 0] += 1
 			}
-		}
-
-		// 段階 1: 新規だけで育てる
-		while fresh < freshTarget, inside.count < capacity, let node = best(freshOnly: true)
-		{
-			add(node)
-		}
-		// 段階 2: 襟（既に覆われた写真）で容量まで埋める
-		while inside.count < capacity, let node = best(freshOnly: false)
-		{
-			add(node)
 		}
 		return order
 	}
@@ -1516,7 +1537,6 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	// 必ず出るので、ここを塞がないと「1 枚の窓」を Object Capture へ投げることに
 	// なる。**最も見た目の近い写真がいる窓へ入れる**（設計 §1.2 のとおり、混ぜる
 	// コストは低い）。
-	let minimumWindow = max(10, capacity / 10)
 	var strays: [Int] = []
 	var kept: [[Int]] = []
 	for window in windows
@@ -1659,7 +1679,20 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	print("  次数 0（どこにも繋がらない写真）: \(isolated) 枚"
 		+ "  平均次数 \(String(format: "%.1f", Double(2 * edgesAfter) / Double(max(1, total))))")
 	print("  窓 \(windows.count) 個（小さすぎて解体し、最も近い窓へ入れた写真 \(strayCount) 枚）")
-	print("  番号  枚数  新規  コンダクタンス  撮影順の中央値  撮影順の広がり  時刻なし")
+	// 窓どうしの重なり（**枠で強制せず、ぶつかったところに自然にできたもの**）。
+	var sets = windows.map { Set($0) }
+	var maximumShared = [Int](repeating: 0, count: windows.count)
+	for left in 0 ..< windows.count
+	{
+		for right in (left + 1) ..< windows.count
+		{
+			let shared = sets[left].intersection(sets[right]).count
+			maximumShared[left] = max(maximumShared[left], shared)
+			maximumShared[right] = max(maximumShared[right], shared)
+		}
+	}
+
+	print("  番号  枚数  重なり  コンダクタンス  撮影順の塊  最大の塊  時刻なし")
 	for (index, window) in windows.enumerated()
 	{
 		let sequence = localOrder(window)
@@ -1671,16 +1704,33 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		let file = directory.appendingPathComponent(String(format: "window-%02d.txt", index + 1))
 		try? lines.joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
 
+		// **撮影順の「塊」の数**。四分位範囲（散らばり）では、別日に同じ場所を
+		// 撮った窓が正しくても大きく出てしまい、混入と区別が付かない。
+		// 「2〜3 個の塊で大半を占める」＝再訪、「細かい塊に散る」＝混入。
 		let positions = window.compactMap { captureIndex[members[$0].relativePath] }.sorted()
-		let fresh = window.filter { multiplicity[$0] == 1 }.count
-		let median = positions.isEmpty ? -1 : positions[positions.count / 2]
-		let spread = positions.count > 4
-			? positions[positions.count * 3 / 4] - positions[positions.count / 4] : 0
+		var runs: [Int] = []
+		var current = 0
+		for (order, value) in positions.enumerated()
+		{
+			if order > 0, value - positions[order - 1] > 10
+			{
+				runs.append(current)
+				current = 0
+			}
+			current += 1
+		}
+		if current > 0
+		{
+			runs.append(current)
+		}
+		let largest = runs.max() ?? 0
+		let share = positions.isEmpty ? 0.0 : Double(largest) / Double(positions.count)
 		print(String(
-			format: "  %4d %5d %5d %13@ %15d %15d %9d",
-			index + 1, window.count, fresh,
+			format: "  %4d %5d %7d %13@ %11d %9@ %8d",
+			index + 1, window.count, maximumShared[index],
 			format(conductance(window), 3) as NSString,
-			median, spread, window.count - positions.count))
+			runs.count, format(share, 2) as NSString,
+			window.count - positions.count))
 	}
 
 	var histogram: [Int: Int] = [:]
@@ -1692,7 +1742,9 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		+ histogram.sorted { $0.key < $1.key }.map { "\($0.key)個×\($0.value)枚" }
 			.joined(separator: " "))
 	print("  → **0 個が 1 枚でもあれば被覆が壊れている**（設計 §3.2）")
-	print("  → 撮影順の広がりは検算用。窓が撮影順のひと続きに近ければ小さくなる")
+	print("  → 撮影順の塊は検算用（窓を作るのには使っていない）。**塊が少なく最大の")
+	print("    塊が大半を占めていれば健全**。別日の再訪でも塊は 2〜3 個で収まる。")
+	print("    細かい塊に散っていたら混入（設計 §9-2 のかたまりの空似）")
 	print("  書き出し先: \(directory.path)")
 }
 
