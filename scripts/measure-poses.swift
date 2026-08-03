@@ -46,6 +46,7 @@
 //                           medium / full ほどメッシュ側が重くなるので、
 //                           reduced で得た倍率は二巡構成に最も不利な値になる）
 //    --subject scene|object 既定 scene（建物・部屋。object マスキングを切る）
+//    --timeout 1800         1 回の実行の上限（秒）。超えたら中断して次へ進む
 //    --list                 添字 → ファイル名の対応を出して終わる。どの写真が
 //                           start=N にあるかを手元で確かめるため（**ファイル名を
 //                           含むので共有向けではない**）
@@ -76,6 +77,10 @@ var sensitivityName = "normal"
 /// 添字とファイル名の対応を出して終わる（`--list`）。**ファイル名を含むので
 /// 手元で見るためのもの**で、共有する出力ではない。
 var listOnly = false
+/// 1 回の実行がこの秒数を超えたらセッションを中断して次へ進む。
+/// **CorePhotogrammetry が返らなくなることがある**ので、測定が止まったまま
+/// 夜を越さないための歯止め（既定 30 分）。
+var timeoutSeconds: TimeInterval = 1800
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -112,12 +117,14 @@ while !arguments.isEmpty
 			sensitivityName = value()
 		case "--list":
 			listOnly = true
+		case "--timeout":
+			timeoutSeconds = Double(value()) ?? timeoutSeconds
 		case "-h", "--help":
 			print("使い方: measure-poses <写真フォルダ> [--counts 100,200] "
 				+ "[--starts 0,400,600] [--mode poses|model|both] "
 				+ "[--ordering unordered|sequential|both] "
 				+ "[--sensitivity normal|high|both] [--detail reduced] "
-				+ "[--subject scene|object] [--list]")
+				+ "[--subject scene|object] [--timeout 1800] [--list]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -354,17 +361,38 @@ func physicalFootprint() -> UInt64
 	return result == KERN_SUCCESS ? UInt64(info.phys_footprint) : 0
 }
 
-/// 処理中のフットプリントの最大値を別スレッドで拾う。
-final class PeakMemory: @unchecked Sendable
+/// 処理中の見張り役。**3 つを 1 本のスレッドでやる。**
+///
+///   1. 物理フットプリントの山を拾う
+///   2. **生きていることを定期的に出す**（1 回の実行が数分無音になるので、
+///      止まっているのか進んでいるのかが分からないという問題が実際に起きた）
+///   3. 時間切れでセッションを中断する（CorePhotogrammetry が返らなくなる
+///      ことがあるので、測定が止まったまま夜を越さないための歯止め）
+final class Monitor: @unchecked Sendable
 {
 	private let lock = NSLock()
 	private var peak: UInt64 = 0
 	private var running = true
+	private var stage = "-"
+	private var fraction = 0.0
+	private let began = Date()
+	private let label: String
+	private let timeout: TimeInterval
+	private let onTimeout: @Sendable () -> Void
+
+	init(label: String, timeout: TimeInterval, onTimeout: @escaping @Sendable () -> Void)
+	{
+		self.label = label
+		self.timeout = timeout
+		self.onTimeout = onTimeout
+	}
 
 	func start()
 	{
 		Thread.detachNewThread
 		{ [self] in
+			var ticks = 0
+			var firedTimeout = false
 			while true
 			{
 				lock.lock()
@@ -373,15 +401,46 @@ final class PeakMemory: @unchecked Sendable
 				{
 					peak = max(peak, physicalFootprint())
 				}
+				let currentStage = stage
+				let currentFraction = fraction
 				lock.unlock()
 				guard keepGoing
 				else
 				{
 					return
 				}
-				Thread.sleep(forTimeInterval: 0.5)
+				let elapsed = Date().timeIntervalSince(began)
+				ticks += 1
+				// 15 秒ごとに 1 行。無音を無くすのが目的なので短くしすぎない。
+				if ticks % 15 == 0
+				{
+					log(String(
+						format: "    … %@ 経過 %.0f 秒 stage=%@ 進捗 %.0f%%",
+						label, elapsed, currentStage, currentFraction * 100))
+				}
+				if !firedTimeout, elapsed > timeout
+				{
+					firedTimeout = true
+					log("    !! \(label) が \(Int(timeout)) 秒を超えたので中断します")
+					onTimeout()
+				}
+				Thread.sleep(forTimeInterval: 1)
 			}
 		}
+	}
+
+	func update(stage newStage: String)
+	{
+		lock.lock()
+		stage = newStage
+		lock.unlock()
+	}
+
+	func update(fraction newFraction: Double)
+	{
+		lock.lock()
+		fraction = newFraction
+		lock.unlock()
 	}
 
 	func stop() -> UInt64
@@ -441,7 +500,6 @@ func measure(
 	mode: Mode, start: Int, count: Int, ordering: String, sensitivity: String) async -> Measurement
 {
 	var measurement = Measurement()
-	let peak = PeakMemory()
 	let began = Date()
 
 	let folder: URL
@@ -478,6 +536,14 @@ func measure(
 	do
 	{
 		let session = try PhotogrammetrySession(input: folder, configuration: configuration)
+		let monitor = Monitor(
+			label: "\(mode.rawValue) start=\(start) count=\(count) \(ordering)/\(sensitivity)",
+			timeout: timeoutSeconds)
+		{
+			// 時間切れ。**返らなくなったセッションを放置しない**
+			// （次の条件へ進めないと、一晩かけて 1 件も測れないことになる）。
+			session.cancel()
+		}
 		var requests: [PhotogrammetrySession.Request] = []
 		switch mode
 		{
@@ -502,17 +568,20 @@ func measure(
 				requests = [.modelFile(url: output, detail: detail)]
 		}
 
-		peak.start()
+		monitor.start()
 		try session.process(requests: requests)
 
 		for try await event in session.outputs
 		{
 			switch event
 			{
+				case .requestProgress(_, let fractionComplete):
+					monitor.update(fraction: fractionComplete)
 				case .requestProgressInfo(_, let info):
 					if let stage = info.processingStage
 					{
 						let name = stageName(stage)
+						monitor.update(stage: name)
 						if measurement.stageStarts.last?.0 != name
 						{
 							measurement.stageStarts.append(
@@ -525,7 +594,14 @@ func measure(
 						measurement.posed = poses.posesBySample.count
 					}
 				case .requestError(_, let error):
+					// **その場で畳む。** 以前はここで記録だけして
+					// processingComplete を待っていたが、要求が失敗したあとに
+					// 完了が来る保証は無く、来なければ永久に待つことになる。
 					measurement.outcome = "error: \(error.localizedDescription)"
+					measurement.elapsed = Date().timeIntervalSince(began)
+					measurement.peakBytes = monitor.stop()
+					session.cancel()
+					return measurement
 				case .skippedSample:
 					measurement.skipped += 1
 				case .invalidSample:
@@ -534,10 +610,15 @@ func measure(
 					measurement.downsampled = true
 				case .processingComplete:
 					measurement.elapsed = Date().timeIntervalSince(began)
-					measurement.peakBytes = peak.stop()
+					measurement.peakBytes = monitor.stop()
 					return measurement
 				case .processingCancelled:
-					measurement.outcome = "cancelled"
+					// 時間切れで中断したときもここへ来る。
+					measurement.outcome = measurement.outcome == "ok"
+						? "timeout(\(Int(timeoutSeconds))s)" : measurement.outcome
+					measurement.elapsed = Date().timeIntervalSince(began)
+					measurement.peakBytes = monitor.stop()
+					return measurement
 				default:
 					break
 			}
@@ -548,7 +629,6 @@ func measure(
 		measurement.outcome = "throw: \(error.localizedDescription)"
 	}
 	measurement.elapsed = Date().timeIntervalSince(began)
-	measurement.peakBytes = peak.stop()
 	return measurement
 }
 
