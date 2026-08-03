@@ -398,6 +398,33 @@ final class SortPlanTests: XCTestCase
 		XCTAssertEqual(selection.rejected, 0)
 	}
 
+	/// 1 組も判定できなかったときは**視覚距離の足切りに戻る**。模様の無い写真
+	/// ばかり、あるいは読めない形式ばかりの現場では確認が答えを出せないので、
+	/// そのままだとフェーズ 2 にあった歯止めまで失って確認前より悪くなる。
+	func testFallsBackToTheDistanceCutoffWhenNothingCanBeJudged()
+	{
+		let photos = [
+			SamplePhoto.make(index: 1, hash: 0x0F, featurePrint: SamplePhoto.featurePrint(room: 0, step: 0)),
+			SamplePhoto.make(index: 2, hash: 0x0F, featurePrint: SamplePhoto.featurePrint(room: 0, step: 1)),
+			SamplePhoto.make(index: 3, hash: 0xF0, featurePrint: SamplePhoto.featurePrint(room: 0, step: 0)),
+			SamplePhoto.make(index: 4, hash: 0xF0, featurePrint: SamplePhoto.featurePrint(room: 6, step: 0)),
+		]
+		let link = GroupLink(
+			a: 0, b: 1, confidence: 0.8,
+			candidates: [PairScore(i: 2, j: 3, score: 0.95), PairScore(i: 0, j: 1, score: 0.30)])
+		let probe = FakeOverlapProbe(overlapping: [], undecided: [1, 2, 3, 4])
+		let selection = SortPlanner.selectSharedPhotos(
+			link: link,
+			photos: photos,
+			sceneBar: 0.2,
+			settings: SortPlanner.Settings(overlap: 4),
+			verifyOverlap: probe.probe)
+		// 遠い組（2〜3）は足切りされたまま。
+		XCTAssertEqual(selection.photos.sorted(), [0, 1])
+		XCTAssertEqual(selection.verified, 0)
+		XCTAssertEqual(selection.rejected, 0)
+	}
+
 	/// 必要な枚数が集まったら確かめるのをやめる。**これがコストの歯止め**で、
 	/// 1 組ごとにデコードと推論が走る以上、全候補を確かめてはいけない。
 	func testVerificationStopsOnceEnoughPhotosAreFound()

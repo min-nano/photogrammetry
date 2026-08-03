@@ -228,12 +228,10 @@ public enum SortPlanner
 		// 共有写真として認める視覚的な距離の上限。**この現場の近傍距離の中央値**を
 		// 使う（絶対値の尺度は現場ごとに違うので、固定値では意味を持たない）。
 		//
-		// **これは「実際に確かめられないとき」の代役**なので、重なりを確かめる
-		// ときは足切りに使わない（順番付けには使う）。距離が遠くても本当に重なって
-		// いる組はあり、確かめられるならそちらが答えになる。足切りを残すと、
-		// 距離の帯が潰れた現場で「近い順に並んだ数組がたまたま全部外れ」→
-		// 隣接が 1 本も作れない、という取りこぼしが起きる。
-		let sceneBar = verifyOverlap == nil && grouping.usedEvidence.contains(.scene)
+		// **これは「実際に確かめられないとき」の代役。** 確認が効く場面では足切りに
+		// 使わず順番付けにだけ使い（距離が遠くても本当に重なっている組はある）、
+		// 1 組も判定できなかったときだけ代役として戻ってくる（selectSharedPhotos）。
+		let sceneBar = grouping.usedEvidence.contains(.scene)
 			? grouping.rooms.medianNeighborDistance
 			: nil
 
@@ -337,21 +335,26 @@ public enum SortPlanner
 		{
 			return SharedSelection()
 		}
-		let ranked = rankedCandidates(link: link, photos: photos, sceneBar: sceneBar)
 		var result = SharedSelection()
-		let candidates: [PairScore]
+		var candidates = rankedCandidates(link: link, photos: photos, sceneBar: sceneBar)
 		if let verifyOverlap
 		{
+			// 確かめられるなら距離で足切りしない（順番付けにだけ使う）。遠くても
+			// 本当に重なっている組はあり、確かめられるならそちらが答えになる。
+			let ranked = rankedCandidates(link: link, photos: photos, sceneBar: nil)
 			let verification = verifiedCandidates(
 				ranked: ranked, photos: photos, settings: settings, verifyOverlap: verifyOverlap)
-			candidates = verification.candidates
 			result.verified = verification.verified
 			result.rejected = verification.rejected
 			result.undecided = verification.undecided
-		}
-		else
-		{
-			candidates = ranked
+			// **1 組も判定できなかったときは代役に戻る。** 模様の無い写真ばかり、
+			// あるいは読めない形式ばかりの現場では確認が答えを出せない。そのまま
+			// 「足切り無しの順番」を使うと、フェーズ 2 にあった歯止め（視覚距離の
+			// 足切り）まで失って**確認前より悪くなる**。
+			if verification.verified > 0 || verification.rejected > 0
+			{
+				candidates = verification.candidates
+			}
 		}
 		result.photos = select(from: candidates, photos: photos, settings: settings)
 		return result
