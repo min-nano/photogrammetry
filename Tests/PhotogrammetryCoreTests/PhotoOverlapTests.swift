@@ -188,7 +188,7 @@ final class PhotoOverlapTests: XCTestCase
 		let base = makeImage()
 		let other = makeImage()
 		let overlap = OverlapMeasurement.measure(
-			base: base, other: other, transform: .translation(x: -478, y: 0))
+			base: base, other: other, transform: .translation(x: -474, y: 0))
 		XCTAssertEqual(overlap?.agreement ?? 1, 0)
 		XCTAssertGreaterThan(overlap?.sharedArea ?? 0, 0)
 		XCTAssertLessThan(overlap?.sharedArea ?? 1, 0.05)

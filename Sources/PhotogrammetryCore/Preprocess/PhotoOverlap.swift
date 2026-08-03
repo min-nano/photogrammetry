@@ -424,11 +424,16 @@ public enum OverlapMeasurement
 					radius: radius)
 				else
 				{
-					// 相手側が真っ平ら／範囲外。同上。
+					// 相手側が真っ平ら／範囲外で、相関そのものが計算できなかった。
+					// **この組の判定材料にならない**ので数えない。
 					continue
 				}
+				// **模様のあるブロックが「対応先を見つけられなかった」のは判定。**
+				// 一致しなかった／一致が曖昧だった、はどちらも「重なっていない」側の
+				// 証拠なので、判定に使えたブロックとして数える（数えないと、無関係な
+				// 2 枚が「判定できなかった」になって拒否の根拠を失う）。
 				evaluated += 1
-				if best.agreement >= minimumBlockAgreement
+				if best.distinct, best.agreement >= minimumBlockAgreement
 				{
 					offsets[row * gridColumns + column] = (best.x, best.y)
 				}
@@ -507,7 +512,7 @@ public enum OverlapMeasurement
 		values: [Double],
 		targets: [(x: Double, y: Double)],
 		other: GrayImage,
-		radius: Int) -> (x: Int, y: Int, agreement: Double)?
+		radius: Int) -> (x: Int, y: Int, agreement: Double, distinct: Bool)?
 	{
 		// 粗い探索の答えは全部覚えておく。**最良のずれだけでなく「離れた別の
 		// ずれがどれだけ合ったか」も要る**（曖昧な一致を落とすため）。
@@ -536,6 +541,8 @@ public enum OverlapMeasurement
 
 		// **離れた別のずれでも同じくらい合うなら、その一致は「そこだけ」で起きて
 		// いない。** 大きな平らな面はどこでも合うので、これで落ちる。
+		// **ただし「判定できなかった」にはしない** — 対応先を絞れないこと自体が
+		// 「重なっていない」側の証拠なので、曖昧という印を付けて返す。
 		let separation = max(4.0, Double(radius) * peakSeparation)
 		let rival = coarseScores.filter
 		{
@@ -543,12 +550,9 @@ public enum OverlapMeasurement
 			let dy = Double($0.y - coarse.y)
 			return (dx * dx + dy * dy).squareRoot() > separation
 		}.map(\.agreement).max()
-		if let rival, coarse.agreement - rival < minimumPeakMargin
-		{
-			return nil
-		}
+		let distinct = (rival.map { coarse.agreement - $0 } ?? 1) >= minimumPeakMargin
 
-		var best = coarse
+		var best = (x: coarse.x, y: coarse.y, agreement: coarse.agreement, distinct: distinct)
 		for dx in (coarse.x - refineRadius) ... (coarse.x + refineRadius)
 		{
 			for dy in (coarse.y - refineRadius) ... (coarse.y + refineRadius)
@@ -560,7 +564,7 @@ public enum OverlapMeasurement
 				{
 					continue
 				}
-				best = (dx, dy, score)
+				best = (dx, dy, score, distinct)
 			}
 		}
 		return best
