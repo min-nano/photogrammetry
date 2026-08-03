@@ -320,6 +320,30 @@ final class SortDiagnosticsTests: XCTestCase
 		XCTAssertFalse(codes(diagnostics).contains("roomSplitWithoutLink"))
 	}
 
+	func testRoomsFoundButNotUsedIsReported()
+	{
+		// **場所を見つけたのに使わなかった**ときは必ず言う。黙って捨てると
+		// 「なぜ屋外と室内が同じグループなのか」が誰にも分からなくなる。
+		let grouping = manualGrouping(
+			groups: [Array(0 ..< 20)],
+			labels: (0 ..< 20).map { $0 < 19 ? 0 : 1 },
+			usedEvidence: [.time, .scene])
+		let plan = SortPlan(groups: [group("group-01", count: 20)], adjacency: [], unassigned: [])
+		let diagnostics = evaluate(plan: plan, grouping: grouping)
+		let message = diagnostics.first { $0.code == "roomsNotDiscriminating" }?.message ?? ""
+		XCTAssertTrue(message.contains("95%"), message)
+		XCTAssertTrue(message.contains("--visual-threshold"), message)
+		XCTAssertEqual(
+			diagnostics.first { $0.code == "roomsNotDiscriminating" }?.severity, .warning)
+
+		// きちんと使えているときは出さない。
+		let fine = manualGrouping(
+			groups: [Array(0 ..< 20)],
+			labels: (0 ..< 20).map { $0 < 10 ? 0 : 1 })
+		XCTAssertFalse(codes(evaluate(plan: plan, grouping: fine))
+			.contains("roomsNotDiscriminating"))
+	}
+
 	func testSingleRoomIsReported()
 	{
 		let grouping = manualGrouping(

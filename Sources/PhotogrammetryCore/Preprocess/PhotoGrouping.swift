@@ -116,6 +116,10 @@ public struct GroupingSettings: Equatable, Sendable
 	public var maxLinksPerGroup: Int
 	/// 証拠として採用するのに必要な「その項目を持つ写真の割合」。
 	public var minimumEvidenceCoverage: Double
+	/// 1 つの場所が写真全体のこの割合を超えて占めるなら、場所の判定は証拠に
+	/// 使わない。**全ペアで「同じ」になる証拠は何も区別しない**うえ、重みのぶん
+	/// だけ他の証拠を薄めるため（フォルダが 1 つのときと同じ扱い）。
+	public var maximumRoomDominance: Double
 	/// 証拠ごとの重み。
 	public var weights: [EvidenceKind: Double]
 
@@ -161,6 +165,7 @@ public struct GroupingSettings: Equatable, Sendable
 		visualNeighbors: Int = 12,
 		maxLinksPerGroup: Int = 4,
 		minimumEvidenceCoverage: Double = 0.5,
+		maximumRoomDominance: Double = 0.9,
 		weights: [EvidenceKind: Double] = defaultWeights)
 	{
 		self.timeGap = timeGap
@@ -180,6 +185,7 @@ public struct GroupingSettings: Equatable, Sendable
 		self.visualNeighbors = visualNeighbors
 		self.maxLinksPerGroup = maxLinksPerGroup
 		self.minimumEvidenceCoverage = minimumEvidenceCoverage
+		self.maximumRoomDominance = maximumRoomDominance
 		self.weights = weights
 	}
 }
@@ -438,10 +444,34 @@ public enum PhotoGrouping
 			.exposure: Double(photos.filter { $0.exposureValue != nil }.count) / count,
 			.visual: Double(photos.filter { $0.fingerprint != nil }.count) / count,
 			.scene: Double(photos.filter { $0.featurePrint != nil }.count) / count,
-			// 場所が 1 つしか見つからなければ、フォルダと同じで何も区別しない
-			// 証拠になる（全ペアで 1 になるだけ）。
-			.room: rooms.clusters.count > 1 ? rooms.coverage : 0,
+			.room: roomCoverage(rooms: rooms, settings: settings),
 		]
+	}
+
+	/// 場所の判定を証拠として使えるか。使えるならその割合、使えないなら 0。
+	///
+	/// **見つかった場所が 1 つ、あるいはほぼ全部が 1 か所にまとまってしまった
+	/// ときは使わない。** フォルダが 1 つのときとまったく同じ理屈で、全ペアが
+	/// 「同じ」になる証拠は何も区別しないどころか、重みのぶんだけ他の証拠を
+	/// 薄める。実データ（1424 枚・屋外と屋内）で 97% が 1 か所にまとまり、
+	/// **屋外と室内が同じグループに入る**原因になっていた — 時刻や露出で
+	/// 分かれるはずのペアが、この証拠の重みで閾値を超えてしまうため。
+	static func roomCoverage(rooms: RoomClusteringResult, settings: GroupingSettings) -> Double
+	{
+		guard rooms.clusters.count > 1
+		else
+		{
+			return 0
+		}
+		let labelled = rooms.clusters.reduce(0) { $0 + $1.members.count }
+		let largest = rooms.clusters.reduce(0) { max($0, $1.members.count) }
+		guard labelled > 0,
+			Double(largest) / Double(labelled) <= settings.maximumRoomDominance
+		else
+		{
+			return 0
+		}
+		return rooms.coverage
 	}
 
 	/// 実際に使う証拠を決める。半分以上の写真が持っていない項目は、あるペアと

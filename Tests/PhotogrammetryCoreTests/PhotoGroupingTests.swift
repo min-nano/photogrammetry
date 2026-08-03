@@ -308,6 +308,43 @@ final class PhotoGroupingTests: XCTestCase
 		XCTAssertFalse(single.usedEvidence.contains(.room))
 	}
 
+	func testRoomEvidenceIsIgnoredWhenOnePlaceDominates()
+	{
+		// **実データで起きた形。** 1424 枚の現場で 97% が 1 か所にまとまり、
+		// 「同じ場所」が全ペアで成り立った。区別に寄与しないのに重みは最大なので、
+		// 時刻や露出で分かれるはずの屋外↔室内のペアまで繋いでしまう。
+		// フォルダが 1 つのときと同じ扱いにする。
+		func rooms(_ sizes: [Int]) -> RoomClusteringResult
+		{
+			var labels: [Int?] = []
+			var clusters: [RoomCluster] = []
+			for (label, size) in sizes.enumerated()
+			{
+				let start = labels.count
+				labels.append(contentsOf: [Int?](repeating: label, count: size))
+				clusters.append(RoomCluster(
+					id: RoomClustering.identifier(label),
+					members: Array(start ..< labels.count)))
+			}
+			return RoomClusteringResult(
+				clusters: clusters,
+				labels: labels,
+				neighbors: [],
+				threshold: 0.3,
+				thresholdWasAutomatic: true,
+				separability: 0.5,
+				distanceHistogram: [],
+				coverage: 1)
+		}
+		let settings = GroupingSettings()
+		// 95% が 1 か所 → 使わない。
+		XCTAssertEqual(PhotoGrouping.roomCoverage(rooms: rooms([95, 5]), settings: settings), 0)
+		// 場所が 1 つしかない → 使わない（従来どおり）。
+		XCTAssertEqual(PhotoGrouping.roomCoverage(rooms: rooms([100]), settings: settings), 0)
+		// きちんと分かれている → 使う。
+		XCTAssertEqual(PhotoGrouping.roomCoverage(rooms: rooms([60, 40]), settings: settings), 1)
+	}
+
 	func testVisualEvidenceCanBeTurnedOffByWeight()
 	{
 		// `--no-visual` は SortRequest が重みを 0 にすることで効く。特徴が

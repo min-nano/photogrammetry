@@ -135,6 +135,41 @@ final class QualityFilterTests: XCTestCase
 		XCTAssertEqual(outcome.excluded.filter { $0.reason == .duplicate }.count, 2)
 	}
 
+	func testExactCopiesAreFoundEvenWhenFarApartInCaptureOrder()
+	{
+		// **実データで見つかった穴。** `IMG_0001.JPEG` と `IMG_0001 2.JPEG` の
+		// ような複製は、EXIF の時刻が無ければ末尾の数字（連番）で並ぶため
+		// 撮影順では遠く離れる。連続する塊しか見ないと一度も比較されない。
+		let input = [
+			SamplePhoto.make(index: 1, hash: 0xFF00, sharpness: 100),
+			SamplePhoto.make(index: 2, hash: 0x1234, sharpness: 100),
+			SamplePhoto.make(index: 3, hash: 0x5678, sharpness: 100),
+			SamplePhoto.make(index: 4, hash: 0x9ABC, sharpness: 100),
+			// 1 枚目の複製（撮影順では 4 枚も離れている）。
+			SamplePhoto.make(index: 5, hash: 0xFF00, sharpness: 90),
+		]
+		let outcome = QualityFilter.apply(to: input)
+		XCTAssertEqual(outcome.excluded.filter { $0.reason == .duplicate }.count, 1)
+		XCTAssertEqual(outcome.excluded.first { $0.reason == .duplicate }?.photo, "IMG_0005.HEIC")
+		XCTAssertEqual(outcome.kept.count, 4)
+	}
+
+	func testNearDuplicatesDoNotChainIntoUnrelatedPhotos()
+	{
+		// A〜B が近く B〜C が近いというだけで A と C までまとめない
+		// （比較先は塊の代表だけ）。消す側の判断なので広げない。
+		let input = [
+			SamplePhoto.make(index: 1, hash: 0b0000, sharpness: 100),
+			SamplePhoto.make(index: 2, hash: 0b0011, sharpness: 100),
+			SamplePhoto.make(index: 3, hash: 0b1111, sharpness: 100),
+		]
+		var settings = QualityFilter.Settings()
+		settings.duplicateDistance = 2
+		let outcome = QualityFilter.apply(to: input, settings: settings)
+		// 1 と 2 は同じ塊（距離 2）。3 は代表 1 から距離 4 なので別扱い。
+		XCTAssertEqual(outcome.kept.map(\.relativePath), ["IMG_0001.HEIC", "IMG_0003.HEIC"])
+	}
+
 	func testPhotosWithoutFingerprintAreNeverTreatedAsDuplicates()
 	{
 		// 指紋が取れない写真を「同じ」と決めつけない（消さない側に倒す）。

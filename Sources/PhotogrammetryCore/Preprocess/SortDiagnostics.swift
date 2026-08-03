@@ -273,6 +273,24 @@ public enum SortDiagnostics
 					+ String(format: "。距離の閾値 %.2f%@",
 						rooms.threshold,
 						rooms.thresholdWasAutomatic ? "・自動決定" : "・指定値")))
+
+			// **場所を見つけたのに使わなかった**ときは必ず言う。黙って捨てると
+			// 「なぜ屋外と室内が同じグループなのか」が誰にも分からなくなる。
+			if !grouping.usedEvidence.contains(.room)
+			{
+				let labelled = rooms.clusters.reduce(0) { $0 + $1.members.count }
+				let largest = rooms.clusters.reduce(0) { max($0, $1.members.count) }
+				diagnostics.append(SortDiagnostic(
+					severity: .warning,
+					code: "roomsNotDiscriminating",
+					message: "ただし写真の \(percent(Double(largest) / Double(max(1, labelled))))"
+						+ "が 1 か所にまとまったため、場所の判定は手がかりに使いません"
+						+ "でした（ほぼ全てのペアが「同じ場所」になり、区別に寄与しない"
+						+ "ため）。屋外と室内のように見た目が違う範囲を分けたいときは、"
+						+ String(format: "--visual-threshold を今の %.2f より下げてください",
+							rooms.threshold)
+						+ "（manifest の visualDistanceHistogram が距離の分布です）。"))
+			}
 		}
 		else
 		{

@@ -8,8 +8,10 @@
 //
 //    ブレ        ラプラシアン分散が現場の分布から見て明らかに低い
 //    露出破綻    白飛び・黒つぶれが画面の大半を占める（小屋裏のフラッシュ、床下の暗所）
-//    ほぼ同一    連写・立ち止まったままのシャッター連打。知覚ハッシュで検出し、
-//                同じ塊からは**最も鮮鋭な 1 枚だけ**残す
+//    ほぼ同一    連写・立ち止まったままのシャッター連打・**ファイルの複製**。
+//                知覚ハッシュで検出し、同じ塊からは**最も鮮鋭な 1 枚だけ**残す。
+//                撮影順に隣り合っているかは問わない（複製は撮影順では遠くに
+//                並ぶことがあるため。詳しくは apply の中のコメント）
 //    形が不適    パノラマ・極端に小さい画像（Object Capture が扱いを誤る）
 //
 //  閾値は固定しない。ブレの絶対値は被写体の模様で桁が変わるので、分布から
@@ -253,22 +255,55 @@ public enum QualityFilter
 			survivors = kept
 		}
 
-		// --- ほぼ同一。撮影順に並べ、連続する塊から 1 枚だけ残す。 ---
+		// --- ほぼ同一。**撮影順に隣り合っているかどうかに関係なく**探す。 ---
+		//
+		// 当初は撮影順に連続する塊だけを見ていたが、それでは**完全な複製が
+		// 素通りする**（実データで確認）。`IMG_0001.JPEG` と
+		// `IMG_0001 2.JPEG` のような複製は、EXIF の時刻が無ければ末尾の数字
+		// （連番）で並ぶため撮影順では遠く離れ、一度も比較されない。
+		//
+		// 比較先は「既に立てた代表」だけにして、A〜B と B〜C が近いという理由で
+		// A と C までまとめてしまう連鎖を防ぐ（消す側の判断なので、広げない）。
+		// 総当たりになるが距離は 64 bit の XOR なので数千枚でも軽い。
 		let ordered = PhotoOrdering.sorted(survivors)
-		var keptPaths = Set<String>()
-		var runStart = 0
-		var index = 1
-		func closeRun(_ range: Range<Int>)
+		// clusters[k] は「k 番目の塊」。先頭が代表（＝比較の相手）。
+		var clusters: [[Int]] = []
+		for index in ordered.indices
 		{
-			guard !range.isEmpty
+			var matched: Int?
+			if let fingerprint = ordered[index].fingerprint
+			{
+				for (position, cluster) in clusters.enumerated()
+				{
+					guard let other = ordered[cluster[0]].fingerprint
+					else
+					{
+						continue
+					}
+					if fingerprint.distance(to: other) <= settings.duplicateDistance
+					{
+						matched = position
+						break
+					}
+				}
+			}
+			// 指紋が取れない写真は判定できない。塊にしない（消さない側に倒す）。
+			guard let matched
 			else
 			{
-				return
+				clusters.append([index])
+				continue
 			}
+			clusters[matched].append(index)
+		}
+
+		var keptPaths = Set<String>()
+		for cluster in clusters
+		{
 			// 塊の代表は最も鮮鋭な 1 枚（同点なら撮影が早いほう）。品質を測れて
 			// いない写真（読み取り時に画素を取れなかった）は最下位に扱う。
-			var best = range.lowerBound
-			for candidate in range
+			var best = cluster[0]
+			for candidate in cluster
 			{
 				if sharpness(of: ordered[candidate]) > sharpness(of: ordered[best])
 				{
@@ -276,36 +311,13 @@ public enum QualityFilter
 				}
 			}
 			keptPaths.insert(ordered[best].relativePath)
-			for candidate in range where candidate != best
+			for candidate in cluster where candidate != best
 			{
 				excluded.append(ExcludedPhoto(
 					photo: ordered[candidate].relativePath,
 					reason: .duplicate,
 					score: hammingDistance(ordered[candidate], ordered[best])))
 			}
-		}
-		while index <= ordered.count
-		{
-			let isSameRun: Bool
-			if index == ordered.count
-			{
-				isSameRun = false
-			}
-			else if let a = ordered[runStart].fingerprint, let b = ordered[index].fingerprint
-			{
-				isSameRun = a.distance(to: b) <= settings.duplicateDistance
-			}
-			else
-			{
-				// 指紋が無い写真は判定できない。塊にしない（消さない側に倒す）。
-				isSameRun = false
-			}
-			if !isSameRun
-			{
-				closeRun(runStart ..< index)
-				runStart = index
-			}
-			index += 1
 		}
 
 		return Outcome(

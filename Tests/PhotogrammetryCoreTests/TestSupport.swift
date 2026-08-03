@@ -234,7 +234,10 @@ enum SamplePhoto
 
 /// グループ分けと場所の割り当てを直接指定した `GroupingResult` を作る。
 /// 実写真もクラスタリングも通さずに、その先（計画・診断）だけを固定したいときに使う。
-func manualGrouping(groups: [[Int]], labels: [Int]) -> GroupingResult
+func manualGrouping(
+	groups: [[Int]],
+	labels: [Int],
+	usedEvidence: [EvidenceKind] = [.time, .scene, .room]) -> GroupingResult
 {
 	let photos = labels.indices.map { SamplePhoto.make(index: $0) }
 	let clusterCount = (labels.max() ?? -1) + 1
@@ -262,7 +265,7 @@ func manualGrouping(groups: [[Int]], labels: [Int]) -> GroupingResult
 		links: [],
 		unassigned: [],
 		rooms: rooms,
-		usedEvidence: [.time, .scene, .room],
+		usedEvidence: usedEvidence,
 		evidenceCoverage: [.scene: 1, .room: 1],
 		threshold: 0.5,
 		thresholdWasAutomatic: true,
