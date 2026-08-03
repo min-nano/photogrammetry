@@ -16,9 +16,13 @@ final class PhotoOverlapTests: XCTestCase
 {
 	/// 決まった模様のグレースケール画像。`shiftX` / `shiftY` だけ内容をずらして
 	/// 作れるので、「同じ場所を少し動いて撮った 2 枚」を合成できる。
+	/// **寸法は実際の位置合わせ用の画像（`ImageRegistrar.imageSize` = 480）に
+	/// 合わせる。** ブロックの大きさは画像の寸法から決まるので、ここを小さくすると
+	/// テストだけ非現実的に細かいブロック（15 画素角）になり、なだらかな模様では
+	/// どこでも合ってしまう。
 	func makeImage(
-		width: Int = 120,
-		height: Int = 90,
+		width: Int = 480,
+		height: Int = 360,
 		shiftX: Int = 0,
 		shiftY: Int = 0,
 		seed: UInt64 = 1) -> GrayImage
@@ -48,8 +52,8 @@ final class PhotoOverlapTests: XCTestCase
 	/// もの）と右半分（奥のもの）でずれ方が違う ＝ 視差。1 枚の平行移動でも射影でも
 	/// 両方を同時には合わせられない、という実写真そのものの状況になる。
 	func makeParallaxImage(
-		width: Int = 120,
-		height: Int = 90,
+		width: Int = 480,
+		height: Int = 360,
 		nearShift: Int,
 		farShift: Int,
 		seed: UInt64 = 1) -> GrayImage
@@ -72,8 +76,8 @@ final class PhotoOverlapTests: XCTestCase
 	/// 合成サンプルの部屋がこれにあたる。ブロック単位で見ると「どこでも合う」ので、
 	/// 曖昧な一致を落とさないと別の場所どうしが重なっていることになってしまう。
 	func makeBlockyImage(
-		width: Int = 120,
-		height: Int = 90,
+		width: Int = 480,
+		height: Int = 360,
 		seed: UInt64 = 1) -> GrayImage
 	{
 		var pixels = [UInt8](repeating: 0, count: width * height)
@@ -81,8 +85,8 @@ final class PhotoOverlapTests: XCTestCase
 		{
 			for x in 0 ..< width
 			{
-				// 30 画素角の市松。種で明るさの割り当てだけを変える。
-				let cell = (x / 30) + (y / 30) * 4
+				// 120 画素角の市松。種で明るさの割り当てだけを変える。
+				let cell = (x / 120) + (y / 120) * 4
 				let value = 40 + ((cell &* 37 &+ Int(seed) &* 53) % 5) * 45
 				pixels[y * width + x] = UInt8(min(255, value))
 			}
@@ -91,7 +95,7 @@ final class PhotoOverlapTests: XCTestCase
 	}
 
 	/// 一面の壁のように模様が無い画像。
-	func makeFlatImage(width: Int = 120, height: Int = 90, value: UInt8 = 200) -> GrayImage
+	func makeFlatImage(width: Int = 480, height: Int = 360, value: UInt8 = 200) -> GrayImage
 	{
 		GrayImage(
 			pixels: [UInt8](repeating: value, count: width * height),
@@ -110,14 +114,14 @@ final class PhotoOverlapTests: XCTestCase
 
 	func testShiftedPhotoAgreesWhenTheTransformMatches()
 	{
-		// 相手は模様が右へ 24 画素ずれて写っている（撮る位置を横へ動かした）。
-		// 基準の (x, y) と同じものは相手の (x + 24, y) にある。
+		// 相手は模様が右へ 96 画素ずれて写っている（撮る位置を横へ動かした）。
+		// 基準の (x, y) と同じものは相手の (x + 96, y) にある。
 		let base = makeImage()
-		let other = makeImage(shiftX: -24)
+		let other = makeImage(shiftX: -96)
 		let overlap = OverlapMeasurement.measure(
-			base: base, other: other, transform: .translation(x: 24, y: 0))
+			base: base, other: other, transform: .translation(x: 96, y: 0))
 		XCTAssertGreaterThan(overlap?.agreement ?? 0, 0.95)
-		// 重なりは横 (120-24)/120 = 0.8。
+		// 重なりは横 (480-96)/480 = 0.8。
 		XCTAssertEqual(overlap?.sharedArea ?? 0, 0.8, accuracy: 0.05)
 	}
 
@@ -127,11 +131,13 @@ final class PhotoOverlapTests: XCTestCase
 	func testWrongAlignmentDoesNotAgree()
 	{
 		let base = makeImage()
-		let other = makeImage(shiftX: -24)
-		// 正解は -24。まったく違うずらし方をすれば一致しない。
+		let other = makeImage(shiftX: -96)
+		// 正解は 96。局所探索の半径（長辺の 8% = 38 画素）でも届かないところへ
+		// ずらせば一致しない。
 		let overlap = OverlapMeasurement.measure(
-			base: base, other: other, transform: .translation(x: 13, y: 21))
+			base: base, other: other, transform: .translation(x: 20, y: 120))
 		XCTAssertLessThan(overlap?.agreement ?? 1, 0.5)
+		XCTAssertLessThan(overlap?.inlierRatio ?? 1, OverlapCriteria().minimumInlierRatio)
 	}
 
 	func testDifferentPhotosDoNotAgree()
@@ -146,7 +152,7 @@ final class PhotoOverlapTests: XCTestCase
 	func testNoOverlapWhenTheFramesDoNotMeet()
 	{
 		let overlap = OverlapMeasurement.measure(
-			base: makeImage(), other: makeImage(), transform: .translation(x: 500, y: 0))
+			base: makeImage(), other: makeImage(), transform: .translation(x: 2000, y: 0))
 		XCTAssertEqual(overlap, PhotoOverlap(agreement: 0, sharedArea: 0))
 	}
 
@@ -179,10 +185,10 @@ final class PhotoOverlapTests: XCTestCase
 	/// 重なりが狭すぎるときは相関を信用しない（広さだけを返す）。
 	func testNarrowOverlapReportsAreaWithoutAgreement()
 	{
-		let base = makeImage(width: 120, height: 90)
-		let other = makeImage(width: 120, height: 90)
+		let base = makeImage()
+		let other = makeImage()
 		let overlap = OverlapMeasurement.measure(
-			base: base, other: other, transform: .translation(x: -118, y: 0))
+			base: base, other: other, transform: .translation(x: -478, y: 0))
 		XCTAssertEqual(overlap?.agreement ?? 1, 0)
 		XCTAssertGreaterThan(overlap?.sharedArea ?? 0, 0)
 		XCTAssertLessThan(overlap?.sharedArea ?? 1, 0.05)
@@ -210,11 +216,11 @@ final class PhotoOverlapTests: XCTestCase
 	func testParallaxIsFoundEvenWhenTheWholeFrameDoesNotAgree() throws
 	{
 		let base = makeImage()
-		// 手前は 16 画素、奥は 26 画素ずれて写っている。
-		let other = makeParallaxImage(nearShift: 16, farShift: 26)
+		// 手前は 64 画素、奥は 104 画素ずれて写っている。
+		let other = makeParallaxImage(nearShift: 64, farShift: 104)
 		// 変換はその中間しか返せない（1 枚の平行移動では両方を合わせられない）。
 		let overlap = OverlapMeasurement.measure(
-			base: base, other: other, transform: .translation(x: 21, y: 0))
+			base: base, other: other, transform: .translation(x: 84, y: 0))
 
 		let measured = try XCTUnwrap(overlap)
 		// **全体の相関は落ちる**（当初の判定ではここで切られていた）。
