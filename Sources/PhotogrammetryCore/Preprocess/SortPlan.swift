@@ -227,7 +227,13 @@ public enum SortPlanner
 
 		// 共有写真として認める視覚的な距離の上限。**この現場の近傍距離の中央値**を
 		// 使う（絶対値の尺度は現場ごとに違うので、固定値では意味を持たない）。
-		let sceneBar = grouping.usedEvidence.contains(.scene)
+		//
+		// **これは「実際に確かめられないとき」の代役**なので、重なりを確かめる
+		// ときは足切りに使わない（順番付けには使う）。距離が遠くても本当に重なって
+		// いる組はあり、確かめられるならそちらが答えになる。足切りを残すと、
+		// 距離の帯が潰れた現場で「近い順に並んだ数組がたまたま全部外れ」→
+		// 隣接が 1 本も作れない、という取りこぼしが起きる。
+		let sceneBar = verifyOverlap == nil && grouping.usedEvidence.contains(.scene)
 			? grouping.rooms.medianNeighborDistance
 			: nil
 
@@ -476,11 +482,6 @@ public enum SortPlanner
 		photos: [PhotoMetadata],
 		sceneBar: Double?) -> [PairScore]
 	{
-		guard let sceneBar
-		else
-		{
-			return link.candidates
-		}
 		let scored = link.candidates.compactMap
 		{ candidate -> (pair: PairScore, distance: Double)? in
 			guard let left = photos[candidate.i].featurePrint,
@@ -491,8 +492,7 @@ public enum SortPlanner
 				return (candidate, Double.infinity)
 			}
 			let distance = left.distance(to: right)
-			guard distance <= sceneBar
-			else
+			if let sceneBar, distance > sceneBar
 			{
 				return nil
 			}
