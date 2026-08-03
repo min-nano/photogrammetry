@@ -70,13 +70,33 @@ public struct ImageRegistrar: PhotoOverlapVerifying
 	/// 判定は変わらない。
 	public static let imageSize = 480
 
+	/// デコード済みの画像を**呼び出しをまたいで**使い回す枚数。
+	///
+	/// フェーズ 2.6（設計メモ §4.9）でこれが要るようになった。共有写真の選定だけ
+	/// なら 1 回の呼び出しに数十組しか無く、その中で 1 枚 1 回に抑えれば足りた。
+	/// グループ分けで使うと**数万組を数百の束に分けて**渡すことになり、束ごとに
+	/// 作り直すキャッシュでは同じ写真を何十回もデコードする（1424 枚で 25 倍）。
+	///
+	/// 骨格（撮影順で前後 4 枚）は局所的なので、この枚数を保てば束をまたいで
+	/// ほぼ当たる。480 px 1 枚あたり 1 MB 弱（CGImage + グレースケール）なので
+	/// 上限は 250 MB 前後。再構成そのものの使用量に比べれば小さいが、青天井には
+	/// しない — 数千枚を全部抱えると数 GB になる。
+	public static let cacheCapacity = 256
+
 	/// 画像を読む役。ImageIO に触れるのは PhotoInspector だけ、という約束を
 	/// 守るためにこちらへ委ねる。
 	public var inspector: PhotoInspector
 
-	public init(inspector: PhotoInspector = PhotoInspector(thumbnailSize: ImageRegistrar.imageSize))
+	/// デコード済みの画像。値型の中に参照を持つのは、**同じ `ImageRegistrar` への
+	/// 呼び出しの間で使い回す**ため（この型は 1 回の仕分けにつき 1 つ作られる）。
+	let cache: RegistrationImageCache
+
+	public init(
+		inspector: PhotoInspector = PhotoInspector(thumbnailSize: ImageRegistrar.imageSize),
+		cacheCapacity: Int = ImageRegistrar.cacheCapacity)
 	{
 		self.inspector = inspector
+		cache = RegistrationImageCache(capacity: cacheCapacity)
 	}
 
 	public func overlap(between a: URL, and b: URL) -> PhotoOverlap?
@@ -98,8 +118,9 @@ public struct ImageRegistrar: PhotoOverlapVerifying
 		{
 			return []
 		}
-		// 同じ写真が複数の組に現れる（隣接 1 本の候補は同じ数枚の周りに集まる）。
-		// デコードが処理時間の大半なので、1 枚 1 回に抑える。
+		// 同じ写真が複数の組に現れる（骨格は前後数枚どうしの組なので特に強く重なる）。
+		// デコードが処理時間の大半なので、1 枚 1 回に抑える。**この束で要る写真は
+		// 捨てないように印を付けてから**、まだ持っていないものだけを読む。
 		var urls: [URL] = []
 		var seen = Set<String>()
 		for query in queries
@@ -109,22 +130,26 @@ public struct ImageRegistrar: PhotoOverlapVerifying
 				urls.append(url)
 			}
 		}
-		let cache = RegistrationImageCache()
+		cache.retain(seen)
+		let missing = urls.filter { cache.image(for: $0) == nil }
 		let inspector = self.inspector
-		DispatchQueue.concurrentPerform(iterations: urls.count)
-		{ index in
-			guard !isCancelled()
-			else
-			{
-				return
+		if !missing.isEmpty
+		{
+			DispatchQueue.concurrentPerform(iterations: missing.count)
+			{ index in
+				guard !isCancelled()
+				else
+				{
+					return
+				}
+				let url = missing[index]
+				guard let loaded = inspector.registrationImage(at: url)
+				else
+				{
+					return
+				}
+				cache.store(loaded, for: url)
 			}
-			let url = urls[index]
-			guard let loaded = inspector.registrationImage(at: url)
-			else
-			{
-				return
-			}
-			cache.store(loaded, for: url)
 		}
 
 		let results = RegistrationResults(count: queries.count)
@@ -294,23 +319,76 @@ public struct ImageRegistrar: PhotoOverlapVerifying
 
 /// デコード済みの画像を組の間で使い回すための入れ物。CGImage は Sendable では
 /// ないので、並行アクセスはロックで直列化する（`InspectionCollector` と同じ）。
+///
+/// **上限を持ち、使っていないものから捨てる。** 数万組を確かめるとき（§4.9）に
+/// 全部を抱えるとメモリが持たないが、束ごとに作り直すと同じ写真を何十回も
+/// デコードすることになる。骨格は撮影順に局所的なので、数百枚を保てば足りる。
 final class RegistrationImageCache: @unchecked Sendable
 {
 	private let lock = NSLock()
 	private var images: [String: (image: CGImage, gray: GrayImage)] = [:]
+	/// 最後に使った順番（大きいほど新しい）。
+	private var lastUsed: [String: Int] = [:]
+	private var clock = 0
+	/// いま処理中の束で要る写真。**これは捨てない**（捨てると読み直しになる）。
+	private var pinned = Set<String>()
+	private let capacity: Int
+
+	init(capacity: Int = ImageRegistrar.cacheCapacity)
+	{
+		self.capacity = max(1, capacity)
+	}
+
+	/// この束で要る写真に印を付ける。前の束の印は外れる。
+	func retain(_ paths: Set<String>)
+	{
+		lock.lock()
+		pinned = paths
+		lock.unlock()
+	}
 
 	func store(_ loaded: (image: CGImage, gray: GrayImage), for url: URL)
 	{
 		lock.lock()
+		defer { lock.unlock() }
 		images[url.path] = loaded
-		lock.unlock()
+		clock += 1
+		lastUsed[url.path] = clock
+		evictIfNeeded()
 	}
 
 	func image(for url: URL) -> (image: CGImage, gray: GrayImage)?
 	{
 		lock.lock()
 		defer { lock.unlock() }
-		return images[url.path]
+		guard let found = images[url.path]
+		else
+		{
+			return nil
+		}
+		clock += 1
+		lastUsed[url.path] = clock
+		return found
+	}
+
+	/// 上限を超えたぶんを、**印の付いていないものの中で**最も古いものから捨てる。
+	/// 印が上限を埋め尽くしている場合は捨てない（束の途中で読み直しになるくらい
+	/// なら、その束の間だけ上限を超えるほうがましなため）。
+	private func evictIfNeeded()
+	{
+		while images.count > capacity
+		{
+			let oldest = lastUsed
+				.filter { !pinned.contains($0.key) && images[$0.key] != nil }
+				.min { $0.value < $1.value }?.key
+			guard let oldest
+			else
+			{
+				return
+			}
+			images.removeValue(forKey: oldest)
+			lastUsed.removeValue(forKey: oldest)
+		}
 	}
 }
 
