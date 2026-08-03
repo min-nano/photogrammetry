@@ -73,7 +73,12 @@ while !arguments.isEmpty
 	let argument = arguments.removeFirst()
 	func value() -> String
 	{
-		arguments.isEmpty ? fail("\(argument) に値がありません") : arguments.removeFirst()
+		guard !arguments.isEmpty
+		else
+		{
+			fail("\(argument) に値がありません")
+		}
+		return arguments.removeFirst()
 	}
 	switch argument
 	{
