@@ -78,6 +78,10 @@ public struct RoomClusteringResult: Equatable, Sendable
 	/// 近傍距離の分布（0.0〜1.0 を 20 分割）。**写真そのものを含まない統計**なので、
 	/// 現場の写真を共有せずに閾値を検討できる（設計メモ §10-10）。
 	public var distanceHistogram: [Int]
+	/// 近傍距離の中央値。**この現場で「近い」と言える距離の目安**で、絶対値の
+	/// 尺度が現場ごとに違う（屋内の白い壁ばかりだと全体に詰まる）ことへの答え。
+	/// 共有写真の選定はこれを基準にする。判定材料が無ければ nil。
+	public var medianNeighborDistance: Double?
 	/// 視覚特徴を取れた写真の割合。
 	public var coverage: Double
 
@@ -89,6 +93,7 @@ public struct RoomClusteringResult: Equatable, Sendable
 		thresholdWasAutomatic: Bool,
 		separability: Double,
 		distanceHistogram: [Int],
+		medianNeighborDistance: Double? = nil,
 		coverage: Double)
 	{
 		self.clusters = clusters
@@ -98,6 +103,7 @@ public struct RoomClusteringResult: Equatable, Sendable
 		self.thresholdWasAutomatic = thresholdWasAutomatic
 		self.separability = separability
 		self.distanceHistogram = distanceHistogram
+		self.medianNeighborDistance = medianNeighborDistance
 		self.coverage = coverage
 	}
 
@@ -282,6 +288,7 @@ public enum RoomClustering
 			thresholdWasAutomatic: settings.threshold == nil,
 			separability: estimate?.separability ?? 0,
 			distanceHistogram: histogram,
+			medianNeighborDistance: ThresholdEstimator.median(distances),
 			coverage: coverage)
 	}
 

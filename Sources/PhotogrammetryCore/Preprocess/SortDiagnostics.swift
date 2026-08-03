@@ -213,6 +213,10 @@ public enum SortDiagnostics
 					+ "--min-sharpness で閾値を明示してください。"))
 		}
 
+		// --- 繋がりそうに見えたが、実際には重なっていなかった組 ---
+		diagnostics.append(contentsOf: missingOverlapDiagnostics(
+			plan: plan, grouping: grouping, request: request))
+
 		// --- 視覚的に見つけた場所（フェーズ 2） ---
 		diagnostics.append(contentsOf: roomDiagnostics(plan: plan, grouping: grouping))
 
@@ -232,6 +236,57 @@ public enum SortDiagnostics
 		}
 
 		return diagnostics
+	}
+
+	/// グルーピングでは隣り合うと判定されたのに、**実際に重なって写っている
+	/// 写真が無かった**組を報告する。
+	///
+	/// 共有写真は合成の対応点なので、重なっていないペアを入れても意味が無い
+	/// どころか、無関係な写真をグループへ持ち込むぶん有害になる（実データでは
+	/// 700 枚離れた別の場所の写真が入り、屋外と室内が同じフォルダに混ざった）。
+	/// そこで重なっていない隣接は作らないが、**黙って落とすと「なぜ繋がって
+	/// いないのか」が分からなくなる**ので必ず言う。
+	static func missingOverlapDiagnostics(
+		plan: SortPlan,
+		grouping: GroupingResult,
+		request: SortRequest) -> [SortDiagnostic]
+	{
+		guard request.overlap > 0, grouping.usedEvidence.contains(.scene)
+		else
+		{
+			return []
+		}
+		var linked = Set<String>()
+		for adjacency in plan.adjacency
+		{
+			linked.insert("\(adjacency.a)|\(adjacency.b)")
+		}
+		var missing: [String] = []
+		for link in grouping.links
+		{
+			let a = grouping.groups[link.a].id
+			let b = grouping.groups[link.b].id
+			guard !linked.contains("\(a)|\(b)")
+			else
+			{
+				continue
+			}
+			missing.append("\(a) ↔ \(b)")
+		}
+		guard !missing.isEmpty
+		else
+		{
+			return []
+		}
+		let list = missing.prefix(5).joined(separator: "・")
+		let rest = missing.count > 5 ? "ほか \(missing.count - 5) 組" : ""
+		return [SortDiagnostic(
+			severity: .warning,
+			code: "noVisualOverlap",
+			message: "\(list)\(rest) は近い塊と判定されましたが、実際に重なって"
+				+ "写っている写真がありませんでした（共有写真を作れないので隣接に"
+				+ "していません）。合成でこれらを繋ぐには、両方から見える範囲を"
+				+ "数枚撮り足してください。")]
 	}
 
 	/// 視覚的に見つけた「場所」についての診断（フェーズ 2）。

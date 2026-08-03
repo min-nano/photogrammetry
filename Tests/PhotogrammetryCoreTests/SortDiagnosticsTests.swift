@@ -320,6 +320,38 @@ final class SortDiagnosticsTests: XCTestCase
 		XCTAssertFalse(codes(diagnostics).contains("roomSplitWithoutLink"))
 	}
 
+	func testLinksWithoutRealOverlapAreReported()
+	{
+		// 重なっていない隣接は作らないが、**黙って落とすと「なぜ繋がって
+		// いないのか」が分からなくなる**ので必ず言う。
+		var grouping = manualGrouping(
+			groups: [Array(0 ..< 20), Array(20 ..< 40)],
+			labels: (0 ..< 40).map { $0 < 20 ? 0 : 1 },
+			usedEvidence: [.time, .scene])
+		grouping.links = [GroupLink(a: 0, b: 1, confidence: 0.7, candidates: [])]
+		let plan = SortPlan(
+			groups: [group("group-01", count: 20), group("group-02", count: 20)],
+			adjacency: [],
+			unassigned: [])
+		let message = evaluate(plan: plan, grouping: grouping)
+			.first { $0.code == "noVisualOverlap" }?.message ?? ""
+		XCTAssertTrue(message.contains("group-01 ↔ group-02"), message)
+
+		// 隣接が作れていれば出さない。
+		let linked = SortPlan(
+			groups: [group("group-01", count: 20), group("group-02", count: 20)],
+			adjacency: [
+				SortPlan.Adjacency(
+					a: "group-01", b: "group-02",
+					sharedPhotos: (0 ..< 12).map { "s\($0).HEIC" },
+					confidence: 0.7,
+					viewpointSpread: 0.5),
+			],
+			unassigned: [])
+		XCTAssertFalse(codes(evaluate(plan: linked, grouping: grouping))
+			.contains("noVisualOverlap"))
+	}
+
 	func testRoomsFoundButNotUsedIsReported()
 	{
 		// **場所を見つけたのに使わなかった**ときは必ず言う。黙って捨てると

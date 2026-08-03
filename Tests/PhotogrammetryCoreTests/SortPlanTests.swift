@@ -225,6 +225,53 @@ final class SortPlanTests: XCTestCase
 			of: [0], photos: [SamplePhoto.make(index: 1, hash: 1)]))
 	}
 
+	// -----------------------------------------------------------------
+	// 共有写真は「実際に重なっている」ものだけ
+	// -----------------------------------------------------------------
+
+	func testSharedPhotosArePickedByVisualOverlapNotByScore()
+	{
+		// **実データで起きた失敗。** 結合スコア（時刻・GPS・露出の合算）が高い
+		// だけのペアを採ると、700 枚離れた別の場所の写真が共有写真として入る。
+		// 共有写真は合成の対応点なので、両側に重なって写っていることがすべて。
+		let photos = [
+			// 0〜1: 本当に重なっている組（視覚特徴が近い）。ただしスコアは低い。
+			SamplePhoto.make(index: 1, hash: 0x0F, featurePrint: SamplePhoto.featurePrint(room: 0, step: 0)),
+			SamplePhoto.make(index: 2, hash: 0x0F, featurePrint: SamplePhoto.featurePrint(room: 0, step: 1)),
+			// 2〜3: 別の場所どうし（視覚特徴が遠い）。スコアだけは高い。
+			SamplePhoto.make(index: 3, hash: 0xF0, featurePrint: SamplePhoto.featurePrint(room: 0, step: 0)),
+			SamplePhoto.make(index: 4, hash: 0xF0, featurePrint: SamplePhoto.featurePrint(room: 6, step: 0)),
+		]
+		let link = GroupLink(
+			a: 0, b: 1, confidence: 0.8,
+			candidates: [PairScore(i: 2, j: 3, score: 0.95), PairScore(i: 0, j: 1, score: 0.30)])
+
+		// 判定材料があるときは、重なっている組だけを採る。
+		let selected = SortPlanner.selectSharedPhotos(
+			link: link, photos: photos, sceneBar: 0.2, settings: SortPlanner.Settings(overlap: 4))
+		XCTAssertEqual(selected.sorted(), [0, 1])
+
+		// 判定材料が無ければ従来どおりスコア順（視覚特徴が取れない現場で
+		// 隣接が 1 本も作れなくなってはいけない）。
+		let fallback = SortPlanner.selectSharedPhotos(
+			link: link, photos: photos, sceneBar: nil, settings: SortPlanner.Settings(overlap: 4))
+		XCTAssertEqual(fallback.sorted(), [0, 1, 2, 3])
+	}
+
+	func testAdjacencyIsDroppedWhenNothingActuallyOverlaps()
+	{
+		// 重なっている写真が 1 枚も無ければ隣接そのものを作らない。無関係な
+		// 写真をグループへ持ち込むぶん、有害だから。
+		let photos = [
+			SamplePhoto.make(index: 1, hash: 0x0F, featurePrint: SamplePhoto.featurePrint(room: 0, step: 0)),
+			SamplePhoto.make(index: 2, hash: 0xF0, featurePrint: SamplePhoto.featurePrint(room: 6, step: 0)),
+		]
+		let link = GroupLink(
+			a: 0, b: 1, confidence: 0.9, candidates: [PairScore(i: 0, j: 1, score: 0.95)])
+		XCTAssertTrue(SortPlanner.selectSharedPhotos(
+			link: link, photos: photos, sceneBar: 0.2, settings: SortPlanner.Settings()).isEmpty)
+	}
+
 	func testSharedPhotoSelectionFallsBackWhenDiversityCannotBeMet()
 	{
 		// 廊下を直進しながら撮った区間。視点が散らばらなくても、枚数を
@@ -236,7 +283,7 @@ final class SortPlanTests: XCTestCase
 		}
 		let link = GroupLink(a: 0, b: 1, confidence: 0.9, candidates: candidates)
 		let selected = SortPlanner.selectSharedPhotos(
-			link: link, photos: photos, settings: SortPlanner.Settings(overlap: 8))
+			link: link, photos: photos, sceneBar: nil, settings: SortPlanner.Settings(overlap: 8))
 		XCTAssertEqual(selected.count, 8)
 	}
 }

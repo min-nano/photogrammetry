@@ -151,9 +151,16 @@ public enum SortPlanner
 		var sharedByGroup = [Set<Int>](repeating: [], count: grouping.groups.count)
 		var adjacency: [SortPlan.Adjacency] = []
 
+		// 共有写真として認める視覚的な距離の上限。**この現場の近傍距離の中央値**を
+		// 使う（絶対値の尺度は現場ごとに違うので、固定値では意味を持たない）。
+		let sceneBar = grouping.usedEvidence.contains(.scene)
+			? grouping.rooms.medianNeighborDistance
+			: nil
+
 		for link in grouping.links
 		{
-			let selected = selectSharedPhotos(link: link, photos: photos, settings: settings)
+			let selected = selectSharedPhotos(
+				link: link, photos: photos, sceneBar: sceneBar, settings: settings)
 			guard !selected.isEmpty
 			else
 			{
@@ -199,14 +206,31 @@ public enum SortPlanner
 
 	/// 隣接 1 本ぶんの共有写真を選ぶ。
 	///
-	/// 結合スコアの高い順に候補のペアを見て、その両端の写真を採っていく。ただし
-	/// **既に選んだ写真と視点が近すぎるものは飛ばす**（同じ場所から向きだけ変えた
-	/// 写真ばかりだと、合成時に対応点が一直線に並んで解が定まらない）。
+	/// **選ぶ順は「実際に同じものが写っている順」。** 結合スコア（時刻・GPS・
+	/// 露出などの合算）が高いだけのペアを採ってはいけない。共有写真の目的は
+	/// 合成の対応点なので、両側に**重なって写っている**ことがすべてで、
+	/// 「同じ頃に撮った」では 1 枚も意味を持たない。
+	///
+	/// 実データで実際に起きた失敗がこれで、`IMG_4554` から始まる連続した塊に、
+	/// 700 枚離れた `IMG_38xx`（別の場所）が共有写真として入っていた。屋外と
+	/// 室内が同じフォルダに混ざるのはここが原因。
+	///
+	/// したがって視覚的な距離が `sceneBar` を超えるペアは**採らない**（枚数を
+	/// 埋めるためでも採らない）。1 枚も残らなければ隣接そのものを作らない —
+	/// 重なっていない隣接は、合成にとって無いのと同じどころか、無関係な写真を
+	/// グループへ持ち込むぶん有害なため。
+	///
+	/// そのうえで、**既に選んだ写真と視点が近すぎるものは飛ばす**（同じ場所から
+	/// 向きだけ変えた写真ばかりだと、合成時に対応点が一直線に並んで解が定まらない）。
 	/// 散らばりを求めた結果、枚数が足りなくなるくらいなら枚数を優先する
 	/// （2 周目で条件を外して埋める）。共有写真が少ないほうが合成には致命的なため。
+	///
+	/// - Parameter sceneBar: 共有写真として認める視覚的な距離の上限。判定材料が
+	///   無ければ nil（そのときは従来どおり結合スコア順に採る）。
 	static func selectSharedPhotos(
 		link: GroupLink,
 		photos: [PhotoMetadata],
+		sceneBar: Double?,
 		settings: Settings) -> [Int]
 	{
 		guard settings.overlap > 0
@@ -214,6 +238,7 @@ public enum SortPlanner
 		{
 			return []
 		}
+		let candidates = rankedCandidates(link: link, photos: photos, sceneBar: sceneBar)
 		var selected: [Int] = []
 		var chosen = Set<Int>()
 
@@ -235,7 +260,7 @@ public enum SortPlanner
 
 		for pass in 0 ... 1
 		{
-			for candidate in link.candidates
+			for candidate in candidates
 			{
 				consider(candidate.i, enforceDiversity: pass == 0)
 				consider(candidate.j, enforceDiversity: pass == 0)
@@ -246,6 +271,44 @@ public enum SortPlanner
 			}
 		}
 		return selected
+	}
+
+	/// 候補のペアを「実際に重なっている順」に並べ替える。`sceneBar` を超える
+	/// ペアは落とす（枚数を埋めるためでも採らない）。判定材料が無いペアは
+	/// 落とさない — 分からないことを理由に候補を捨てると、視覚特徴が取れない
+	/// 現場で隣接が 1 本も作れなくなる。
+	static func rankedCandidates(
+		link: GroupLink,
+		photos: [PhotoMetadata],
+		sceneBar: Double?) -> [PairScore]
+	{
+		guard let sceneBar
+		else
+		{
+			return link.candidates
+		}
+		let scored = link.candidates.compactMap
+		{ candidate -> (pair: PairScore, distance: Double)? in
+			guard let left = photos[candidate.i].featurePrint,
+				let right = photos[candidate.j].featurePrint
+			else
+			{
+				// 判定できないペアは末尾に回す（落としはしない）。
+				return (candidate, Double.infinity)
+			}
+			let distance = left.distance(to: right)
+			guard distance <= sceneBar
+			else
+			{
+				return nil
+			}
+			return (candidate, distance)
+		}
+		return scored.sorted
+		{
+			// 近い順。同じ距離なら結合スコアの高い順（結果を決定的にする）。
+			$0.distance == $1.distance ? $0.pair.score > $1.pair.score : $0.distance < $1.distance
+		}.map(\.pair)
 	}
 
 	/// 写真の集合が写している場所（視覚クラスタ）を、枚数の多い順に並べる。
