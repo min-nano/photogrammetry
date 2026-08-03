@@ -43,6 +43,10 @@ var inputPath: String?
 var recursive = true
 var limit: Int?
 var maxPairs = 200_000
+/// 撮影順を N 枚ずつの区間に切って、区間ごとの中身を出す（`--segments N`）。
+/// **measure-poses.swift の `--starts` と同じ添字**なので、どの区間が error 6 に
+/// なったかと突き合わせられる。
+var segments: Int?
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -56,6 +60,8 @@ while !arguments.isEmpty
 			limit = arguments.isEmpty ? nil : Int(arguments.removeFirst())
 		case "--max-pairs":
 			maxPairs = (arguments.isEmpty ? nil : Int(arguments.removeFirst())) ?? maxPairs
+		case "--segments":
+			segments = arguments.isEmpty ? nil : Int(arguments.removeFirst())
 		case "-h", "--help":
 			print("使い方: measure-ordering <写真フォルダ> [--no-recursive] [--limit N] [--max-pairs N]")
 			exit(0)
@@ -152,6 +158,10 @@ log("画像 \(files.count) 枚を読み取ります（Vision の推論を含む�
 /// 写真 1 枚ぶんの事実。**ファイル名は集計に使うだけで出力しない。**
 struct Record
 {
+	/// 並べ替えの同着を解くためだけに持つ（**出力しない**）。
+	/// measure-poses.swift と同じ規則で並べないと、区間の添字が食い違って
+	/// 「どの区間が error 6 か」との突き合わせができなくなる。
+	var relativePath: String
 	var folder: String
 	var date: Date?
 	var sequence: Int?
@@ -161,6 +171,8 @@ struct Record
 	var hasLocation: Bool
 	/// 単位ベクトルへ正規化済みの視覚特徴（FeaturePrint と同じ定義）。
 	var elements: [Float]?
+	/// ラプラシアン分散（ブレの指標。ImageStatistics と同じ式）。
+	var sharpness: Double?
 }
 
 /// 並行読み取りの受け皿。スレッドを跨ぐのでロックで守る。
@@ -383,6 +395,7 @@ final class Collector: @unchecked Sendable
 	let folder = components.count > 1 ? components.dropLast().joined(separator: "/") : ""
 
 	var record = Record(
+		relativePath: relativePath,
 		folder: folder,
 		date: captureDate(exif: exif, offset: offset),
 		sequence: sequenceNumber(fromName: (relativePath as NSString).lastPathComponent),
@@ -402,8 +415,81 @@ final class Collector: @unchecked Sendable
 		{
 			record.elements = normalized(values)
 		}
+		if let gray = grayscale(image: image)
+		{
+			record.sharpness = laplacianVariance(
+				gray: gray.pixels, width: gray.width, height: gray.height)
+		}
 	}
 	return record
+}
+
+/// 縮小画像からグレースケール画素を取り出す（PhotoInspector と同じ）。
+func grayscale(image: CGImage) -> (pixels: [UInt8], width: Int, height: Int)?
+{
+	let width = image.width
+	let height = image.height
+	guard width > 0, height > 0,
+		let context = CGContext(
+			data: nil, width: width, height: height, bitsPerComponent: 8,
+			bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(),
+			bitmapInfo: CGImageAlphaInfo.none.rawValue)
+	else
+	{
+		return nil
+	}
+	context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+	guard let data = context.data
+	else
+	{
+		return nil
+	}
+	let bytes = data.bindMemory(to: UInt8.self, capacity: context.bytesPerRow * height)
+	var pixels = [UInt8]()
+	pixels.reserveCapacity(width * height)
+	for row in 0 ..< height
+	{
+		pixels.append(contentsOf: UnsafeBufferPointer(
+			start: bytes + row * context.bytesPerRow, count: width))
+	}
+	return (pixels, width, height)
+}
+
+/// ラプラシアン分散。**ImageStatistics.laplacianVariance と同じ式**にしてある
+/// （ここで測った値をそのまま `--min-sharpness` の検討に使えるように）。
+func laplacianVariance(gray: [UInt8], width: Int, height: Int) -> Double
+{
+	guard width > 2, height > 2, gray.count >= width * height
+	else
+	{
+		return 0
+	}
+	var sum = 0.0
+	var sumOfSquares = 0.0
+	var count = 0
+	for y in 1 ..< (height - 1)
+	{
+		let row = y * width
+		let above = row - width
+		let below = row + width
+		for x in 1 ..< (width - 1)
+		{
+			let value =
+				Double(gray[above + x]) + Double(gray[below + x])
+				+ Double(gray[row + x - 1]) + Double(gray[row + x + 1])
+				- 4 * Double(gray[row + x])
+			sum += value
+			sumOfSquares += value * value
+			count += 1
+		}
+	}
+	guard count > 0
+	else
+	{
+		return 0
+	}
+	let mean = sum / Double(count)
+	return max(0, sumOfSquares / Double(count) - mean * mean)
 }
 
 let collector = Collector(capacity: files.count)
@@ -443,7 +529,16 @@ var ordered: [Record]
 if Double(withDate.count) / Double(max(1, photos.count)) >= 0.3
 {
 	orderingSource = .exif
-	ordered = withDate.sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
+	// **同着はパスで解く。** measure-poses.swift と同じ規則で並べないと、
+	// 区間の添字が食い違って「どの区間が error 6 か」と突き合わせられない
+	// （Swift の sort は安定ではないので、同着を放置すると実行ごとに変わる）。
+	ordered = withDate.sorted
+	{ left, right in
+		let leftDate = left.date ?? .distantPast
+		let rightDate = right.date ?? .distantPast
+		return leftDate == rightDate
+			? left.relativePath < right.relativePath : leftDate < rightDate
+	}
 }
 else
 {
@@ -898,6 +993,68 @@ histogram(distancesByOffset[1] ?? []).forEach { print($0) }
 print("")
 print("■ 距離の分布（無関係な組）")
 histogram(randomDistances).forEach { print($0) }
+
+// ---------------------------------------------------------------------
+// 区間ごとの中身（--segments）
+// ---------------------------------------------------------------------
+
+if let segmentSize = segments, segmentSize > 1
+{
+	/// 2 枚の視覚距離（次元が違えば nil）。
+	func distanceBetween(_ left: [Float]?, _ right: [Float]?) -> Double?
+	{
+		guard let left, let right, left.count == right.count, !left.isEmpty
+		else
+		{
+			return nil
+		}
+		var dot = 0.0
+		for index in 0 ..< left.count
+		{
+			dot += Double(left[index]) * Double(right[index])
+		}
+		return min(1, max(0, 2 - 2 * dot).squareRoot() / 2)
+	}
+
+	print("")
+	print("■ 区間ごとの中身（\(segmentSize) 枚ごと・**measure-poses の --starts と同じ添字**）")
+	print("  start   span(s)  鋭さ中央値   鋭さ下位10%  隣接距離  レンズ  最多レンズ")
+	var index = 0
+	while index < ordered.count
+	{
+		let slice = Array(ordered[index ..< min(ordered.count, index + segmentSize)])
+		let dates = slice.compactMap(\.date)
+		let span = dates.count > 1
+			? (dates.max()!.timeIntervalSince(dates.min()!)) : 0
+		let sharpnessValues = slice.compactMap(\.sharpness).sorted()
+		var neighbourDistances: [Double] = []
+		for offset in 1 ..< slice.count
+		{
+			if let value = distanceBetween(slice[offset - 1].elements, slice[offset].elements)
+			{
+				neighbourDistances.append(value)
+			}
+		}
+		var lenses: [Int: Int] = [:]
+		for photo in slice
+		{
+			lenses[photo.focal35.map { Int($0.rounded()) } ?? 0, default: 0] += 1
+		}
+		let top = lenses.max { $0.value < $1.value }
+		print(String(
+			format: "  %5d %9.0f %11@ %12@ %9@ %6d  %@",
+			index, span,
+			format(percentile(sharpnessValues, 0.5), 1) as NSString,
+			format(percentile(sharpnessValues, 0.1), 1) as NSString,
+			format(median(neighbourDistances)) as NSString,
+			lenses.count,
+			(top.map { $0.key == 0 ? "無し×\($0.value)" : "\($0.key)mm×\($0.value)" } ?? "-")
+				as NSString))
+		index += segmentSize
+	}
+	print("  → error 6 になった区間と、鋭さ（ブレ）・隣接距離・レンズ数のどれが")
+	print("    対応しているかを見る。**鋭さが低い区間で落ちているなら品質フィルタが効く**")
+}
 
 let neighbourRecall = Double(hits[0][2]) / Double(max(1, trials[0]))
 /// 無作為でも当たる割合に対する倍率。**割合そのものではなくこの倍率で判断する。**
