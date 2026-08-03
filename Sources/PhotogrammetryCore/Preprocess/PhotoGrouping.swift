@@ -428,7 +428,7 @@ public enum PhotoGrouping
 		{
 			usable.insert(.overlap)
 			scored = measured.edges()
-			threshold = settings.threshold ?? measured.criteria.minimumAgreement
+			threshold = settings.threshold ?? measured.criteria.minimumInlierRatio
 			thresholdWasAutomatic = false
 		}
 		else
@@ -470,9 +470,15 @@ public enum PhotoGrouping
 		}
 
 		// 隣接の候補からは**証明済みに重なっていない組だけ**を外す（設計メモ §4.9）。
-		// 測っていない組は残す — 分からないことを理由に候補を捨てると、視覚特徴が
-		// 取れない現場で隣接が 1 本も作れなくなる（§4.4 と同じ判断）。
-		let linkEdges = measured == nil ? scored : scored.filter { $0.score > 0 }
+		//
+		// **測っていない組は必ず残す。** ここを「実測で重なっている組だけ」に絞ると
+		// 共有写真が枯れる — 実データ 1424 枚で隣接 19 本すべてが共有 2〜8 枚
+		// （推奨 10）になり、確認の候補も全部で 31 組しか無かった。グループの
+		// 境目をまたぐ組は元々少ないので、絞った時点で選びようが無くなる。
+		// 未測定の組はスコアを閾値未満へ落として並べる（実測で重なっている組が
+		// 必ず先に来るようにするだけで、候補からは外さない）。
+		let linkEdges = linkCandidates(
+			prior: prior, measured: measured, scored: scored, count: photos.count)
 		let links = buildLinks(groups: groups, edges: linkEdges, rooms: rooms, settings: settings)
 
 		return GroupingResult(
@@ -487,6 +493,34 @@ public enum PhotoGrouping
 			threshold: threshold,
 			thresholdWasAutomatic: thresholdWasAutomatic,
 			scoreHistogram: histogram)
+	}
+
+	/// 隣接の候補にするエッジ。
+	///
+	/// 重なりを使わなかったときは事前確率のエッジをそのまま。使ったときは
+	/// **実測で重なっている組 ＋ まだ測っていない事前候補**で、証明済みに重なって
+	/// いない組だけを外す。後者のスコアは閾値未満へ押し下げるので、`buildLinks` の
+	/// 確からしさ（上位のエッジの平均）は実測のある隣接ほど高くなる。
+	static func linkCandidates(
+		prior: [PairScore],
+		measured: OverlapGraph?,
+		scored: [PairScore],
+		count: Int) -> [PairScore]
+	{
+		guard let measured
+		else
+		{
+			return prior
+		}
+		let bar = measured.criteria.minimumInlierRatio
+		var result = scored.filter { $0.score > 0 }
+		for candidate in prior where measured.verdict(candidate.i, candidate.j) == nil
+		{
+			// 未測定は「実測で重なっている組より下」に置く。順番付けにだけ効く。
+			result.append(PairScore(
+				i: candidate.i, j: candidate.j, score: candidate.score * bar * 0.99))
+		}
+		return result.sorted { $0.i == $1.i ? $0.j < $1.j : $0.i < $1.i }
 	}
 
 	/// 重なりを証拠として使えるか。**判定できた組を 1 つでも持つ写真の割合**で測る

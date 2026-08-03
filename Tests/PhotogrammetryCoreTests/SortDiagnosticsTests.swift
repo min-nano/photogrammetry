@@ -74,9 +74,9 @@ final class SortDiagnosticsTests: XCTestCase
 	{
 		var graph = OverlapGraph(photoCount: 4, checked: 2, budget: 64)
 		graph.verdicts[OverlapGraph.key(0, 1, photoCount: 4)] =
-			.overlapping(PhotoOverlap(agreement: 0.9, sharedArea: 0.5))
+			.overlapping(OverlapStub.overlapping)
 		graph.verdicts[OverlapGraph.key(2, 3, photoCount: 4)] =
-			.overlapping(PhotoOverlap(agreement: 0.9, sharedArea: 0.5))
+			.overlapping(OverlapStub.overlapping)
 		XCTAssertEqual(overlapDiagnostics(graph: graph), ["overlapGrouping"])
 	}
 
@@ -96,9 +96,9 @@ final class SortDiagnosticsTests: XCTestCase
 	{
 		var graph = OverlapGraph(photoCount: 4, checked: 64, budget: 64, budgetExhausted: true)
 		graph.verdicts[OverlapGraph.key(0, 1, photoCount: 4)] =
-			.overlapping(PhotoOverlap(agreement: 0.9, sharedArea: 0.5))
+			.overlapping(OverlapStub.overlapping)
 		graph.verdicts[OverlapGraph.key(2, 3, photoCount: 4)] =
-			.overlapping(PhotoOverlap(agreement: 0.9, sharedArea: 0.5))
+			.overlapping(OverlapStub.overlapping)
 		XCTAssertTrue(overlapDiagnostics(graph: graph).contains("overlapBudgetExhausted"))
 	}
 
@@ -107,9 +107,9 @@ final class SortDiagnosticsTests: XCTestCase
 	{
 		var graph = OverlapGraph(photoCount: 4, checked: 3, budget: 64)
 		graph.verdicts[OverlapGraph.key(0, 1, photoCount: 4)] =
-			.overlapping(PhotoOverlap(agreement: 0.9, sharedArea: 0.5))
+			.overlapping(OverlapStub.overlapping)
 		graph.verdicts[OverlapGraph.key(2, 3, photoCount: 4)] =
-			.separate(PhotoOverlap(agreement: 0.04, sharedArea: 0.5))
+			.separate(OverlapStub.separate)
 		XCTAssertTrue(overlapDiagnostics(graph: graph).contains("photosWithoutOverlap"))
 	}
 

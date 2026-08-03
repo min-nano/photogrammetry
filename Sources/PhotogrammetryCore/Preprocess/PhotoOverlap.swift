@@ -52,20 +52,39 @@ public struct GrayImage: Equatable, Sendable
 }
 
 /// 2 枚を位置合わせした結果の事実。**判断は含まない** — 「重なっていると
-/// 言えるか」の閾値は `SortPlanner.Settings` が持つ。
+/// 言えるか」の閾値は `OverlapCriteria` が持つ。
 public struct PhotoOverlap: Equatable, Sendable
 {
-	/// 重なった範囲で画素がどれだけ一致したか（-1.0〜1.0。正規化相互相関）。
-	/// 明るさの差では下がらない（平均と分散で正規化してある）ので、露出が
-	/// 違う 2 枚でも「同じものが写っている」なら高い。
+	/// 重なった範囲**全体**で画素がどれだけ一致したか（-1.0〜1.0。正規化相互相関）。
+	/// 明るさの差では下がらない（平均と分散で正規化してある）。
+	///
+	/// **これは判定には使わない。** 1 枚の射影変換は平面しか記述できないので、
+	/// 奥行きのある場面を別の立ち位置から撮った 2 枚では、本当に重なっていても
+	/// この値は落ちる（実データ 1424 枚で分布に谷が出ず、隣り合う写真の 45% しか
+	/// 拾えなかった。設計メモ §4.9.1）。閾値の見直しのために統計として残している。
 	public var agreement: Double
 	/// 重なりの広さ。**基準画像の面積に対する割合**（0.0〜1.0）。
 	public var sharedArea: Double
+	/// **判定に使うのはこれ。** 重なり範囲を格子に割り、ブロックごとに局所探索して
+	/// 一致を探したとき、**一致し、かつずれ方が揃っていたブロックの割合**
+	/// （0.0〜1.0）。実質的にインライア率で、視差があっても局所的には合うので
+	/// 落ちない一方、無関係な 2 枚では 1 ブロックも揃わない。
+	public var inlierRatio: Double
+	/// 判定に使えたブロック数（重なりの中にあって、かつ模様のあるブロック）。
+	/// 少なすぎるときは測定側が nil（判定できなかった）を返すので、ここに 0 が
+	/// 入った値が外へ出ることはない。
+	public var evaluatedBlocks: Int
 
-	public init(agreement: Double, sharedArea: Double)
+	public init(
+		agreement: Double,
+		sharedArea: Double,
+		inlierRatio: Double = 0,
+		evaluatedBlocks: Int = 0)
 	{
 		self.agreement = agreement
 		self.sharedArea = sharedArea
+		self.inlierRatio = inlierRatio
+		self.evaluatedBlocks = evaluatedBlocks
 	}
 
 	/// 位置合わせは走ったが重なりが見つからなかった、という結果。
@@ -148,11 +167,43 @@ public enum OverlapMeasurement
 	/// 画像では間引いて時間を一定に保つ。
 	public static let maximumSamples = 40000
 
+	// -----------------------------------------------------------------
+	// ブロックごとの局所一致（設計メモ §4.9.1）
+	// -----------------------------------------------------------------
+
+	/// 重なり範囲を割る格子。細かくするほど判定は鋭くなるが、1 ブロックの
+	/// 画素数が減って相関が偶然に振れる。
+	public static let gridColumns = 8
+	public static let gridRows = 6
+	/// 1 ブロックから拾う標本数の目安。相関を信用できて、かつ探索を回しても
+	/// 軽い量。
+	public static let samplesPerBlock = 144
+	/// 局所探索の半径（画像の長辺に対する割合）。**視差の逃げ幅**で、これが
+	/// 足りないと奥行きのある場面で本当の重なりを取りこぼす。
+	public static let searchFraction = 0.08
+	/// 粗い探索の刻み（画素）。この後 ±`refineRadius` を 1 画素刻みで詰める。
+	public static let coarseStride = 4
+	public static let refineRadius = 3
+	/// 判定に足るブロック数。これを下回ると「判定できなかった」（nil）。
+	public static let minimumEvaluatedBlocks = 6
+	/// ずれ方が揃っていると認める、中央値からの距離（探索半径に対する割合）。
+	/// **無関係な 2 枚でもブロック単位では偶然合うことがある**が、そのずれは
+	/// ばらばらに散る。本当に重なっていれば、視差でずれても中央値の周りに集まる。
+	public static let offsetTolerance = 0.6
+
 	/// 位置合わせ後の重なりを測る。
 	///
-	/// 基準画像の画素を格子状に拾い、変換で相手の画素へ写して**同じものが
-	/// 写っているか**（正規化相互相関）を測る。相関は平均と分散で正規化して
-	/// あるので、露出やホワイトバランスが違う 2 枚でも下がらない。
+	/// 2 つを測る。
+	///
+	/// 1. **全体の相関**（`agreement`）— 変換 1 つで全画素を突き合わせた値。
+	///    平面しか記述できないので奥行きのある場面では落ちる。統計として残すだけ。
+	/// 2. **ブロックごとの局所一致**（`inlierRatio`）— 重なり範囲を格子に割り、
+	///    ブロックごとに変換の周りを少し探して一致を探す。**視差はブロック単位の
+	///    小さなずれとして現れる**ので、探せば見つかる。そのうえで「ずれ方が
+	///    揃っているか」を見て、偶然合っただけのブロックを落とす。
+	///
+	/// 相関は平均と分散で正規化してあるので、露出やホワイトバランスが違う 2 枚
+	/// でも下がらない。
 	///
 	/// - Parameters:
 	///   - base: 基準画像。重なりの割合はこの画像の面積に対する比で返す。
@@ -165,6 +216,41 @@ public enum OverlapMeasurement
 		base: GrayImage,
 		other: GrayImage,
 		transform: ProjectiveTransform) -> PhotoOverlap?
+	{
+		guard let global = globalAgreement(base: base, other: other, transform: transform)
+		else
+		{
+			return nil
+		}
+		let blocks = blockMatches(base: base, other: other, transform: transform)
+		guard blocks.inside > 0
+		else
+		{
+			// どのブロックの中心も相手の外だった（重なりが無いか、帯のように
+			// 狭い）。**積極的な「重なっていない」**。広さは画素で測ったほうを返す
+			// — ブロックより細かいので、狭い重なりもそのまま伝わる。
+			return PhotoOverlap(agreement: 0, sharedArea: min(1, global.sharedArea))
+		}
+		guard blocks.evaluated >= minimumEvaluatedBlocks
+		else
+		{
+			// 重なってはいるが模様が無い（白い壁・白飛び）。一致しているとも
+			// していないとも言えないので判定を返さない。
+			return nil
+		}
+		return PhotoOverlap(
+			agreement: global.agreement,
+			sharedArea: min(1, global.sharedArea),
+			inlierRatio: Double(blocks.coherent) / Double(blocks.evaluated),
+			evaluatedBlocks: blocks.evaluated)
+	}
+
+	/// 変換 1 つで全画素を突き合わせた相関と、重なりの広さ。
+	/// **判定には使わない**（`measure` のドキュメント参照）。
+	static func globalAgreement(
+		base: GrayImage,
+		other: GrayImage,
+		transform: ProjectiveTransform) -> (agreement: Double, sharedArea: Double)?
 	{
 		guard base.width > 0, base.height > 0, other.width > 0, other.height > 0,
 			base.pixels.count >= base.width * base.height,
@@ -222,9 +308,8 @@ public enum OverlapMeasurement
 		guard inside >= Double(minimumSamples)
 		else
 		{
-			// 重なりが狭すぎて相関が偶然に左右される。**広さは分かっている**ので、
-			// 一致度 0 の重なりとして返す（呼び出し側の閾値で落ちる）。
-			return PhotoOverlap(agreement: 0, sharedArea: sharedArea)
+			// 重なりが狭すぎて相関が偶然に左右される。**広さは分かっている**。
+			return (0, sharedArea)
 		}
 
 		let varianceBase = (sumBaseSquared - sumBase * sumBase / inside) / inside
@@ -232,14 +317,258 @@ public enum OverlapMeasurement
 		guard varianceBase >= minimumVariance, varianceOther >= minimumVariance
 		else
 		{
-			// 模様が無い（白い壁・白飛び）。**一致していると言えないのと同じくらい、
-			// していないとも言えない**ので判定を返さない。
-			return nil
+			// 模様が無い。相関は意味を持たないが、広さは分かっている。
+			return (0, sharedArea)
 		}
 		let covariance = (sumProduct - sumBase * sumOther / inside) / inside
 		let agreement = covariance / (varianceBase * varianceOther).squareRoot()
-		return PhotoOverlap(
-			agreement: min(1, max(-1, agreement)),
-			sharedArea: min(1, sharedArea))
+		return (min(1, max(-1, agreement)), sharedArea)
+	}
+
+	/// ブロックごとに局所探索して一致を数える。
+	///
+	/// - Returns: 重なりの中に入ったブロック数・判定に使えたブロック数・
+	///   一致したうえでずれ方が揃っていたブロック数。
+	static func blockMatches(
+		base: GrayImage,
+		other: GrayImage,
+		transform: ProjectiveTransform)
+		-> (inside: Int, evaluated: Int, coherent: Int)
+	{
+		guard base.width >= gridColumns, base.height >= gridRows,
+			base.pixels.count >= base.width * base.height,
+			other.pixels.count >= other.width * other.height
+		else
+		{
+			return (0, 0, 0)
+		}
+		let blockWidth = base.width / gridColumns
+		let blockHeight = base.height / gridRows
+		// 1 ブロックからおよそ `samplesPerBlock` 枚拾う刻み。
+		let stride = max(
+			1,
+			Int((Double(blockWidth * blockHeight) / Double(samplesPerBlock)).squareRoot().rounded()))
+		let radius = max(
+			coarseStride,
+			Int((Double(max(other.width, other.height)) * searchFraction).rounded()))
+		let tolerance = max(2.0, Double(radius) * offsetTolerance)
+
+		var inside = 0
+		var evaluated = 0
+		var offsets: [(x: Int, y: Int)] = []
+
+		for row in 0 ..< gridRows
+		{
+			for column in 0 ..< gridColumns
+			{
+				let originX = column * blockWidth
+				let originY = row * blockHeight
+				// 基準側の標本と、変換で写した先の座標をまとめて作る。
+				var values: [Double] = []
+				var targets: [(x: Double, y: Double)] = []
+				values.reserveCapacity(samplesPerBlock)
+				targets.reserveCapacity(samplesPerBlock)
+				for y in Swift.stride(from: originY, to: originY + blockHeight, by: stride)
+				{
+					for x in Swift.stride(from: originX, to: originX + blockWidth, by: stride)
+					{
+						guard let mapped = transform.apply(x: Double(x), y: Double(y))
+						else
+						{
+							continue
+						}
+						values.append(Double(base.pixels[y * base.width + x]))
+						targets.append(mapped)
+					}
+				}
+				guard values.count >= minimumBlockSamples
+				else
+				{
+					continue
+				}
+				// ブロックの中心が相手の画像の中に落ちるか（＝重なりの中にあるか）。
+				let centre = targets[targets.count / 2]
+				guard centre.x >= 0, centre.x < Double(other.width),
+					centre.y >= 0, centre.y < Double(other.height)
+				else
+				{
+					continue
+				}
+				inside += 1
+				guard variance(of: values) >= minimumVariance
+				else
+				{
+					// 基準側が真っ平ら。**この組の判定材料にならない**ので数えない
+					// （一致しなかった、とは違う）。
+					continue
+				}
+				guard let best = bestMatch(
+					values: values,
+					targets: targets,
+					other: other,
+					radius: radius)
+				else
+				{
+					// 相手側が真っ平ら／範囲外。同上。
+					continue
+				}
+				evaluated += 1
+				if best.agreement >= minimumBlockAgreement
+				{
+					offsets.append((best.x, best.y))
+				}
+			}
+		}
+
+		guard evaluated > 0, !offsets.isEmpty
+		else
+		{
+			return (inside, evaluated, 0)
+		}
+		// **ずれ方が揃っているものだけを数える。** 偶然合ったブロックのずれは
+		// 散らばるが、本当に重なっていれば視差でずれても中央値の周りに集まる。
+		let medianX = median(offsets.map { Double($0.x) })
+		let medianY = median(offsets.map { Double($0.y) })
+		let coherent = offsets.filter
+		{
+			let dx = Double($0.x) - medianX
+			let dy = Double($0.y) - medianY
+			return (dx * dx + dy * dy).squareRoot() <= tolerance
+		}.count
+		return (inside, evaluated, coherent)
+	}
+
+	/// 1 ブロックが認められる最低の一致度。全体の相関より高く取れるのは、
+	/// 局所では視差の影響がほとんど無いため。
+	public static let minimumBlockAgreement = 0.6
+	/// 1 ブロックの相関に必要な標本数。
+	static let minimumBlockSamples = 24
+
+	/// 変換の周りを探して、最もよく一致するずれを見つける。粗く探してから
+	/// 1 画素刻みで詰める（全部を 1 画素刻みで探すと探索が 16 倍になる）。
+	static func bestMatch(
+		values: [Double],
+		targets: [(x: Double, y: Double)],
+		other: GrayImage,
+		radius: Int) -> (x: Int, y: Int, agreement: Double)?
+	{
+		var best: (x: Int, y: Int, agreement: Double)?
+		func consider(_ dx: Int, _ dy: Int)
+		{
+			guard let score = correlation(
+				values: values, targets: targets, other: other, offsetX: dx, offsetY: dy)
+			else
+			{
+				return
+			}
+			guard let current = best
+			else
+			{
+				best = (dx, dy, score)
+				return
+			}
+			if score > current.agreement
+			{
+				best = (dx, dy, score)
+			}
+		}
+		var offset = -radius
+		while offset <= radius
+		{
+			var vertical = -radius
+			while vertical <= radius
+			{
+				consider(offset, vertical)
+				vertical += coarseStride
+			}
+			offset += coarseStride
+		}
+		guard let coarse = best
+		else
+		{
+			return nil
+		}
+		for dx in (coarse.x - refineRadius) ... (coarse.x + refineRadius)
+		{
+			for dy in (coarse.y - refineRadius) ... (coarse.y + refineRadius)
+			{
+				consider(dx, dy)
+			}
+		}
+		return best
+	}
+
+	/// 1 ブロックぶんの正規化相互相関。相手側の分散が足りなければ nil。
+	static func correlation(
+		values: [Double],
+		targets: [(x: Double, y: Double)],
+		other: GrayImage,
+		offsetX: Int,
+		offsetY: Int) -> Double?
+	{
+		var sumBase = 0.0
+		var sumOther = 0.0
+		var sumBaseSquared = 0.0
+		var sumOtherSquared = 0.0
+		var sumProduct = 0.0
+		var count = 0.0
+		for index in 0 ..< values.count
+		{
+			let column = Int(targets[index].x.rounded()) + offsetX
+			let row = Int(targets[index].y.rounded()) + offsetY
+			guard column >= 0, column < other.width, row >= 0, row < other.height
+			else
+			{
+				continue
+			}
+			let left = values[index]
+			let right = Double(other.pixels[row * other.width + column])
+			sumBase += left
+			sumOther += right
+			sumBaseSquared += left * left
+			sumOtherSquared += right * right
+			sumProduct += left * right
+			count += 1
+		}
+		guard count >= Double(minimumBlockSamples)
+		else
+		{
+			return nil
+		}
+		let varianceBase = (sumBaseSquared - sumBase * sumBase / count) / count
+		let varianceOther = (sumOtherSquared - sumOther * sumOther / count) / count
+		guard varianceBase >= minimumVariance, varianceOther >= minimumVariance
+		else
+		{
+			return nil
+		}
+		let covariance = (sumProduct - sumBase * sumOther / count) / count
+		return min(1, max(-1, covariance / (varianceBase * varianceOther).squareRoot()))
+	}
+
+	/// 標本の分散。
+	static func variance(of values: [Double]) -> Double
+	{
+		guard !values.isEmpty
+		else
+		{
+			return 0
+		}
+		let count = Double(values.count)
+		let sum = values.reduce(0, +)
+		let sumSquared = values.reduce(0) { $0 + $1 * $1 }
+		return (sumSquared - sum * sum / count) / count
+	}
+
+	/// 中央値。空なら 0。
+	static func median(_ values: [Double]) -> Double
+	{
+		guard !values.isEmpty
+		else
+		{
+			return 0
+		}
+		let sorted = values.sorted()
+		return sorted[sorted.count / 2]
 	}
 }

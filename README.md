@@ -114,7 +114,7 @@ photogrammetry-cli sort <入力フォルダ> <仕分け先フォルダ> \
     [--overlap 15] [--max-per-group 150] [--min-per-group 20] \
     [--time-gap 300] [--group-threshold 0.4] [--min-sharpness 12] \
     [--duplicate-distance 4] [--visual-threshold 0.4] [--no-visual] \
-    [--overlap-agreement 0.35] [--overlap-budget 20000] \
+    [--overlap-inliers 0.3] [--overlap-budget 20000] \
     [--no-overlap-grouping] [--no-overlap-check] \
     [--link hardlink|copy|symlink] [--no-recursive] [--dry-run]
 ```
@@ -168,7 +168,7 @@ photogrammetry-cli sort <入力フォルダ> <仕分け先フォルダ> \
    確かめます。一致しない組は採らず、1 組も残らなければ隣接そのものを
    作りません（無関係な写真をグループへ持ち込むほうが有害なため）。何組を
    確かめて何組を落としたかは診断と `manifest.json` に残ります。
-   グループ分けの段で測った組は**測り直しません**。`--overlap-agreement` で
+   グループ分けの段で測った組は**測り直しません**。`--overlap-inliers` で
    厳しさを、`--no-overlap-check` で確認そのものを調整できます。
 7. **閾値を固定しない（重なりを除く）。** ブレ判定も「同じ場所」の判定も、その
    現場の分布から自動決定します（分布の山が 1 つのときは切らないので、ブレた

@@ -108,7 +108,7 @@ final class SortRequestTests: XCTestCase
 		XCTAssertThrowsError(try request.validate())
 
 		request = makeRequest()
-		request.overlapAgreement = 1.4
+		request.overlapInliers = 1.4
 		XCTAssertThrowsError(try request.validate())
 
 		request = makeRequest()
@@ -198,12 +198,12 @@ final class SortRequestTests: XCTestCase
 		// 既定は「確かめる」。閾値は SortPlanner の既定に任せる。
 		XCTAssertTrue(request.overlapCheck)
 		XCTAssertEqual(
-			request.plannerSettings.minimumOverlapAgreement,
-			SortPlanner.Settings().minimumOverlapAgreement)
+			request.plannerSettings.minimumInlierRatio,
+			SortPlanner.Settings().minimumInlierRatio)
 
 		// 指定したときは、その値がそのまま判定に使われる（manifest にも残る）。
-		request.overlapAgreement = 0.6
-		XCTAssertEqual(request.plannerSettings.minimumOverlapAgreement, 0.6)
+		request.overlapInliers = 0.6
+		XCTAssertEqual(request.plannerSettings.minimumInlierRatio, 0.6)
 	}
 
 	/// **判断の基準は 1 か所から配る。** グループ分け（§4.9）と共有写真の選定
@@ -211,11 +211,11 @@ final class SortRequestTests: XCTestCase
 	func testOverlapCriteriaAreSharedBetweenGroupingAndPlanning()
 	{
 		var request = makeRequest()
-		request.overlapAgreement = 0.55
+		request.overlapInliers = 0.55
 		XCTAssertEqual(
 			request.groupingSettings.overlapSurvey.criteria,
 			request.plannerSettings.overlapCriteria)
-		XCTAssertEqual(request.groupingSettings.overlapSurvey.criteria.minimumAgreement, 0.55)
+		XCTAssertEqual(request.groupingSettings.overlapSurvey.criteria.minimumInlierRatio, 0.55)
 	}
 
 	/// 予算はそのまま調査へ届く。既定は「枚数から決める」ので nil のまま。

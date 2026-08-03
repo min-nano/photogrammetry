@@ -69,10 +69,12 @@ final class OverlapStub: @unchecked Sendable
 		}
 	}
 
-	/// 実際に重なっている 2 枚（実測の代表値。設計メモ §4.6.1 の表より）。
-	static let overlapping = PhotoOverlap(agreement: 0.92, sharedArea: 0.6)
-	/// 無関係な 2 枚。
-	static let separate = PhotoOverlap(agreement: 0.04, sharedArea: 0.5)
+	/// 実際に重なっている 2 枚。**判定に効くのはインライア率**（設計メモ §4.9.1）。
+	static let overlapping = PhotoOverlap(
+		agreement: 0.92, sharedArea: 0.6, inlierRatio: 0.9, evaluatedBlocks: 40)
+	/// 無関係な 2 枚。ブロック単位でもどこも揃わない。
+	static let separate = PhotoOverlap(
+		agreement: 0.04, sharedArea: 0.5, inlierRatio: 0.02, evaluatedBlocks: 40)
 }
 
 /// 撮影 1 区画ぶんの設計図。
@@ -149,13 +151,17 @@ final class OverlapGraphTests: XCTestCase
 	{
 		let criteria = OverlapCriteria()
 		XCTAssertEqual(criteria.judge(nil), .undecided)
-		XCTAssertEqual(
-			criteria.judge(PhotoOverlap(agreement: 0.04, sharedArea: 0.5)),
-			.separate(PhotoOverlap(agreement: 0.04, sharedArea: 0.5)))
-		// 一致度は高いが**帯のように少ししか重なっていない**組は対応点にならない。
-		XCTAssertEqual(
-			criteria.judge(PhotoOverlap(agreement: 0.9, sharedArea: 0.05)),
-			.separate(PhotoOverlap(agreement: 0.9, sharedArea: 0.05)))
+		XCTAssertEqual(criteria.judge(OverlapStub.separate), .separate(OverlapStub.separate))
+		// 局所的には揃っているが**帯のように少ししか重なっていない**組は対応点に
+		// ならない。
+		let narrow = PhotoOverlap(
+			agreement: 0.9, sharedArea: 0.05, inlierRatio: 0.9, evaluatedBlocks: 8)
+		XCTAssertEqual(criteria.judge(narrow), .separate(narrow))
+		// **全体の相関が低くても、局所が揃っていれば重なっている。** 視差のある
+		// 2 枚がこれで、当初の測り方ではここを取りこぼしていた（§4.9.1）。
+		let parallax = PhotoOverlap(
+			agreement: 0.22, sharedArea: 0.6, inlierRatio: 0.55, evaluatedBlocks: 30)
+		XCTAssertTrue(criteria.judge(parallax).isOverlapping)
 		XCTAssertTrue(criteria.judge(OverlapStub.overlapping).isOverlapping)
 	}
 
@@ -171,7 +177,7 @@ final class OverlapGraphTests: XCTestCase
 		let edges = graph.edges()
 		XCTAssertEqual(edges.count, 2, "判定できなかった組はエッジにしない")
 		XCTAssertEqual(edges[0].i, 0)
-		XCTAssertEqual(edges[0].score, 0.92, accuracy: 1e-9)
+		XCTAssertEqual(edges[0].score, 0.9, accuracy: 1e-9)
 		XCTAssertEqual(edges[1].i, 1)
 		XCTAssertEqual(edges[1].score, 0)
 	}
@@ -303,7 +309,7 @@ final class OverlapGraphTests: XCTestCase
 		XCTAssertEqual(withOverlap.groups[1].members, Array(20 ..< 40))
 		XCTAssertTrue(withOverlap.usedEvidence.contains(.overlap))
 		XCTAssertFalse(withOverlap.thresholdWasAutomatic, "一致度の目盛りは現場に依存しない")
-		XCTAssertEqual(withOverlap.threshold, OverlapCriteria().minimumAgreement, accuracy: 1e-9)
+		XCTAssertEqual(withOverlap.threshold, OverlapCriteria().minimumInlierRatio, accuracy: 1e-9)
 	}
 
 	/// **一度離れて戻ってきた撮影は、時刻が離れていても 1 つになる。** これが

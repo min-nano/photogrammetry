@@ -56,6 +56,10 @@ final class FakeOverlapVerifier: PhotoOverlapVerifying, @unchecked Sendable
 		return count
 	}
 
+	/// 実際に重なっている 2 枚の代表値。**判定に効くのはインライア率**（§4.9.1）。
+	static let sample = PhotoOverlap(
+		agreement: 0.9, sharedArea: 0.6, inlierRatio: 0.85, evaluatedBlocks: 40)
+
 	func overlap(between a: URL, and b: URL) -> PhotoOverlap?
 	{
 		lock.lock()
@@ -449,8 +453,7 @@ final class PhotoSorterTests: XCTestCase
 	func testOverlapCheckIsRecordedInTheManifest() throws
 	{
 		let photos = try makePhotos()
-		let verifier = FakeOverlapVerifier(
-			answer: PhotoOverlap(agreement: 0.9, sharedArea: 0.6))
+		let verifier = FakeOverlapVerifier(answer: .sample)
 		let manifest = try makeSorter(photos, verifier: verifier)
 			.run(makeSharedPhotoRequest())
 
@@ -483,8 +486,7 @@ final class PhotoSorterTests: XCTestCase
 	{
 		let photos = try makePhotos()
 		// すべての組が重なる（＝ひと続きの場所を撮った）現場。
-		let verifier = FakeOverlapVerifier(
-			answer: PhotoOverlap(agreement: 0.9, sharedArea: 0.6))
+		let verifier = FakeOverlapVerifier(answer: .sample)
 		let manifest = try makeSorter(photos, verifier: verifier).run(makeRequest())
 
 		XCTAssertTrue(manifest.settings.overlapGrouping)
@@ -506,8 +508,7 @@ final class PhotoSorterTests: XCTestCase
 	func testOverlapGroupingCanBeTurnedOffWhileKeepingTheCheck() throws
 	{
 		let photos = try makePhotos()
-		let verifier = FakeOverlapVerifier(
-			answer: PhotoOverlap(agreement: 0.9, sharedArea: 0.6))
+		let verifier = FakeOverlapVerifier(answer: .sample)
 		let manifest = try makeSorter(photos, verifier: verifier)
 			.run(makeSharedPhotoRequest())
 

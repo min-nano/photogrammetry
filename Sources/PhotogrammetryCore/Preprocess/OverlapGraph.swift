@@ -6,12 +6,16 @@
 //  `ImageRegistrar`、画素から一致度を測るのは `OverlapMeasurement` の仕事で、
 //  ここは**測った結果と、次に何を測るか**だけを扱う。
 //
-//  **なぜグループ分けの一次証拠にできるか。** 重なりの一致度は現場に依存しない
-//  目盛りを持つ（無関係な 2 枚は 0.04 以下、実際に重なる 2 枚は寄り引き・回転が
-//  入っても 0.65 以上。§4.6.1 で実測）。時刻・GPS・露出・feature print の距離は
-//  どれも尺度が現場ごとにずれるので閾値を分布から推定する必要があったが、
-//  ここにはその必要が無い。しかも測っているのは**再構成が成立する条件そのもの**
-//  （同じ面が両方に写っているか）で、他の証拠のようにその推定ではない。
+//  **なぜグループ分けの一次証拠にできるか。** 測っているのが**再構成が成立する
+//  条件そのもの**（同じ面が両方に写っているか）だから。時刻・GPS・露出・
+//  feature print の距離はどれもその推定でしかなく、しかも尺度が現場ごとにずれる。
+//
+//  **ただし「どう測るか」で結果はまるで変わる。** 重なり範囲全体の相関で判定して
+//  いた最初の版は、実データ 1424 枚で分布に谷が出ず、隣り合う写真の 45% しか
+//  拾えなかった（設計メモ §4.9.1）。1 枚の射影変換は平面しか記述できないので、
+//  視差のある 2 枚では本当に重なっていても相関が落ちるため。いまはブロックごとの
+//  局所一致（インライア率）で判定する — 視差はブロック単位の小さなずれとして
+//  現れるので、探せば見つかる。
 //
 //  **問題はコストだけ。** 1424 枚なら全ペアは 101 万組で、1 組ごとにデコードと
 //  Vision の推論が走る以上そのままでは回らない。そこで EXIF（撮影の流れ）を
@@ -25,16 +29,21 @@ import Foundation
 /// （`ImageRegistrar`）は数値を返すだけ（設計メモ §4.6.1 の層の分け方）。
 public struct OverlapCriteria: Equatable, Sendable
 {
-	/// 重なった範囲の画素の一致度の下限。実測では無関係な 2 枚が 0.05 を超えず、
-	/// 実際に重なる 2 枚は 0.65 以上だったので、その間に置く。
-	public var minimumAgreement: Double
+	/// 局所的に一致し、かつずれ方が揃っていたブロックの割合の下限。
+	///
+	/// **判定はこれで行う（設計メモ §4.9.1）。** 当初は重なり範囲全体の相関
+	/// （`PhotoOverlap.agreement`）で判定していたが、実データ 1424 枚で分布に
+	/// 谷が出ず、隣り合う写真の 45% しか拾えなかった。1 枚の射影変換は平面しか
+	/// 記述できないので、視差のある 2 枚では本当に重なっていても全体の相関が
+	/// 落ちるため。ブロック単位なら視差は小さなずれとして現れるので拾える。
+	public var minimumInlierRatio: Double
 	/// 重なりの広さ（基準画像の面積比）の下限。帯のように少ししか重なっていない
 	/// 組は対応点にならない。
 	public var minimumSharedArea: Double
 
-	public init(minimumAgreement: Double = 0.35, minimumSharedArea: Double = 0.15)
+	public init(minimumInlierRatio: Double = 0.3, minimumSharedArea: Double = 0.15)
 	{
-		self.minimumAgreement = minimumAgreement
+		self.minimumInlierRatio = minimumInlierRatio
 		self.minimumSharedArea = minimumSharedArea
 	}
 
@@ -46,7 +55,8 @@ public struct OverlapCriteria: Equatable, Sendable
 		{
 			return .undecided
 		}
-		guard overlap.agreement >= minimumAgreement, overlap.sharedArea >= minimumSharedArea
+		guard overlap.inlierRatio >= minimumInlierRatio,
+			overlap.sharedArea >= minimumSharedArea
 		else
 		{
 			return .separate(overlap)
@@ -104,6 +114,8 @@ public struct OverlapGraph: Equatable, Sendable
 	public var checked: Int
 	/// 使ってよい回数の上限。
 	public var budget: Int
+	/// 骨格として確かめた「撮影順で前後何枚まで」。的中率を出すのに要る。
+	public var chainWindow: Int
 	/// 上限を使い切ったか。**使い切ったなら見落とした繋がりがありうる**ので、
 	/// 診断で必ず伝える（設計メモ §4.9）。
 	public var budgetExhausted: Bool
@@ -114,8 +126,10 @@ public struct OverlapGraph: Equatable, Sendable
 		verdicts: [Int: OverlapVerdict] = [:],
 		checked: Int = 0,
 		budget: Int = 0,
+		chainWindow: Int = 1,
 		budgetExhausted: Bool = false)
 	{
+		self.chainWindow = chainWindow
 		self.photoCount = photoCount
 		self.criteria = criteria
 		self.verdicts = verdicts
@@ -185,7 +199,7 @@ public struct OverlapGraph: Equatable, Sendable
 			switch verdict
 			{
 				case .overlapping(let overlap):
-					return PairScore(i: i, j: j, score: overlap.agreement)
+					return PairScore(i: i, j: j, score: overlap.inlierRatio)
 				case .separate:
 					return PairScore(i: i, j: j, score: 0)
 				case .undecided:
@@ -213,8 +227,20 @@ public struct OverlapGraph: Equatable, Sendable
 		return histogram
 	}
 
-	/// 一致度の分布（0.0〜1.0 を 20 分割）。**閾値が妥当だったか**を写真なしで
-	/// 見直すための材料。判定できなかった組は含まない。
+	/// **判定に使ったインライア率**の分布（0.0〜1.0 を 20 分割）。閾値が妥当
+	/// だったかを写真なしで見直すための材料で、**山が 2 つに割れていれば判定は
+	/// 効いている**。判定できなかった組は含まない。
+	public func inlierHistogram() -> [Int]
+	{
+		ThresholdEstimator.histogram(
+			values: verdicts.values.compactMap { $0.overlap?.inlierRatio },
+			bins: Self.histogramBins,
+			lower: 0,
+			upper: 1)
+	}
+
+	/// 重なり範囲**全体**の相関の分布。**判定には使っていない**が、新旧の測り方を
+	/// 比べられるように残す（設計メモ §4.9.1）。
 	public func agreementHistogram() -> [Int]
 	{
 		ThresholdEstimator.histogram(
@@ -222,6 +248,35 @@ public struct OverlapGraph: Equatable, Sendable
 			bins: Self.histogramBins,
 			lower: 0,
 			upper: 1)
+	}
+
+	/// **骨格の的中率** — 撮影順で隣り合う組のうち、実際に重なっていると判定
+	/// できた割合。歩きながら撮れば隣の 2 枚はまず重なるので、**測り方が効いて
+	/// いるかがこの 1 つの数字で分かる**（低ければ取りこぼしている）。
+	/// 隣り合う組を 1 つも測っていなければ nil。
+	public func chainHitRate() -> Double?
+	{
+		var decided = 0
+		var overlapping = 0
+		for (key, verdict) in verdicts where verdict != .undecided
+		{
+			guard key % photoCount - key / photoCount <= max(1, chainWindow)
+			else
+			{
+				continue
+			}
+			decided += 1
+			if verdict.isOverlapping
+			{
+				overlapping += 1
+			}
+		}
+		guard decided > 0
+		else
+		{
+			return nil
+		}
+		return Double(overlapping) / Double(decided)
 	}
 
 	/// どの写真とも重なりを確かめられなかった写真の添字。**確かめた相手が 1 人も
@@ -320,7 +375,10 @@ public enum OverlapSurvey
 		let count = urls.count
 		let budget = max(0, settings.budget ?? count * max(1, settings.checksPerPhoto))
 		var graph = OverlapGraph(
-			photoCount: count, criteria: settings.criteria, budget: budget)
+			photoCount: count,
+			criteria: settings.criteria,
+			budget: budget,
+			chainWindow: max(1, settings.chainWindow))
 		guard count > 1, budget > 0
 		else
 		{
@@ -530,7 +588,7 @@ public enum OverlapSurvey
 	{
 		let count = graph.photoCount
 		var components = ComponentTracker(count: count)
-		for edge in graph.edges() where edge.score >= settings.criteria.minimumAgreement
+		for edge in graph.edges() where edge.score >= settings.criteria.minimumInlierRatio
 		{
 			components.union(edge.i, edge.j)
 		}

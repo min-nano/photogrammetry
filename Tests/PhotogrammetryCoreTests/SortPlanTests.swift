@@ -333,7 +333,8 @@ final class SortPlanTests: XCTestCase
 					{
 						return PhotoOverlap.none
 					}
-					return PhotoOverlap(agreement: 0.9, sharedArea: 0.6)
+					return PhotoOverlap(
+						agreement: 0.9, sharedArea: 0.6, inlierRatio: 0.85, evaluatedBlocks: 40)
 				}
 			}
 		}
@@ -471,16 +472,16 @@ final class SortPlanTests: XCTestCase
 	func testOverlapThresholdIsTheJudgement()
 	{
 		let settings = SortPlanner.Settings(
-			minimumOverlapAgreement: 0.35, minimumSharedArea: 0.15)
+			minimumInlierRatio: 0.35, minimumSharedArea: 0.15)
 		// 一致度も広さも足りている。
 		XCTAssertTrue(SortPlanner.isOverlapping(
-			PhotoOverlap(agreement: 0.4, sharedArea: 0.2), settings: settings))
+			PhotoOverlap(agreement: 0.4, sharedArea: 0.2, inlierRatio: 0.5), settings: settings))
 		// 一致度が足りない（＝別のものが写っている）。
 		XCTAssertFalse(SortPlanner.isOverlapping(
-			PhotoOverlap(agreement: 0.2, sharedArea: 0.9), settings: settings))
+			PhotoOverlap(agreement: 0.2, sharedArea: 0.9, inlierRatio: 0.1), settings: settings))
 		// 広さが足りない（＝帯のようにしか重なっていない）。
 		XCTAssertFalse(SortPlanner.isOverlapping(
-			PhotoOverlap(agreement: 0.9, sharedArea: 0.05), settings: settings))
+			PhotoOverlap(agreement: 0.9, sharedArea: 0.05, inlierRatio: 0.9), settings: settings))
 	}
 
 	func testPlanRecordsVerificationInTheManifestContract()

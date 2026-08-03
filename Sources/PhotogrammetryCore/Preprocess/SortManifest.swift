@@ -104,8 +104,9 @@ public struct SortManifest: Codable, Equatable, Sendable
 		public var visualThresholdWasAutomatic: Bool
 		/// 共有写真の候補を実際に位置合わせして確かめたか。
 		public var overlapCheck: Bool
-		/// 重なっていると認めた画素の一致度の下限（再現のため実際の値を残す）。
-		public var overlapAgreement: Double
+		/// 重なっていると認めた、局所的に一致したブロックの割合の下限
+		/// （再現のため実際の値を残す）。設計メモ §4.9.1。
+		public var overlapInliers: Double
 		/// グループ分けそのものを実際の重なりで決めたか（設計メモ §4.9）。
 		public var overlapGrouping: Bool
 		/// グループ分けで重なりを確かめた回数の上限（実際に使った値）。
@@ -127,7 +128,7 @@ public struct SortManifest: Codable, Equatable, Sendable
 			visualThreshold: Double,
 			visualThresholdWasAutomatic: Bool,
 			overlapCheck: Bool,
-			overlapAgreement: Double,
+			overlapInliers: Double,
 			overlapGrouping: Bool = false,
 			overlapBudget: Int? = nil,
 			link: LinkStrategy)
@@ -146,7 +147,7 @@ public struct SortManifest: Codable, Equatable, Sendable
 			self.visualThreshold = visualThreshold
 			self.visualThresholdWasAutomatic = visualThresholdWasAutomatic
 			self.overlapCheck = overlapCheck
-			self.overlapAgreement = overlapAgreement
+			self.overlapInliers = overlapInliers
 			self.link = link
 		}
 	}
@@ -255,9 +256,17 @@ public struct SortManifest: Codable, Equatable, Sendable
 			/// 写真 1 枚ごとの「重なる相手の数」の分布。添字 0 は「どの写真とも
 			/// 重ならなかった」で、**ここが大きい現場は撮影密度が足りない**。
 			public var degreeHistogram: [Int]
-			/// 一致度の分布（0.0〜1.0 を 20 分割）。閾値の妥当性を写真無しで見直す
-			/// ための材料で、**山が 2 つに割れていれば判定は効いている**。
+			/// **判定に使ったインライア率**の分布（0.0〜1.0 を 20 分割）。閾値の
+			/// 妥当性を写真無しで見直すための材料で、**山が 2 つに割れていれば判定は
+			/// 効いている**。
+			public var inlierHistogram: [Int]
+			/// 重なり範囲**全体**の相関の分布。**判定には使っていない**が、新旧の
+			/// 測り方を比べられるように残す（設計メモ §4.9.1）。
 			public var agreementHistogram: [Int]
+			/// **骨格の的中率** — 撮影順で隣り合う組のうち、実際に重なっていると
+			/// 判定できた割合。歩きながら撮れば隣の 2 枚はまず重なるので、
+			/// **測り方が効いているかがこの 1 つの数字で分かる**。
+			public var chainHitRate: Double?
 
 			public init(
 				checked: Int,
@@ -267,8 +276,12 @@ public struct SortManifest: Codable, Equatable, Sendable
 				separate: Int,
 				undecided: Int,
 				degreeHistogram: [Int],
-				agreementHistogram: [Int])
+				inlierHistogram: [Int] = [],
+				agreementHistogram: [Int],
+				chainHitRate: Double? = nil)
 			{
+				self.inlierHistogram = inlierHistogram
+				self.chainHitRate = chainHitRate
 				self.checked = checked
 				self.budget = budget
 				self.budgetExhausted = budgetExhausted

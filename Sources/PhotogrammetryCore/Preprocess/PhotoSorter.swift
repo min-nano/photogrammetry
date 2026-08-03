@@ -326,7 +326,7 @@ public struct PhotoSorter: Sendable
 				visualThreshold: grouping.rooms.threshold,
 				visualThresholdWasAutomatic: grouping.rooms.thresholdWasAutomatic,
 				overlapCheck: request.overlapCheck,
-				overlapAgreement: request.plannerSettings.minimumOverlapAgreement,
+				overlapInliers: request.plannerSettings.minimumInlierRatio,
 				overlapGrouping: grouping.usedEvidence.contains(.overlap),
 				overlapBudget: grouping.overlap?.budget,
 				link: request.link),
@@ -357,7 +357,9 @@ public struct PhotoSorter: Sendable
 						separate: $0.separateCount,
 						undecided: $0.undecidedCount,
 						degreeHistogram: $0.degreeHistogram(),
-						agreementHistogram: $0.agreementHistogram())
+						inlierHistogram: $0.inlierHistogram(),
+						agreementHistogram: $0.agreementHistogram(),
+						chainHitRate: $0.chainHitRate())
 				}),
 			groups: plan.groups.map
 			{

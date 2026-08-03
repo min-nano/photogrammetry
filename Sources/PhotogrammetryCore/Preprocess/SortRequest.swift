@@ -55,9 +55,10 @@ public struct SortRequest: Equatable, Sendable
 	/// 見た目の近さだけでは、白い壁ばかりの屋内で別の場所の写真が共有写真に
 	/// 混ざる（設計メモ §4.6.1）。切ると速くなるが、合成の対応点は当てにならなくなる。
 	public var overlapCheck: Bool
-	/// 重なっていると認める画素の一致度（0.0〜1.0）。nil なら既定値
-	/// （`SortPlanner.Settings`）を使う。厳しくすると共有写真は減るが確かになる。
-	public var overlapAgreement: Double?
+	/// 重なっていると認める、局所的に一致したブロックの割合（0.0〜1.0）。
+	/// nil なら既定値（`SortPlanner.Settings`）。上げるほど確かになるが繋がりは減る。
+	/// **画素 1 枚ずつの一致度ではない**（設計メモ §4.9.1）。
+	public var overlapInliers: Double?
 	/// **グループ分けそのもの**を実際の重なりで決めるか（既定は true。設計メモ
 	/// §4.9）。時刻・GPS・露出・見た目は「どのペアを確かめるか」の順番付けへ降り、
 	/// 繋ぐかどうかは実測が決める。切るとフェーズ 2 と同じ合算スコアで分ける
@@ -88,7 +89,7 @@ public struct SortRequest: Equatable, Sendable
 		visualEvidence: Bool = true,
 		visualThreshold: Double? = nil,
 		overlapCheck: Bool = true,
-		overlapAgreement: Double? = nil,
+		overlapInliers: Double? = nil,
 		overlapGrouping: Bool = true,
 		overlapBudget: Int? = nil,
 		link: LinkStrategy = .hardlink,
@@ -107,7 +108,7 @@ public struct SortRequest: Equatable, Sendable
 		self.visualEvidence = visualEvidence
 		self.visualThreshold = visualThreshold
 		self.overlapCheck = overlapCheck
-		self.overlapAgreement = overlapAgreement
+		self.overlapInliers = overlapInliers
 		self.overlapGrouping = overlapGrouping
 		self.overlapBudget = overlapBudget
 		self.link = link
@@ -154,9 +155,9 @@ public struct SortRequest: Equatable, Sendable
 		{
 			throw SortRequestError.invalidSetting("visualThreshold", "0.0〜1.0 を指定してください")
 		}
-		if let agreement = overlapAgreement, !(0 ... 1).contains(agreement)
+		if let inliers = overlapInliers, !(0 ... 1).contains(inliers)
 		{
-			throw SortRequestError.invalidSetting("overlapAgreement", "0.0〜1.0 を指定してください")
+			throw SortRequestError.invalidSetting("overlapInliers", "0.0〜1.0 を指定してください")
 		}
 		if let budget = overlapBudget, budget < 1
 		{
@@ -235,9 +236,9 @@ public struct SortRequest: Equatable, Sendable
 	public var plannerSettings: SortPlanner.Settings
 	{
 		var settings = SortPlanner.Settings(overlap: overlap)
-		if let agreement = overlapAgreement
+		if let inliers = overlapInliers
 		{
-			settings.minimumOverlapAgreement = agreement
+			settings.minimumInlierRatio = inliers
 		}
 		return settings
 	}

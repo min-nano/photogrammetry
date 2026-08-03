@@ -51,6 +51,12 @@ public enum SortDiagnostics
 	/// 共有写真の視点の散らばりの下限。これを下回ると対応点が一直線に並び、
 	/// 相似変換の解が一意に定まらなくなる（設計メモ §5.3 の退化）。
 	public static let minimumViewpointSpread = 0.15
+	/// 撮影順で隣り合う写真の的中率がこれを下回ったら警告する。歩きながら撮れば
+	/// 隣の 2 枚はまず重なるので、下回るのは測り方か撮り方の問題。
+	public static let minimumChainHitRate = 0.7
+	/// 1 グループの中で焦点距離が混ざってよい割合。iPhone は寄ると超広角へ自動で
+	/// 切り替わり、画角が混ざったセッションはアライメントが不安定になる。
+	public static let maximumFocalLengthMinority = 0.2
 	/// グループの写真のうち、最も多い場所（視覚クラスタ）が占めるべき割合。
 	/// これを下回るグループは別々の場所が混ざっており、1 回のセッションでは
 	/// 位置合わせが途切れやすい。
@@ -247,6 +253,9 @@ public enum SortDiagnostics
 		// --- 機材の混在（iPhone はレンズが自動で切り替わる） ---
 		diagnostics.append(contentsOf: equipmentDiagnostics(photos: quality.kept))
 
+		// --- グループごとの画角の混在 ---
+		diagnostics.append(contentsOf: focalLengthDiagnostics(plan: plan, grouping: grouping))
+
 		if !plan.unassigned.isEmpty
 		{
 			diagnostics.append(SortDiagnostic(
@@ -289,18 +298,37 @@ public enum SortDiagnostics
 				message: "\(graph.checked) 組を位置合わせしましたが、判定できた組が"
 					+ "少なすぎたため（\(decided) 組）、グループ分けは従来どおり撮影時刻や"
 					+ "見た目の合算で行いました。白い壁や白飛びばかりで模様が読めない"
-					+ "可能性があります — 判定を緩めるなら --overlap-agreement を"
+					+ "可能性があります — 判定を緩めるなら --overlap-inliers を"
 					+ "下げてください。"))
 			return diagnostics
 		}
 
+		let hitRate = graph.chainHitRate()
 		diagnostics.append(SortDiagnostic(
 			severity: .info,
 			code: "overlapGrouping",
 			message: "実際に重なって写っているかで仕分けました（\(graph.checked) 組を"
 				+ "位置合わせ・重なり \(graph.overlappingCount) 組・重なりなし "
 				+ "\(graph.separateCount) 組・判定できず \(graph.undecidedCount) 組）。"
-				+ "撮影時刻や GPS は「どの組を確かめるか」の順番付けにだけ使っています。"))
+				+ "撮影時刻や GPS は「どの組を確かめるか」の順番付けにだけ使っています。"
+				+ (hitRate.map { "隣り合う写真の的中率 \(percent($0))。" } ?? "")))
+
+		// **測り方が効いているかはこの 1 つの数字で分かる。** 歩きながら撮れば
+		// 撮影順で隣り合う 2 枚はまず重なるので、そこを取りこぼしているなら
+		// 判定が厳しすぎるか、そもそも撮影が飛び飛びかのどちらか。実データでは
+		// 45% まで落ちたことがあり、そのときはグループが痩せて再構成が失敗した
+		// （設計メモ §4.9.1）。
+		if let hitRate, hitRate < minimumChainHitRate
+		{
+			diagnostics.append(SortDiagnostic(
+				severity: .warning,
+				code: "overlapChainHitRateLow",
+				message: "撮影順で隣り合う写真どうしでも \(percent(hitRate)) しか重なりを"
+					+ "確認できていません。歩きながら撮っていればここは 8 割を超えるはず"
+					+ "なので、判定が厳しすぎるか（--overlap-inliers を下げる）、撮影が"
+					+ "飛び飛びかのどちらかです。**グループが痩せて再構成が失敗する"
+					+ "直接の原因になります。**"))
+		}
 
 		if graph.budgetExhausted
 		{
@@ -414,7 +442,7 @@ public enum SortDiagnostics
 				code: "noOverlapConfirmed",
 				message: "ただし実際に重なっていると確認できた組が 1 つもありません"
 					+ "でした。撮影が飛び飛びである可能性のほか、判定が厳しすぎる"
-					+ "可能性もあります（--overlap-agreement を下げる、"
+					+ "可能性もあります（--overlap-inliers を下げる、"
 					+ "--no-overlap-check で確認をやめる）。"))
 		}
 		return diagnostics
@@ -690,6 +718,65 @@ public enum SortDiagnostics
 					+ "グループ内で機材が混ざると精度が落ちることがあります。"))
 		}
 		return diagnostics
+	}
+
+	/// **グループの中で画角が混ざっていないか。** 全体の混在は
+	/// `equipmentDiagnostics` が言うが、再構成は**グループ単位**で走るので、
+	/// どのフォルダが危ないのかまで言えないと打つ手が決まらない。
+	///
+	/// iPhone は寄ると超広角（13mm 相当）へ自動で切り替わる。1 回のセッションに
+	/// 13mm と 26mm が混ざると前景の切り出しと位置合わせが不安定になり、写真が
+	/// まとめてスキップされる。
+	static func focalLengthDiagnostics(plan: SortPlan, grouping: GroupingResult)
+		-> [SortDiagnostic]
+	{
+		var byPath: [String: PhotoMetadata] = [:]
+		for photo in grouping.photos
+		{
+			byPath[photo.relativePath] = photo
+		}
+		var mixed: [String] = []
+		for group in plan.groups
+		{
+			let lengths = group.photos.compactMap { byPath[$0]?.focalLength35mm }
+			guard lengths.count >= max(2, group.photos.count / 2)
+			else
+			{
+				continue
+			}
+			var counts: [Int: Int] = [:]
+			for length in lengths
+			{
+				counts[Int(length.rounded()), default: 0] += 1
+			}
+			guard let dominant = counts.values.max(), counts.count > 1
+			else
+			{
+				continue
+			}
+			let minority = Double(lengths.count - dominant) / Double(lengths.count)
+			guard minority > maximumFocalLengthMinority
+			else
+			{
+				continue
+			}
+			let list = counts.sorted { $0.key < $1.key }
+				.map { "\($0.key)mm \($0.value) 枚" }.joined(separator: "・")
+			mixed.append("\(group.id)（\(list)）")
+		}
+		guard !mixed.isEmpty
+		else
+		{
+			return []
+		}
+		return [SortDiagnostic(
+			severity: .warning,
+			code: "groupMixesFocalLengths",
+			message: "\(mixed.joined(separator: "・")) は 1 つのグループの中で画角が"
+				+ "混ざっています。iPhone は寄ると超広角へ自動で切り替わるので、"
+				+ "**その写真だけまとめてスキップされたり、位置合わせごと失敗したり"
+				+ "します**。少数派の画角を _excluded/ へ退けるか、同じ画角で撮り"
+				+ "直してください。")]
 	}
 
 	/// 隣接でつながった「島」の数。1 より大きいと 1 つの座標系にまとめられない。

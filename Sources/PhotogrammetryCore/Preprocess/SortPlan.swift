@@ -162,10 +162,9 @@ public enum SortPlanner
 		/// 知覚ハッシュより素直に「立ち位置を変えたか」を捉える（同じ場所から
 		/// 向きだけ変えた写真は、ハッシュは大きく変わるのに特徴は近いままになる）。
 		public var diversitySceneDistance: Double
-		/// 共有写真として認めるのに必要な、重なった範囲の画素の一致度（§4.6.1）。
-		/// 実測では無関係な 2 枚が 0.05 を超えず、実際に重なる 2 枚は寄り引き・
-		/// 回転が入っても 0.65 以上だったので、その間に置く。
-		public var minimumOverlapAgreement: Double
+		/// 共有写真として認めるのに必要な、局所的に一致したブロックの割合
+		/// （§4.6.1 / §4.9.1）。**グループ分けと同じ基準**を使う。
+		public var minimumInlierRatio: Double
 		/// 同じく、重なりの広さ（基準画像の面積比）。一致度ほど強い手がかりでは
 		/// ないが、**帯のように少ししか重なっていない組**は対応点にならない。
 		public var minimumSharedArea: Double
@@ -182,7 +181,7 @@ public enum SortPlanner
 			diversityHeading: Double = 15,
 			diversityDistanceMeters: Double = 1.0,
 			diversitySceneDistance: Double = 0.12,
-			minimumOverlapAgreement: Double = 0.35,
+			minimumInlierRatio: Double = 0.3,
 			minimumSharedArea: Double = 0.15,
 			maximumOverlapChecks: Int = 24,
 			overlapCheckBatch: Int = 8)
@@ -192,7 +191,7 @@ public enum SortPlanner
 			self.diversityHeading = diversityHeading
 			self.diversityDistanceMeters = diversityDistanceMeters
 			self.diversitySceneDistance = diversitySceneDistance
-			self.minimumOverlapAgreement = minimumOverlapAgreement
+			self.minimumInlierRatio = minimumInlierRatio
 			self.minimumSharedArea = minimumSharedArea
 			self.maximumOverlapChecks = maximumOverlapChecks
 			self.overlapCheckBatch = overlapCheckBatch
@@ -203,7 +202,7 @@ public enum SortPlanner
 		public var overlapCriteria: OverlapCriteria
 		{
 			OverlapCriteria(
-				minimumAgreement: minimumOverlapAgreement,
+				minimumInlierRatio: minimumInlierRatio,
 				minimumSharedArea: minimumSharedArea)
 		}
 	}

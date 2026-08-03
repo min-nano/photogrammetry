@@ -49,7 +49,7 @@ public enum APICommand: Equatable, Sendable
 	//                   [&overlap=15][&maxPerGroup=150][&minPerGroup=20]
 	//                   [&timeGap=300][&groupThreshold=0.4][&minSharpness=12]
 	//                   [&duplicateDistance=4][&visual=true][&visualThreshold=0.4]
-	//                   [&overlapCheck=true][&overlapAgreement=0.35]
+	//                   [&overlapCheck=true][&overlapInliers=0.3]
 	//                   [&overlapGrouping=true][&overlapBudget=20000]
 	//                   [&link=hardlink][&recursive=true][&dryRun=false]
 	// パスはパーセントエンコード済みの絶対パス。
@@ -157,9 +157,9 @@ public enum APICommand: Equatable, Sendable
 				{
 					request.overlapCheck = try boolValue(raw, parameter: "overlapCheck")
 				}
-				if let raw = parameters["overlapAgreement"]
+				if let raw = parameters["overlapInliers"]
 				{
-					request.overlapAgreement = try doubleValue(raw, parameter: "overlapAgreement")
+					request.overlapInliers = try doubleValue(raw, parameter: "overlapInliers")
 				}
 				if let raw = parameters["overlapGrouping"]
 				{
@@ -327,8 +327,8 @@ public enum APICommand: Equatable, Sendable
 				case "--no-visual":
 					request.visualEvidence = false
 					index += 1
-				case "--overlap-agreement":
-					request.overlapAgreement = try doubleValue(
+				case "--overlap-inliers":
+					request.overlapInliers = try doubleValue(
 						optionValue(arguments, at: index, name: argument), parameter: argument)
 					index += 2
 				case "--no-overlap-check":
@@ -413,9 +413,9 @@ public enum APICommand: Equatable, Sendable
 		{
 			result += ["--visual-threshold", String(threshold)]
 		}
-		if let agreement = request.overlapAgreement
+		if let inliers = request.overlapInliers
 		{
-			result += ["--overlap-agreement", String(agreement)]
+			result += ["--overlap-inliers", String(inliers)]
 		}
 		if !request.visualEvidence
 		{

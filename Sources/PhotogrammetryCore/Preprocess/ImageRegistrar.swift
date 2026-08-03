@@ -178,11 +178,10 @@ public struct ImageRegistrar: PhotoOverlapVerifying
 
 	/// 読み込み済みの 2 枚から重なりを測る。
 	///
-	/// **平行移動 → 射影の順**に試し、先に閾値を超えたほうを採る…のではなく
-	/// **両方の一致度のうち高いほう**を返す。どちらのモデルが当たるかは撮り方
-	/// （横に振ったか・寄ったか）で変わり、外したモデルの答えは一致度が低い
-	/// ままなので、高いほうを採れば取り違えない。射影は平行移動より高価なので、
-	/// 平行移動でよく一致したときは省く。
+	/// **平行移動 → 射影の順**に試し、**両方のうちインライア率が高いほう**を返す。
+	/// どちらのモデルが当たるかは撮り方（横に振ったか・寄ったか）で変わり、外した
+	/// モデルの答えはインライア率が低いままなので、高いほうを採れば取り違えない。
+	/// 射影は平行移動より高価なので、平行移動でよく合ったときは省く。
 	func overlap(
 		base: (image: CGImage, gray: GrayImage),
 		other: (image: CGImage, gray: GrayImage)) -> PhotoOverlap?
@@ -194,7 +193,7 @@ public struct ImageRegistrar: PhotoOverlapVerifying
 				base: base.gray, other: other.gray, transform: translation)
 		}
 		// 平行移動でほぼ一致したなら射影を求める意味が無い（時間だけかかる）。
-		if let best, best.agreement >= Self.sufficientAgreement
+		if let best, best.inlierRatio >= Self.sufficientInlierRatio
 		{
 			return best
 		}
@@ -217,11 +216,11 @@ public struct ImageRegistrar: PhotoOverlapVerifying
 		{
 			return projective
 		}
-		return projective.agreement > best.agreement ? projective : best
+		return projective.inlierRatio > best.inlierRatio ? projective : best
 	}
 
-	/// これ以上の一致度なら射影の推定を省く。
-	static let sufficientAgreement = 0.8
+	/// これ以上のインライア率なら射影の推定を省く。
+	static let sufficientInlierRatio = 0.75
 
 	/// 平行移動の位置合わせ。`tx` はそのまま画素の横ずれ、`ty` は**符号が逆**
 	/// （Vision は左下原点、画素配列は左上原点）。

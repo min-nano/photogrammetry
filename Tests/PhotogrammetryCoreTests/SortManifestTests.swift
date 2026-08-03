@@ -29,7 +29,7 @@ final class SortManifestTests: XCTestCase
 				visualThreshold: 0.38,
 				visualThresholdWasAutomatic: true,
 				overlapCheck: true,
-				overlapAgreement: 0.35,
+				overlapInliers: 0.35,
 				overlapGrouping: true,
 				overlapBudget: 12_320,
 				link: .hardlink),
@@ -55,7 +55,9 @@ final class SortManifestTests: XCTestCase
 					separate: 3_610,
 					undecided: 128,
 					degreeHistogram: [3, 12, 40],
-					agreementHistogram: [7, 8, 9])),
+					inlierHistogram: [11, 2, 60],
+					agreementHistogram: [7, 8, 9],
+					chainHitRate: 0.86)),
 			groups: [
 				SortManifest.Group(
 					id: "group-01",
@@ -113,11 +115,14 @@ final class SortManifestTests: XCTestCase
 			"\"rooms\"", "\"sharedRoom\"", "\"roomCount\"", "\"visualThreshold\"",
 			// §4.6.1。merge は「実際に重なっていると確かめた隣接か」をここから読む。
 			"\"overlapVerified\"", "\"overlapChecks\"", "\"overlapCheck\"",
-			"\"overlapAgreement\"",
+			"\"overlapInliers\"",
 			// §4.9。merge は「グループが重なりグラフの連結成分になっているか」を
 			// ここから読む（なっていれば、どのグループも再構成が成立する）。
 			"\"overlapGraph\"", "\"overlapGrouping\"", "\"overlapBudget\"",
 			"\"budgetExhausted\"", "\"agreementHistogram\"",
+			// §4.9.1。判定に使うのはインライア率で、的中率は測り方が効いているかを
+			// 1 つの数字で示す。
+			"\"inlierHistogram\"", "\"chainHitRate\"", "\"overlapInliers\"",
 			// 順序のヒントを使ってよいか。撮影順が途切れたグループに sequential を
 			// 与えると、隣り合わない 2 枚を隣だと言うことになる。
 			"\"sequential\"",
@@ -139,6 +144,7 @@ final class SortManifestTests: XCTestCase
 		manifest.statistics.overlapChecks = nil
 		manifest.statistics.overlapGraph = nil
 		manifest.settings.overlapBudget = nil
+		manifest.statistics.overlapGraph?.chainHitRate = nil
 		manifest.groups[0].captureStart = nil
 		manifest.groups[0].captureEnd = nil
 		let restored = try SortManifest.decoded(from: manifest.encoded())

@@ -44,6 +44,30 @@ final class PhotoOverlapTests: XCTestCase
 		return GrayImage(pixels: pixels, width: width, height: height)
 	}
 
+	/// **奥行きのある場面を別の立ち位置から撮った**相手を作る。左半分（手前の
+	/// もの）と右半分（奥のもの）でずれ方が違う ＝ 視差。1 枚の平行移動でも射影でも
+	/// 両方を同時には合わせられない、という実写真そのものの状況になる。
+	func makeParallaxImage(
+		width: Int = 120,
+		height: Int = 90,
+		nearShift: Int,
+		farShift: Int,
+		seed: UInt64 = 1) -> GrayImage
+	{
+		let near = makeImage(width: width, height: height, shiftX: -nearShift, seed: seed)
+		let far = makeImage(width: width, height: height, shiftX: -farShift, seed: seed)
+		var pixels = [UInt8](repeating: 0, count: width * height)
+		for y in 0 ..< height
+		{
+			for x in 0 ..< width
+			{
+				let source = x < width / 2 ? near : far
+				pixels[y * width + x] = source.pixels[y * width + x]
+			}
+		}
+		return GrayImage(pixels: pixels, width: width, height: height)
+	}
+
 	/// 一面の壁のように模様が無い画像。
 	func makeFlatImage(width: Int = 120, height: Int = 90, value: UInt8 = 200) -> GrayImage
 	{
@@ -152,6 +176,73 @@ final class PhotoOverlapTests: XCTestCase
 		let overlap = OverlapMeasurement.measure(
 			base: base, other: darker, transform: .identity)
 		XCTAssertGreaterThan(overlap?.agreement ?? 0, 0.95)
+	}
+
+	// -----------------------------------------------------------------
+	// ブロックごとの局所一致（設計メモ §4.9.1）
+	// -----------------------------------------------------------------
+
+	/// **この節の存在理由。** 視差のある 2 枚は、1 枚の変換ではどこかが必ず外れる。
+	/// 全体の相関で判定していた版は、実データ 1424 枚で隣り合う写真の 45% しか
+	/// 拾えず、グループが痩せて再構成が失敗した。ブロックごとに探せば拾える。
+	func testParallaxIsFoundEvenWhenTheWholeFrameDoesNotAgree() throws
+	{
+		let base = makeImage()
+		// 手前は 16 画素、奥は 26 画素ずれて写っている。
+		let other = makeParallaxImage(nearShift: 16, farShift: 26)
+		// 変換はその中間しか返せない（1 枚の平行移動では両方を合わせられない）。
+		let overlap = OverlapMeasurement.measure(
+			base: base, other: other, transform: .translation(x: 21, y: 0))
+
+		let measured = try XCTUnwrap(overlap)
+		// **全体の相関は落ちる**（当初の判定ではここで切られていた）。
+		XCTAssertLessThan(measured.agreement, 0.6)
+		// **局所では見つかる。**
+		XCTAssertGreaterThan(measured.inlierRatio, 0.6)
+		XCTAssertGreaterThanOrEqual(
+			measured.evaluatedBlocks, OverlapMeasurement.minimumEvaluatedBlocks)
+		XCTAssertTrue(OverlapCriteria().judge(measured).isOverlapping)
+	}
+
+	/// 同じ写真ならブロックはすべて揃う。
+	func testSamePhotoMatchesEveryBlock()
+	{
+		let image = makeImage()
+		let overlap = OverlapMeasurement.measure(
+			base: image, other: image, transform: .identity)
+		XCTAssertEqual(overlap?.inlierRatio ?? 0, 1, accuracy: 0.001)
+	}
+
+	/// **無関係な 2 枚では揃わない。** ブロック単位で偶然合うものがあっても、
+	/// ずれ方が散らばるので中央値の周りに集まらない。
+	func testUnrelatedPhotosDoNotMatchCoherently()
+	{
+		let overlap = OverlapMeasurement.measure(
+			base: makeImage(seed: 1), other: makeImage(seed: 40), transform: .identity)
+		XCTAssertLessThan(overlap?.inlierRatio ?? 1, OverlapCriteria().minimumInlierRatio)
+		XCTAssertFalse(OverlapCriteria().judge(overlap).isOverlapping)
+	}
+
+	/// 模様の無いブロックは**数えない**（一致とも不一致とも言わない）。判定に
+	/// 足るブロックが残らなければ、組ごと「判定できなかった」にする。
+	func testFlatBlocksAreNotCountedEitherWay()
+	{
+		// 上 2/3 が平ら、下 1/3 だけ模様がある画像。
+		var image = makeImage()
+		for y in 0 ..< (image.height * 2 / 3)
+		{
+			for x in 0 ..< image.width
+			{
+				image.pixels[y * image.width + x] = 200
+			}
+		}
+		let overlap = OverlapMeasurement.measure(
+			base: image, other: image, transform: .identity)
+		// 模様のあるブロックだけで判定し、そこは全部揃う。
+		XCTAssertEqual(overlap?.inlierRatio ?? 0, 1, accuracy: 0.001)
+		XCTAssertLessThan(
+			overlap?.evaluatedBlocks ?? 999,
+			OverlapMeasurement.gridColumns * OverlapMeasurement.gridRows)
 	}
 
 	// -----------------------------------------------------------------
