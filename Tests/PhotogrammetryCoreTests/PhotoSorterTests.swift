@@ -114,13 +114,16 @@ final class PhotoSorterTests: XCTestCase
 	/// （壁と床ばかりの屋内で実際に起きる）。
 	func makeTwoRoomPhotos() throws -> [PhotoMetadata]
 	{
+		// 式を分けて書くのは型推論のため（1 つの式にまとめると型検査が通らない）。
 		let photos = (0 ..< 60).map
-		{ index in
-			SamplePhoto.make(
+		{ (index: Int) -> PhotoMetadata in
+			let bits: UInt64 = (UInt64(1) << UInt64(index % 64)) &- 1
+			let room: Int = index < 30 ? 0 : 6
+			return SamplePhoto.make(
 				index: index + 1,
 				secondsFromEpoch: Double(index) * 3,
-				hash: ((1 as UInt64) << UInt64(index % 64)) &- 1,
-				featurePrint: SamplePhoto.featurePrint(room: index < 30 ? 0 : 6, step: index % 30))
+				hash: bits,
+				featurePrint: SamplePhoto.featurePrint(room: room, step: index % 30))
 		}
 		for photo in photos
 		{

@@ -11,8 +11,13 @@
 //  画像ファイルを通さないと分からない。このスクリプトはその穴を埋めるためのもの。
 //
 //  生成するもの:
-//    - 部屋 A 24 枚 → 12 分の移動 → 部屋 B 24 枚（時刻・GPS・方位つき）
+//    - 部屋 A 24 枚 → 12 分の移動 → 部屋 B 24 枚 → 部屋 A へ戻って 12 枚
+//      （時刻・GPS・方位つき）
 //    - 部屋 A には数枚、コントラストのほとんど無い「ブレ相当」を混ぜる
+//
+//  最後の 12 枚は**フェーズ 2（視覚クラスタリング）のための入力**。時刻も位置も
+//  部屋 B の側にあるのに見た目は部屋 A なので、「見た目から同じ場所を見分けて
+//  いるか」がこの 12 枚の行き先で分かる。
 //
 //  使い方:
 //    swift scripts/make-sort-samples.swift /tmp/sort-samples/photos
@@ -37,9 +42,16 @@ try FileManager.default.createDirectory(at: root, withIntermediateDirectories: t
 /// 2026-08-02 10:00:00 +09:00。時刻を固定して生成を再現可能にする。
 let epoch = Date(timeIntervalSince1970: 1_785_632_400)
 
-/// 種ごとに違う模様の画像。`flat` を立てると濃淡がほとんど無くなる
-/// （ラプラシアン分散が落ちるので「ブレた写真」の代わりになる）。
-func makeImage(seed: Int, flat: Bool) -> CGImage
+/// 「部屋」1 つぶんの絵。**同じ部屋の写真は同じ配置を少しずつ横へずらしたもの**
+/// （＝歩きながら撮った）で、部屋が変われば配置も色調もまるごと変わる。
+///
+/// フェーズ 2 の視覚クラスタリングを実写真なしで確かめるにはこの性質が要る。
+/// 種ごとに完全な乱数にすると、どの 2 枚も等しく無関係になってしまい「同じ
+/// 場所」という概念自体がデータに存在しなくなる。
+///
+/// `flat` を立てると濃淡がほとんど無くなる（ラプラシアン分散が落ちるので
+/// 「ブレた写真」の代わりになる）。
+func makeImage(room: Int, step: Int, flat: Bool) -> CGImage
 {
 	let width = 900
 	let height = 675
@@ -51,12 +63,17 @@ func makeImage(seed: Int, flat: Bool) -> CGImage
 		bytesPerRow: 0,
 		space: CGColorSpaceCreateDeviceRGB(),
 		bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-	context.setFillColor(CGColor(red: 0.15, green: 0.16, blue: 0.2, alpha: 1))
+	// 部屋ごとの色調（屋外・室内・床下で光が違うのに相当）。
+	context.setFillColor(CGColor(
+		red: room == 0 ? 0.22 : 0.10,
+		green: 0.16,
+		blue: room == 0 ? 0.12 : 0.24,
+		alpha: 1))
 	context.fill(CGRect(x: 0, y: 0, width: width, height: height))
 
-	// 線形合同法で種から決定的に矩形をばらまく。隣り合う種は似た絵になるので、
-	// 知覚ハッシュ上も「連続撮影」らしくなる。
-	var value = UInt64(bitPattern: Int64(seed &* 2_654_435_761))
+	// 線形合同法で部屋の種から決定的に矩形をばらまく。種は部屋ごとに固定で、
+	// 写真ごとの違いは視点の移動（横ずれ）だけにする。
+	var value = UInt64(bitPattern: Int64((room &+ 1) &* 2_654_435_761))
 	if flat
 	{
 		context.setAlpha(0.05)
@@ -65,12 +82,12 @@ func makeImage(seed: Int, flat: Bool) -> CGImage
 	{
 		value = value &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
 		context.setFillColor(CGColor(
-			red: Double(index % 7) / 7,
-			green: Double((index + seed) % 5) / 5,
-			blue: Double((seed + index) % 3) / 3,
+			red: room == 0 ? Double(index % 7) / 7 : Double(index % 3) / 6,
+			green: Double((index + room) % 5) / 5,
+			blue: room == 0 ? Double(index % 3) / 6 : Double(index % 7) / 7,
 			alpha: 1))
 		context.fill(CGRect(
-			x: Double((value >> 33) % 860),
+			x: Double(Int((value >> 33) % 860) - step * 6),
 			y: Double((value >> 13) % 620),
 			width: 70,
 			height: 50))
@@ -88,7 +105,7 @@ func stamp(_ seconds: Int, format: String, utc: Bool) -> String
 }
 
 /// iPhone が書くのと同じ形の EXIF / GPS / TIFF を付けて JPEG を書き出す。
-func write(index: Int, seconds: Int, latitude: Double, flat: Bool)
+func write(index: Int, room: Int, step: Int, seconds: Int, latitude: Double, flat: Bool)
 {
 	let url = root.appendingPathComponent(String(format: "IMG_%04d.JPG", index))
 	let exif: [CFString: Any] = [
@@ -131,7 +148,9 @@ func write(index: Int, seconds: Int, latitude: Double, flat: Bool)
 		exit(1)
 	}
 	CGImageDestinationAddImage(
-		destination, makeImage(seed: index, flat: flat), properties as CFDictionary)
+		destination,
+		makeImage(room: room, step: step, flat: flat),
+		properties as CFDictionary)
 	CGImageDestinationFinalize(destination)
 }
 
@@ -139,6 +158,8 @@ for offset in 0 ..< 24
 {
 	write(
 		index: offset + 1,
+		room: 0,
+		step: offset,
 		seconds: offset * 4,
 		latitude: 35.6812 + Double(offset) * 0.00002,
 		flat: offset % 8 == 3)
@@ -147,8 +168,22 @@ for offset in 0 ..< 24
 {
 	write(
 		index: offset + 101,
+		room: 1,
+		step: offset,
 		seconds: 720 + offset * 4,
 		latitude: 35.6830 + Double(offset) * 0.00002,
+		flat: false)
+}
+// 部屋 A へ戻ってきた 12 枚。**時刻も位置も部屋 B の側にあるのに、見た目は
+// 部屋 A**という状況で、フェーズ 2 が効いているかはここで分かる。
+for offset in 0 ..< 12
+{
+	write(
+		index: offset + 201,
+		room: 0,
+		step: offset + 4,
+		seconds: 1_500 + offset * 4,
+		latitude: 35.6813 + Double(offset) * 0.00002,
 		flat: false)
 }
 
