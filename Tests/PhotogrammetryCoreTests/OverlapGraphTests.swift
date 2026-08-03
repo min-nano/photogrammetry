@@ -411,6 +411,27 @@ final class OverlapGraphTests: XCTestCase
 			"骨格で測った結果がそのまま「確かめた」になる")
 	}
 
+	/// **測る手が無い組は落とさず保留にする。** 分からないことを理由に候補を
+	/// 捨てると、視覚特徴が取れない現場で隣接が 1 本も作れなくなる。
+	func testUnknownPairsAreHeldWhenThereIsNothingLeftToMeasureWith()
+	{
+		var scene = SampleScene()
+		scene.add(count: 4, look: 0, place: 0, startTime: 0)
+		var graph = OverlapGraph(photoCount: 4)
+		graph.verdicts[OverlapGraph.key(0, 1, photoCount: 4)] = .overlapping(OverlapStub.overlapping)
+
+		let result = SortPlanner.verifiedCandidates(
+			ranked: [PairScore(i: 0, j: 1, score: 0.9), PairScore(i: 2, j: 3, score: 0.8)],
+			photos: scene.photos,
+			settings: SortPlanner.Settings(),
+			known: graph)
+
+		XCTAssertEqual(result.verified, 1)
+		XCTAssertEqual(result.rejected, 0)
+		XCTAssertEqual(result.undecided, 1, "測っていない組は「重なっていない」ではない")
+		XCTAssertEqual(result.candidates.count, 2)
+	}
+
 	/// **証明済みに重なっていない組は隣接の候補にしない。** 重なっていない隣接は
 	/// 合成にとって無いのと同じどころか、無関係な写真を持ち込むぶん有害。
 	func testProvenSeparatePairsNeverBecomeLinks()

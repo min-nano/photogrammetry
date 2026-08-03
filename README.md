@@ -367,9 +367,12 @@ Sources/
       ImageStatistics      ブレ・露出・知覚ハッシュの計算（純ロジック）
       FeaturePrint         視覚特徴の値型と距離（純ロジック）
       RoomClustering       視覚特徴から同じ場所を見分ける（純ロジック）
+      ImageRegistrar       Vision（画像レジストレーション）の唯一のラッパー
+      PhotoOverlap         重なりの値型と測定（相関。純ロジック）
+      OverlapGraph         実測した重なりと確認回数の配り方（純ロジック）
       ThresholdEstimator   分布から閾値を決める判別分析（純ロジック）
       QualityFilter        寄与しない写真の除外（純ロジック）
-      PhotoGrouping        証拠の合算 → グループと隣接（純ロジック）
+      PhotoGrouping        重なり（無ければ証拠の合算）→ グループと隣接（純ロジック）
       SortPlan             重複付き分割の計画（純ロジック）
       SortDiagnostics      撮り直しの判断材料（純ロジック）
       SortManifest         manifest.json の定義（sort と merge の契約）

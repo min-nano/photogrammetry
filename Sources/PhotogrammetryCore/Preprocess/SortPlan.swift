@@ -497,7 +497,7 @@ public enum SortPlanner
 				}
 				apply(candidate, verdict)
 			}
-			if !unknown.isEmpty, let verifyOverlap
+			if let verifyOverlap, !unknown.isEmpty
 			{
 				checked += unknown.count
 				let verdicts = verifyOverlap(unknown.map
@@ -508,6 +508,16 @@ public enum SortPlanner
 				{
 					let measured = verdicts.indices.contains(offset) ? verdicts[offset] : nil
 					apply(candidate, settings.overlapCriteria.judge(measured))
+				}
+			}
+			else
+			{
+				// 測る手が無い組は**落とさず保留にする**。分からないことを理由に
+				// 候補を捨てると、視覚特徴が取れない現場で隣接が 1 本も作れなく
+				// なる（§4.4 と同じ判断）。
+				for candidate in unknown
+				{
+					apply(candidate, .undecided)
 				}
 			}
 			if endpoints.count >= settings.overlap
