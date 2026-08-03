@@ -35,6 +35,7 @@
 //                       書き出した一覧は measure-poses --window-dir で OC へ投げる
 //    --window-dir DIR   書き出し先（既定 ./windows）
 //    --neighbours 12    共視グラフの相互近傍の数
+//    --overlap-ratio 0.3 窓のうち重なりに充てる割合（残りが新規の枠）
 //    --download         iCloud Drive の未ダウンロードをまとめて落としてから進む
 //
 
@@ -66,6 +67,8 @@ var windowCapacity: Int?
 var windowDirectory = "windows"
 /// 共視グラフの相互近傍の数（`--neighbours`）。
 var neighbourCount = 12
+/// 窓のうち「重なり」に充てる割合（`--overlap-ratio`）。残りが**新規**の枠。
+var overlapRatio = 0.3
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -91,10 +94,13 @@ while !arguments.isEmpty
 			windowDirectory = arguments.isEmpty ? windowDirectory : arguments.removeFirst()
 		case "--neighbours":
 			neighbourCount = (arguments.isEmpty ? nil : Int(arguments.removeFirst())) ?? neighbourCount
+		case "--overlap-ratio":
+			overlapRatio = (arguments.isEmpty ? nil : Double(arguments.removeFirst())) ?? overlapRatio
 		case "-h", "--help":
 			print("使い方: measure-ordering <写真フォルダ> [--no-recursive] [--limit N] "
 				+ "[--max-pairs N] [--segments N] [--seriate 12] "
-				+ "[--windows 200] [--window-dir DIR] [--neighbours 12] [--download]")
+				+ "[--windows 200] [--window-dir DIR] [--neighbours 12] "
+				+ "[--overlap-ratio 0.3] [--download]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -1334,7 +1340,8 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	let members = photos.filter { ($0.elements?.count ?? 0) == dominantDimension }
 	let total = members.count
 	let width = dominantDimension
-	log("窓を作ります（対象 \(total) 枚・容量 \(capacity)・近傍 \(neighbourCount)）")
+	log("窓を作ります（対象 \(total) 枚・容量 \(capacity)・近傍 \(neighbourCount)"
+		+ "・重なり \(Int(overlapRatio * 100))%）")
 
 	var vectors = [Float](repeating: 0, count: total * width)
 	for (index, record) in members.enumerated()
@@ -1425,20 +1432,34 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	}
 
 	/// 支持数（いまの集合へ何本つながっているか）が多い順に足す。
+	///
+	/// **2 段階に分ける。** まず**まだどの窓にも入っていない写真だけ**で育て
+	/// （新規の枠まで）、そのあとで**既に覆われた写真を襟として足す**（容量まで）。
+	///
+	/// 段階を分けないと、覆い終わったあとに残った孤立気味の写真を種にするたびに、
+	/// **既存の写真ばかりの窓がもう 1 つできる**。実データでそうなった —
+	/// 1424 枚に対して窓 57 個・1 枚あたり平均 8.1 個の窓に入り、そのうち 33 個は
+	/// 新規が 5 枚未満だった。**重なりは意図して作るものであって、
+	/// 副作用で増えてよいものではない。**
 	func grow(from seed: Int) -> [Int]
 	{
+		let freshTarget = max(1, Int(Double(capacity) * (1 - overlapRatio)))
 		var inside: Set<Int> = [seed]
 		var order = [seed]
+		var fresh = 1
 		var support: [Int: Int] = [:]
 		for node in graph[seed]
 		{
 			support[node, default: 0] += 1
 		}
-		while inside.count < capacity, !support.isEmpty
+
+		/// 支持数が最大の候補。**同数なら添字の小さいほう**（決定的にする）。
+		/// `freshOnly` なら、まだ覆われていない写真だけから選ぶ。
+		func best(freshOnly: Bool) -> Int?
 		{
 			var bestNode = -1
 			var bestSupport = -1
-			for (node, value) in support
+			for (node, value) in support where !freshOnly || !covered[node]
 			{
 				if value > bestSupport || (value == bestSupport && node < bestNode)
 				{
@@ -1446,13 +1467,33 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 					bestSupport = value
 				}
 			}
-			support.removeValue(forKey: bestNode)
-			inside.insert(bestNode)
-			order.append(bestNode)
-			for node in graph[bestNode] where !inside.contains(node)
+			return bestNode >= 0 ? bestNode : nil
+		}
+
+		func add(_ node: Int)
+		{
+			support.removeValue(forKey: node)
+			inside.insert(node)
+			order.append(node)
+			if !covered[node]
 			{
-				support[node, default: 0] += 1
+				fresh += 1
 			}
+			for next in graph[node] where !inside.contains(next)
+			{
+				support[next, default: 0] += 1
+			}
+		}
+
+		// 段階 1: 新規だけで育てる
+		while fresh < freshTarget, inside.count < capacity, let node = best(freshOnly: true)
+		{
+			add(node)
+		}
+		// 段階 2: 襟（既に覆われた写真）で容量まで埋める
+		while inside.count < capacity, let node = best(freshOnly: false)
+		{
+			add(node)
 		}
 		return order
 	}
