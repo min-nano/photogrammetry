@@ -298,6 +298,12 @@ public enum PhotoGrouping
 	/// スコア分布のヒストグラムの分割数。
 	public static let histogramBins = 20
 
+	/// 切れ目を測るときに見る前後の枚数。**この幅の前後がどれだけ繋がって
+	/// いるか**だけで判定する（離れた写真どうしの組は全体の構造の話であって、
+	/// 切れ目の判定材料ではない）。狭すぎると 1 枚のブレで誤判定し、広すぎると
+	/// 位置ごとの本数の違いが偏りになる。
+	public static let seamWindow = 10
+
 	/// 写真をグループへ分ける。入力の順序は問わない（内部で撮影順へ並べ直す）。
 	public static func group(photos input: [PhotoMetadata], settings: GroupingSettings = GroupingSettings())
 		-> GroupingResult
@@ -755,18 +761,25 @@ public enum PhotoGrouping
 	/// 大きすぎるグループを「撮影の流れの最も弱い切れ目」で二分し、上限以下に
 	/// なるまで繰り返す。
 	///
-	/// 切れ目は、撮影順に並べたときにその位置をまたぐエッジの**平均**の重みが
-	/// 最小になる場所。**部屋を移るときに立ち止まれば、そこがそのまま最小になる**
-	/// （撮影ガイド §12-2 が効くのはここ）。守られていなくても必ずどこかで切れる
-	/// ので、撮影が推奨から外れていても破綻しない。
+	/// 切れ目は、**その位置をまたぐ「近くのペア」だけの平均**が最小になる場所。
+	/// **部屋を移るときに立ち止まれば、そこがそのまま最小になる**（撮影ガイド
+	/// §12-2 が効くのはここ）。守られていなくても必ずどこかで切れるので、
+	/// 撮影が推奨から外れていても破綻しない。
 	///
-	/// **合計ではなく平均を見る。** 合計は「その位置を何本のエッジがまたぐか」に
-	/// 引きずられる。またぐ本数は中央ほど多い（端では片側が短いので少ない）ので、
-	/// 合計は上に凸の形になり、**内容と関係なく端が最小**になってしまう。実データ
-	/// （1424 枚）では 63 グループ中 57 グループがちょうど下限枚数で切られ、
-	/// グループ間の時刻差の中央値は 2 秒だった — つまり撮影が続いている真ん中で
-	/// 機械的に切っていた。**屋外と室内が同じグループに入るのはこれが原因。**
-	/// 平均なら、端は「近くて強いエッジばかり」で高く出るので選ばれない。
+	/// **「近くのペアだけ」が要点。** 位置の良し悪しは「直前の数枚と直後の数枚が
+	/// どれだけ繋がっているか」で決まる。候補ペアには離れた写真どうしの組
+	/// （一度離れて戻ってきた撮影を繋ぐためのもの）も入っているが、それらは
+	/// 全体の構造の話であって切れ目の判定材料ではない。混ぜると、位置ごとに
+	/// **何本またぐか**が違うせいで内容と無関係な偏りが出る。
+	///
+	/// 実データ（1424 枚）ではこの偏りが決定的だった。60 グループ中 57 グループが
+	/// **ちょうど下限枚数（20 枚）の連続ブロック**（IMG_3619〜3638、3639〜3658、…）
+	/// になり、切れ目は毎回いちばん端に来ていた。合計を平均に替えても直らず、
+	/// 近傍だけに絞って初めて「場所の変わり目で切る」が成立する。
+	/// **屋外と室内が同じグループに入るのはこれが原因。**
+	///
+	/// 近傍の幅は前後 `seamWindow` 枚。余白がそれより狭いときは余白に合わせる
+	/// （どの位置でも同じ本数を見るためで、これも偏りを作らないため）。
 	static func split(members: [Int], edges: [PairScore], maxPerGroup: Int, minPerGroup: Int)
 		-> [[Int]]
 	{
@@ -775,8 +788,14 @@ public enum PhotoGrouping
 		{
 			return [members]
 		}
+		// 端に寄りすぎた切れ目は避ける（1 枚だけのグループを作らない）。
+		let margin = max(1, min(minPerGroup, members.count / 4))
+		// 見るのは前後この枚数まで。どの位置でも同じ本数を見るために余白で抑える。
+		let span = max(1, min(seamWindow, margin))
+
 		let positions = Dictionary(uniqueKeysWithValues: members.enumerated().map { ($1, $0) })
-		// 位置 p と p+1 の間をまたぐエッジの重みの合計と本数。差分配列で一度に求める。
+		// 位置 p と p+1 の間をまたぐ「近くのペア」の重みの合計と本数。
+		// 差分配列で全位置を一度に求める。
 		var crossing = [Double](repeating: 0, count: members.count)
 		var spanning = [Double](repeating: 0, count: members.count)
 		for edge in edges
@@ -788,7 +807,7 @@ public enum PhotoGrouping
 			}
 			let low = min(left, right)
 			let high = max(left, right)
-			guard high > low
+			guard high > low, high - low <= span
 			else
 			{
 				continue
@@ -811,8 +830,6 @@ public enum PhotoGrouping
 			weights[index] = runningCount > 0 ? runningWeight / runningCount : 0
 		}
 
-		// 端に寄りすぎた切れ目は避ける（1 枚だけのグループを作らない）。
-		let margin = max(1, min(minPerGroup, members.count / 4))
 		let lower = margin - 1
 		let upper = members.count - margin - 1
 		guard lower <= upper

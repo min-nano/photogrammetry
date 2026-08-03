@@ -109,8 +109,6 @@ final class PhotoGroupingTests: XCTestCase
 		// 本物の切れ目を置くが、**谷は緩やか**にする — 屋外から室内へ歩いて入る
 		// 場面では時刻も位置も連続していて、変わるのは見た目と露出だけなので、
 		// 結び付きは「弱くなる」だけで断ち切れはしない。
-		// この条件だと、合計で選ぶ実装は端（位置 179）を、平均で選ぶ実装は
-		// 本物の切れ目（位置 120）を選ぶ。
 		var edges: [PairScore] = []
 		for i in 0 ..< 200
 		{
@@ -120,11 +118,47 @@ final class PhotoGroupingTests: XCTestCase
 				edges.append(PairScore(i: i, j: j, score: crossesSeam ? 0.6 : 0.9))
 			}
 		}
+		// **離れた写真どうしの組も混ぜる。** 実データにはこれがあり（一度離れた
+		// 場所へ行って戻ってきた撮影を繋ぐための候補ペア）、位置ごとに本数が
+		// 違うせいで判定を歪めていた。切れ目の判定はこれに影響されてはいけない。
+		for i in 0 ..< 200
+		{
+			for j in stride(from: i + 80, to: 200, by: 7)
+			{
+				edges.append(PairScore(i: i, j: j, score: 0.2))
+			}
+		}
 		let parts = PhotoGrouping.split(
 			members: Array(0 ..< 200), edges: edges, maxPerGroup: 150, minPerGroup: 20)
 		XCTAssertEqual(parts.count, 2)
 		XCTAssertEqual(parts.first?.count, 121)
 		XCTAssertEqual(parts.last?.first, 121)
+	}
+
+	func testSplitDoesNotProduceMinimumSizedSlices()
+	{
+		// **実データの症状そのもの。** 60 グループ中 57 グループがちょうど
+		// 下限枚数（20 枚）の連続ブロックになっていた。切れ目が毎回いちばん端に
+		// 来ると、上限を割るまで「端から下限枚数ずつ」削ぎ落とすことになる。
+		// 一様に繋がった列（本物の切れ目が無い）では、そうならないことを見る。
+		var edges: [PairScore] = []
+		for i in 0 ..< 300
+		{
+			for j in (i + 1) ..< min(300, i + 61)
+			{
+				// 撮影順が近いほど強い、という自然な減衰だけを与える。
+				edges.append(PairScore(i: i, j: j, score: 0.95 - Double(j - i) * 0.01))
+			}
+		}
+		let parts = PhotoGrouping.split(
+			members: Array(0 ..< 300), edges: edges, maxPerGroup: 120, minPerGroup: 20)
+		XCTAssertEqual(parts.reduce(0) { $0 + $1.count }, 300)
+		for part in parts
+		{
+			XCTAssertLessThanOrEqual(part.count, 120)
+			// 下限ちょうどの薄切りが並ぶ形になっていないこと。
+			XCTAssertGreaterThan(part.count, 20, "下限ちょうどの薄切りになっています")
+		}
 	}
 
 	func testSplitGroupsRemainLinked()
