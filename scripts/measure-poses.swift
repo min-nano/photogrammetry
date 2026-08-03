@@ -47,6 +47,7 @@
 //                           reduced で得た倍率は二巡構成に最も不利な値になる）
 //    --subject scene|object 既定 scene（建物・部屋。object マスキングを切る）
 //    --timeout 1800         1 回の実行の上限（秒）。超えたら中断して次へ進む
+//    --download             iCloud Drive の未ダウンロードをまとめて落としてから進む
 //    --list                 添字 → ファイル名の対応を出して終わる。どの写真が
 //                           start=N にあるかを手元で確かめるため（**ファイル名を
 //                           含むので共有向けではない**）
@@ -81,6 +82,8 @@ var listOnly = false
 /// **CorePhotogrammetry が返らなくなることがある**ので、測定が止まったまま
 /// 夜を越さないための歯止め（既定 30 分）。
 var timeoutSeconds: TimeInterval = 1800
+/// iCloud Drive の未ダウンロードをまとめて落としてから進む（`--download`）。
+var downloadFirst = false
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -117,6 +120,8 @@ while !arguments.isEmpty
 			sensitivityName = value()
 		case "--list":
 			listOnly = true
+		case "--download":
+			downloadFirst = true
 		case "--timeout":
 			timeoutSeconds = Double(value()) ?? timeoutSeconds
 		case "-h", "--help":
@@ -124,7 +129,7 @@ while !arguments.isEmpty
 				+ "[--starts 0,400,600] [--mode poses|model|both] "
 				+ "[--ordering unordered|sequential|both] "
 				+ "[--sensitivity normal|high|both] [--detail reduced] "
-				+ "[--subject scene|object] [--timeout 1800] [--list]")
+				+ "[--subject scene|object] [--timeout 1800] [--download] [--list]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -142,7 +147,7 @@ else
 }
 let root = URL(fileURLWithPath: inputPath, isDirectory: true).standardizedFileURL
 
-func log(_ message: String)
+@Sendable func log(_ message: String)
 {
 	FileHandle.standardError.write(Data("\(message)\n".utf8))
 }
@@ -200,7 +205,7 @@ func imageFiles(in folder: URL) -> [URL]
 }
 
 /// "+09:00" 形式のオフセットを TimeZone にする（PhotoInspector と同じ）。
-func timeZone(fromOffset text: String) -> TimeZone?
+@Sendable func timeZone(fromOffset text: String) -> TimeZone?
 {
 	let trimmed = text.trimmingCharacters(in: .whitespaces)
 	guard trimmed.count >= 3, let sign = trimmed.first, sign == "+" || sign == "-"
@@ -225,7 +230,7 @@ func timeZone(fromOffset text: String) -> TimeZone?
 /// **サブ秒とタイムゾーンまで読むのは measure-ordering.swift と揃えるため。**
 /// 片方だけがサブ秒を読むと、連写（この現場は 2 秒以内の組が 966 組ある）の
 /// 並びが食い違い、「区間ごとの中身」と「error 6 の地図」の添字がずれる。
-func readPhoto(_ url: URL) -> Photo
+@Sendable func readPhoto(_ url: URL) -> Photo
 {
 	guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
 		let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -256,16 +261,113 @@ func readPhoto(_ url: URL) -> Photo
 	return Photo(url: url, date: date, focal35: focal)
 }
 
+
+// ---------------------------------------------------------------------
+// iCloud Drive の未ダウンロード対策
+//
+// 写真が iCloud Drive にあると、実体がローカルに無い（プレースホルダの）まま
+// 見えている。その状態で EXIF を読むと**1 枚ずつダウンロードが走って止まる**。
+// 黙って固まるのが最悪なので、読む前に数えて、必要ならまとめて落とす。
+// 本体側（InputInspection）が同じ理由で同じ検査をしている。
+// ---------------------------------------------------------------------
+
+/// ローカルに実体があるか。iCloud の項目でなければ常に true。
+func isMaterialized(_ url: URL) -> Bool
+{
+	guard let values = try? url.resourceValues(
+		forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]),
+		values.isUbiquitousItem == true
+	else
+	{
+		return true
+	}
+	switch values.ubiquitousItemDownloadingStatus
+	{
+		case .some(.current), .some(.downloaded):
+			return true
+		default:
+			return false
+	}
+}
+
+/// 未ダウンロードがあれば、落とすか・案内して止まるかを決める。
+func ensureMaterialized(_ urls: [URL], download: Bool)
+{
+	var pending = urls.filter { !isMaterialized($0) }
+	guard !pending.isEmpty
+	else
+	{
+		return
+	}
+	guard download
+	else
+	{
+		log("""
+			iCloud Drive にまだ実体の無い写真が \(pending.count)/\(urls.count) 枚あります。
+            このまま読むと 1 枚ずつダウンロードが走って**止まったように見えます**。
+            次のどちらかをしてください。
+              1. --download を付けて実行する（まとめて落として進みます）
+              2. Finder でフォルダを右クリック →「今すぐダウンロード」
+              3. ローカルへコピーしてからそちらを指定する（いちばん速い）
+			""")
+		exit(4)
+	}
+	log("iCloud からのダウンロードを開始します（\(pending.count) 枚）")
+	for url in pending
+	{
+		try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+	}
+	var lastReported = pending.count
+	while !pending.isEmpty
+	{
+		Thread.sleep(forTimeInterval: 2)
+		pending = pending.filter { !isMaterialized($0) }
+		if pending.count != lastReported
+		{
+			log("  残り \(pending.count) 枚")
+			lastReported = pending.count
+		}
+	}
+	log("ダウンロード完了")
+}
+
+/// まとめて並行に読む。進捗を出すのは、無音の時間を作らないため。
+func readAll(_ urls: [URL]) -> [Photo]
+{
+	let lock = NSLock()
+	var results = [Photo?](repeating: nil, count: urls.count)
+	var done = 0
+	DispatchQueue.concurrentPerform(iterations: urls.count)
+	{ index in
+		let photo = readPhoto(urls[index])
+		lock.lock()
+		results[index] = photo
+		done += 1
+		let current = done
+		lock.unlock()
+		if current % 200 == 0
+		{
+			log("  EXIF \(current)/\(urls.count)")
+		}
+	}
+	return results.compactMap { $0 }
+}
+
 let allFiles = imageFiles(in: root)
 guard !allFiles.isEmpty
 else
 {
 	fail("画像が 1 枚も見つかりませんでした: \(root.path)")
 }
+// **枚数はここで出す。** 読み終えてから出していたので、EXIF の読み取りが
+// 遅いときに「何も起きていない」ように見えていた。
+log("画像 \(allFiles.count) 枚を見つけました。EXIF を読みます")
+ensureMaterialized(allFiles, download: downloadFirst)
 
-/// 撮影順（EXIF 時刻。無いものは末尾へ）。
-let ordered = allFiles
-	.map(readPhoto)
+/// 撮影順（EXIF 時刻。無いものは末尾へ）。**読み取りは並行**（1424 枚を
+/// 逐次で読むと数分かかる）。
+let ordered = readAll(allFiles)
+	.sorted
 	.sorted
 	{ left, right in
 		switch (left.date, right.date)
@@ -281,7 +383,7 @@ let ordered = allFiles
 		}
 	}
 
-log("画像 \(ordered.count) 枚（撮影順）")
+log("EXIF の読み取りが終わりました（\(ordered.count) 枚）")
 
 // 添字 → ファイル名。error 6 になった区間の写真を実際に見るため。
 if listOnly

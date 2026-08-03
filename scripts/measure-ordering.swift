@@ -28,6 +28,8 @@
 //    --no-recursive     サブフォルダを走査しない
 //    --limit N          撮影順の先頭 N 枚だけで測る（下見用）
 //    --max-pairs N      無関係な組の基準を取るための標本数（既定 200000）
+//    --segments N       撮影順を N 枚ずつに切って区間ごとの中身を出す
+//    --download         iCloud Drive の未ダウンロードをまとめて落としてから進む
 //
 
 import CoreGraphics
@@ -47,6 +49,8 @@ var maxPairs = 200_000
 /// **measure-poses.swift の `--starts` と同じ添字**なので、どの区間が error 6 に
 /// なったかと突き合わせられる。
 var segments: Int?
+/// iCloud Drive の未ダウンロードをまとめて落としてから進む（`--download`）。
+var downloadFirst = false
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -62,8 +66,11 @@ while !arguments.isEmpty
 			maxPairs = (arguments.isEmpty ? nil : Int(arguments.removeFirst())) ?? maxPairs
 		case "--segments":
 			segments = arguments.isEmpty ? nil : Int(arguments.removeFirst())
+		case "--download":
+			downloadFirst = true
 		case "-h", "--help":
-			print("使い方: measure-ordering <写真フォルダ> [--no-recursive] [--limit N] [--max-pairs N]")
+			print("使い方: measure-ordering <写真フォルダ> [--no-recursive] [--limit N] "
+				+ "[--max-pairs N] [--segments N] [--download]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -142,6 +149,76 @@ func imageFiles(in folder: URL, recursive: Bool) -> [(url: URL, relativePath: St
 	return result
 }
 
+
+// ---------------------------------------------------------------------
+// iCloud Drive の未ダウンロード対策
+//
+// 写真が iCloud Drive にあると、実体がローカルに無い（プレースホルダの）まま
+// 見えている。その状態で読むと**1 枚ずつダウンロードが走って止まる**。
+// 黙って固まるのが最悪なので、読む前に数えて、必要ならまとめて落とす。
+// 本体側（InputInspection）が同じ理由で同じ検査をしている。
+// ---------------------------------------------------------------------
+
+/// ローカルに実体があるか。iCloud の項目でなければ常に true。
+func isMaterialized(_ url: URL) -> Bool
+{
+	guard let values = try? url.resourceValues(
+		forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]),
+		values.isUbiquitousItem == true
+	else
+	{
+		return true
+	}
+	switch values.ubiquitousItemDownloadingStatus
+	{
+		case .some(.current), .some(.downloaded):
+			return true
+		default:
+			return false
+	}
+}
+
+/// 未ダウンロードがあれば、落とすか・案内して止まるかを決める。
+func ensureMaterialized(_ urls: [URL], download: Bool)
+{
+	var pending = urls.filter { !isMaterialized($0) }
+	guard !pending.isEmpty
+	else
+	{
+		return
+	}
+	guard download
+	else
+	{
+		log("""
+			iCloud Drive にまだ実体の無い写真が \(pending.count)/\(urls.count) 枚あります。
+            このまま読むと 1 枚ずつダウンロードが走って**止まったように見えます**。
+            次のどれかをしてください。
+              1. --download を付けて実行する（まとめて落として進みます）
+              2. Finder でフォルダを右クリック →「今すぐダウンロード」
+              3. ローカルへコピーしてからそちらを指定する（いちばん速い）
+			""")
+		exit(4)
+	}
+	log("iCloud からのダウンロードを開始します（\(pending.count) 枚）")
+	for url in pending
+	{
+		try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+	}
+	var lastReported = pending.count
+	while !pending.isEmpty
+	{
+		Thread.sleep(forTimeInterval: 2)
+		pending = pending.filter { !isMaterialized($0) }
+		if pending.count != lastReported
+		{
+			log("  残り \(pending.count) 枚")
+			lastReported = pending.count
+		}
+	}
+	log("ダウンロード完了")
+}
+
 let files = imageFiles(in: root, recursive: recursive)
 guard !files.isEmpty
 else
@@ -149,6 +226,7 @@ else
 	log("画像が 1 枚も見つかりませんでした: \(root.path)")
 	exit(2)
 }
+ensureMaterialized(files.map(\.url), download: downloadFirst)
 log("画像 \(files.count) 枚を読み取ります（Vision の推論を含むので数分かかります）")
 
 // ---------------------------------------------------------------------
