@@ -1474,6 +1474,8 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	/// 副作用で増えてよいものではない。**
 	/// 細い繋ぎ目（支持数 1 の候補しか無い状態）を越えた回数。窓ごとに数える。
 	var thinCrossings = 0
+	/// 写真を足したときの支持数。**窓の中身がどれだけ強く結ばれているか**の材料。
+	var admissionSupports: [Int] = []
 
 	func grow(from seed: Int) -> [Int]
 	{
@@ -1517,6 +1519,7 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 
 		func add(_ node: Int, _ value: Int)
 		{
+			admissionSupports.append(value)
 			if value < 2
 			{
 				thinCrossings += 1
@@ -1554,12 +1557,14 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 
 	var windows: [[Int]] = []
 	var crossingsPerWindow: [Int] = []
+	var supportsPerWindow: [[Int]] = []
 	// **残りが下限を割ったら打ち切る。** 最後の数枚のために「既存の写真ばかりの
 	// 窓」をもう 1 つ作るのが、窓が増えすぎるいちばんの原因だった。残りは
 	// はぐれとして最も近い窓へ入れる。
 	while (0 ..< total).filter({ !covered[$0] }).count >= minimumWindow, let seed = nextSeed()
 	{
 		thinCrossings = 0
+		admissionSupports = []
 		let window = grow(from: seed)
 		for node in window
 		{
@@ -1567,6 +1572,7 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		}
 		windows.append(window)
 		crossingsPerWindow.append(thinCrossings)
+		supportsPerWindow.append(admissionSupports)
 	}
 
 	// --- はぐれの吸収 ---
@@ -1680,6 +1686,68 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		}
 	}
 
+	/// **窓の中身がひとかたまりか、寄せ集めか**を、EXIF を使わずに測る。
+	///
+	/// コンダクタンス（外への漏れ）だけでは判別できなかった — 実データで、
+	/// 17 個の断片が寄り集まった窓が 2 番目に低いコンダクタンスを示しながら
+	/// 最悪の結果になった。**外との関係ではなく、内部の結び方**を見る必要がある。
+	///
+	/// - 平均内部次数: 窓の中だけで数えた次数。高いほど密
+	/// - 3 コア: 内部次数 3 未満の写真を取り除き続けて残る割合。**寄せ集めだと
+	///   細い繋ぎで付いている写真が次々に剥がれて小さくなる**
+	/// - 最大成分: 3 コアの中で最大の連結成分が窓に占める割合。**ひとかたまりなら
+	///   1 に近く、断片の寄せ集めなら小さい**（「最大の塊」の EXIF 不使用版）
+	func interiorStructure(_ window: [Int]) -> (degree: Double, core: Double, largest: Double)
+	{
+		let inside = Set(window)
+		var alive = inside
+		var internalEdges = 0
+		for node in window
+		{
+			internalEdges += graph[node].filter { inside.contains($0) }.count
+		}
+		let averageDegree = Double(internalEdges) / Double(max(1, window.count))
+
+		// 3 コア（内部次数 3 未満を取り除き続ける）
+		var changed = true
+		while changed
+		{
+			changed = false
+			for node in alive
+				where graph[node].filter({ alive.contains($0) }).count < 3
+			{
+				alive.remove(node)
+				changed = true
+				break
+			}
+		}
+		let coreShare = Double(alive.count) / Double(max(1, window.count))
+
+		// 3 コアの中の最大連結成分
+		var unseen = alive
+		var largest = 0
+		while let start = unseen.first
+		{
+			var size = 0
+			var queue = [start]
+			unseen.remove(start)
+			var head = 0
+			while head < queue.count
+			{
+				let node = queue[head]
+				head += 1
+				size += 1
+				for next in graph[node] where unseen.contains(next)
+				{
+					unseen.remove(next)
+					queue.append(next)
+				}
+			}
+			largest = max(largest, size)
+		}
+		return (averageDegree, coreShare, Double(largest) / Double(max(1, window.count)))
+	}
+
 	/// 窓から外へ出る辺の割合（設計 §3.1.1-(2)）。**停止条件ではなく指標**。
 	func conductance(_ window: [Int]) -> Double
 	{
@@ -1789,7 +1857,8 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		}
 	}
 
-	print("  番号  枚数  重なり  細い繋ぎ目  コンダクタンス  撮影順の塊  最大の塊  時刻なし")
+	var verification: [(Int, Int, Double, Int, Int)] = []
+	print("  【EXIF 不使用】番号  枚数  重なり  内部次数  3コア  最大成分  支持数中央  コンダクタンス")
 	for (index, window) in windows.enumerated()
 	{
 		let sequence = localOrder(window)
@@ -1822,13 +1891,27 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		}
 		let largest = runs.max() ?? 0
 		let share = positions.isEmpty ? 0.0 : Double(largest) / Double(positions.count)
-		let crossings = index < crossingsPerWindow.count ? crossingsPerWindow[index] : 0
+		let structure = interiorStructure(window)
+		let supports = (index < supportsPerWindow.count ? supportsPerWindow[index] : []).sorted()
+		let medianSupport = supports.isEmpty ? 0 : supports[supports.count / 2]
 		print(String(
-			format: "  %4d %5d %7d %11d %13@ %11d %9@ %8d",
-			index + 1, window.count, maximumShared[index], crossings,
-			format(conductance(window), 3) as NSString,
-			runs.count, format(share, 2) as NSString,
-			window.count - positions.count))
+			format: "               %4d %5d %7d %9@ %6@ %9@ %10d %14@",
+			index + 1, window.count, maximumShared[index],
+			format(structure.degree, 1) as NSString,
+			format(structure.core, 2) as NSString,
+			format(structure.largest, 2) as NSString,
+			medianSupport,
+			format(conductance(window), 3) as NSString))
+		verification.append((index + 1, runs.count, share, window.count - positions.count,
+			index < crossingsPerWindow.count ? crossingsPerWindow[index] : 0))
+	}
+
+	print("  【検算・EXIF】  番号  撮影順の塊  最大の塊  時刻なし  細い繋ぎ目")
+	for row in verification
+	{
+		print(String(
+			format: "               %4d %11d %9@ %9d %11d",
+			row.0, row.1, format(row.2, 2) as NSString, row.3, row.4))
 	}
 
 	var histogram: [Int: Int] = [:]
