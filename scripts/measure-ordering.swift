@@ -1428,6 +1428,12 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	// 繋がっている可能性がある**ので、ここを消すと本物を失う。
 	var confirmedEdges = 0
 	var removedEdges = 0
+	/// 姿勢を読めた窓の数。**確定でも除去でもない辺の大半は「両端とも姿勢なし」
+	/// ではなく「そもそも同じ窓に入っていないので判定していない」**なので、
+	/// 分母を出さないと結果を読み違える（実際に一度読み違えた）。
+	var judgedWindows = 0
+	/// 「両端がひとつの窓の中にあり、実際に見比べられた」辺の数。
+	var judgedEdges = 0
 	if !feedbackDirectory.isEmpty
 	{
 		var indexOfPath: [String: Int] = [:]
@@ -1438,6 +1444,7 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		let names = (try? FileManager.default.contentsOfDirectory(atPath: feedbackDirectory)) ?? []
 		var confirmed = Set<Int>()   // a * total + b（a < b）
 		var refuted = Set<Int>()
+		var judged = Set<Int>()
 		var windowsRead = 0
 		for name in names.sorted() where name.hasSuffix(".poses.tsv")
 		{
@@ -1473,6 +1480,17 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 				continue
 			}
 			windowsRead += 1
+			// **見比べられた辺**（両端がこの窓の中にある辺）。姿勢の有無に
+			// かかわらず数える。確定でも除去でもない辺の大半は、両端が同じ窓に
+			// 入っていないだけで**まだ何も分かっていない**。
+			let inWindow = Set(posed).union(unposed)
+			for node in inWindow
+			{
+				for next in graph[node] where next > node && inWindow.contains(next)
+				{
+					judged.insert(node * total + next)
+				}
+			}
 			let posedSet = Set(posed)
 			for node in posed
 			{
@@ -1503,8 +1521,11 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 			}
 			confirmedEdges = confirmed.count
 			removedEdges = refuted.count
+			judgedWindows = windowsRead
+			judgedEdges = judged.count
 			edgesAfter = graph.reduce(0) { $0 + $1.count } / 2
-			log("Object Capture の結果を取り込みました（窓 \(windowsRead) 個・"
+			log("Object Capture の結果を取り込みました（窓 \(judgedWindows) 個・"
+				+ "見比べられた辺 \(judgedEdges) 本・"
 				+ "確定 \(confirmedEdges) 本・除去 \(removedEdges) 本）")
 		}
 	}
@@ -1961,7 +1982,19 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	print("  相互 \(neighbourCount) 近傍 \(edgesBefore) 本 → 共通近傍フィルタ後 \(edgesAfter) 本")
 	if !feedbackDirectory.isEmpty
 	{
-		print("  OC の結果を反映: 確定 \(confirmedEdges) 本・除去 \(removedEdges) 本")
+		// **分母を必ず添える。** 「確定でも除去でもない辺」の大半は両端が同じ窓に
+		// 入っていないだけで、まだ何も分かっていない。判定できた辺の数を出さないと
+		// 「残りは全部おかしい辺」と読み違える。
+		let untouched = max(0, judgedEdges - confirmedEdges - removedEdges)
+		// 分母は**取り込む前**の辺の数（いまの edgesAfter は除去した後の値）。
+		let beforeFeedback = edgesAfter + removedEdges
+		let share = beforeFeedback > 0 ? Double(judgedEdges) * 100 / Double(beforeFeedback) : 0
+		print("  OC の結果を反映: 窓 \(judgedWindows) 個ぶんの姿勢から"
+			+ "確定 \(confirmedEdges) 本・除去 \(removedEdges) 本")
+		print("    見比べられた辺 \(judgedEdges) 本（全体の \(format(share, 1))%）"
+			+ "・うち両端とも姿勢なし \(untouched) 本")
+		print("    → **残りの辺は「正しい」のではなく「まだ見ていない」**。"
+			+ "全部の窓の姿勢が揃うまで判定は伸びない")
 	}
 	var degrees: [Int: Int] = [:]
 	for row in graph
