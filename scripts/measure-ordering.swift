@@ -36,6 +36,8 @@
 //    --window-dir DIR   書き出し先（既定 ./windows）
 //    --neighbours 12    共視グラフの相互近傍の数
 //    --overlap-ratio 0.3 窓のうち重なりに充てる割合（残りが新規の枠）
+//    --feedback DIR     **Object Capture の結果で共視グラフを直す**。
+//                       measure-poses --poses-out が書いた *.poses.tsv を読む
 //    --download         iCloud Drive の未ダウンロードをまとめて落としてから進む
 //
 
@@ -69,6 +71,9 @@ var windowDirectory = "windows"
 var neighbourCount = 12
 /// 窓のうち「重なり」に充てる割合（`--overlap-ratio`）。残りが**新規**の枠。
 var overlapRatio = 0.3
+/// **Object Capture の結果で共視グラフを直す**（`--feedback DIR`）。
+/// measure-poses --poses-out が書いた `*.poses.tsv` を読む。
+var feedbackDirectory = ""
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -96,11 +101,13 @@ while !arguments.isEmpty
 			neighbourCount = (arguments.isEmpty ? nil : Int(arguments.removeFirst())) ?? neighbourCount
 		case "--overlap-ratio":
 			overlapRatio = (arguments.isEmpty ? nil : Double(arguments.removeFirst())) ?? overlapRatio
+		case "--feedback":
+			feedbackDirectory = arguments.isEmpty ? feedbackDirectory : arguments.removeFirst()
 		case "-h", "--help":
 			print("使い方: measure-ordering <写真フォルダ> [--no-recursive] [--limit N] "
 				+ "[--max-pairs N] [--segments N] [--seriate 12] "
 				+ "[--windows 200] [--window-dir DIR] [--neighbours 12] "
-				+ "[--overlap-ratio 0.3] [--download]")
+				+ "[--overlap-ratio 0.3] [--feedback DIR] [--download]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -1405,7 +1412,102 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 			graph[index].append(other)
 		}
 	}
-	let edgesAfter = graph.reduce(0) { $0 + $1.count } / 2
+	var edgesAfter = graph.reduce(0) { $0 + $1.count } / 2
+
+	// --- Object Capture の結果を取り込む（--feedback） ---
+	//
+	// **自前ではできなかった幾何検証を、Object Capture が副産物としてやってくれる。**
+	// かたまりの空似（設計 §9-2）に効く唯一の手。規則は 3 つに分ける。
+	//
+	//   両方に姿勢   同じ再構成に入った ＝ 幾何的に繋がっている → **確定**（守る）
+	//   片方だけ姿勢 OC が両方を手にして繋げなかった          → **取り除く**
+	//   両方とも無し どちらも落ちただけ                      → **触らない**
+	//
+	// 3 行目が要点。OC は一貫した最大の集合を 1 つだけ返すので、窓の中に繋がらない
+	// 2 つの領域があると小さいほうは丸ごと落ちる。**落ちた者どうしは互いに正しく
+	// 繋がっている可能性がある**ので、ここを消すと本物を失う。
+	var confirmedEdges = 0
+	var removedEdges = 0
+	if !feedbackDirectory.isEmpty
+	{
+		var indexOfPath: [String: Int] = [:]
+		for (index, record) in members.enumerated()
+		{
+			indexOfPath[root.appendingPathComponent(record.relativePath).path] = index
+		}
+		let names = (try? FileManager.default.contentsOfDirectory(atPath: feedbackDirectory)) ?? []
+		var confirmed = Set<Int>()   // a * total + b（a < b）
+		var refuted = Set<Int>()
+		var windowsRead = 0
+		for name in names.sorted() where name.hasSuffix(".poses.tsv")
+		{
+			let path = (feedbackDirectory as NSString).appendingPathComponent(name)
+			guard let text = try? String(contentsOfFile: path, encoding: .utf8)
+			else
+			{
+				continue
+			}
+			var posed: [Int] = []
+			var unposed: [Int] = []
+			for line in text.split(separator: "\n") where !line.hasPrefix("#")
+			{
+				let columns = line.split(separator: "\t", omittingEmptySubsequences: false)
+				guard columns.count >= 2, let index = indexOfPath[String(columns[0])]
+				else
+				{
+					continue
+				}
+				if columns[1] == "1"
+				{
+					posed.append(index)
+				}
+				else
+				{
+					unposed.append(index)
+				}
+			}
+			guard !posed.isEmpty
+			else
+			{
+				// 窓ごと落ちた（error 6）。**何も学べないので触らない。**
+				continue
+			}
+			windowsRead += 1
+			let posedSet = Set(posed)
+			for node in posed
+			{
+				for next in graph[node] where next > node && posedSet.contains(next)
+				{
+					confirmed.insert(node * total + next)
+				}
+			}
+			let unposedSet = Set(unposed)
+			for node in posed
+			{
+				for next in graph[node] where unposedSet.contains(next)
+				{
+					refuted.insert(min(node, next) * total + max(node, next))
+				}
+			}
+		}
+		// 一度でも確定した辺は守る（別の窓では落ちていても、繋がる証拠がある）。
+		refuted.subtract(confirmed)
+		if windowsRead > 0
+		{
+			for node in 0 ..< total
+			{
+				graph[node] = graph[node].filter
+				{ next in
+					!refuted.contains(min(node, next) * total + max(node, next))
+				}
+			}
+			confirmedEdges = confirmed.count
+			removedEdges = refuted.count
+			edgesAfter = graph.reduce(0) { $0 + $1.count } / 2
+			log("Object Capture の結果を取り込みました（窓 \(windowsRead) 個・"
+				+ "確定 \(confirmedEdges) 本・除去 \(removedEdges) 本）")
+		}
+	}
 
 	// --- 支持成長（設計 §3.1）---
 	var covered = [Bool](repeating: false, count: total)
@@ -1835,6 +1937,10 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	print("")
 	print("■ 支持成長で作った窓（EXIF 不使用・設計 §3.1）")
 	print("  相互 \(neighbourCount) 近傍 \(edgesBefore) 本 → 共通近傍フィルタ後 \(edgesAfter) 本")
+	if !feedbackDirectory.isEmpty
+	{
+		print("  OC の結果を反映: 確定 \(confirmedEdges) 本・除去 \(removedEdges) 本")
+	}
 	var degrees: [Int: Int] = [:]
 	for row in graph
 	{

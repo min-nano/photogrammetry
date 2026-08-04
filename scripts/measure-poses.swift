@@ -50,6 +50,9 @@
 //    --window-dir DIR       measure-ordering --windows が書き出した窓を順に投げる。
 //                           **支持成長で作った窓が実際に通るかの検証**（設計 §9-1）
 //    --window-file FILE     窓を 1 つだけ投げる（複数指定可）
+//    --poses-out DIR        写真ごとの「姿勢が付いたか」と 3 次元位置を書き出す。
+//                           measure-ordering --feedback に渡すと、**OC の結果で
+//                           共視グラフを直せる**（かたまりの空似への唯一の手）
 //    --drop-blurriest 20    窓の中でブレの大きい下位 N% を落としてから投げる。
 //                           既存の QualityFilter が error 6 を救えるかを試す
 //    --download             iCloud Drive の未ダウンロードをまとめて落としてから進む
@@ -97,6 +100,13 @@ var dropBlurriestPercent = 0
 /// measure-ordering --windows が書き出したもの。1 行 1 パスで、**その順序が
 /// そのまま Object Capture へ渡す並び**になる（`sequential` の中身）。
 var windowFiles: [String] = []
+/// **姿勢の書き出し先**（`--poses-out DIR`）。写真ごとに「姿勢が付いたか」と
+/// 3 次元位置を出す。これを measure-ordering --feedback へ渡すと、
+/// **Object Capture の結果で共視グラフを直せる**（設計の新しい柱）。
+var posesOutDirectory = ""
+/// いま投げている窓の、連番 → 元のパス。姿勢は一時フォルダの名前で返ってくる
+/// ので、元の写真へ戻すために要る。
+var currentWindowPaths: [String] = []
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -137,6 +147,8 @@ while !arguments.isEmpty
 			downloadFirst = true
 		case "--drop-blurriest":
 			dropBlurriestPercent = Int(value()) ?? 0
+		case "--poses-out":
+			posesOutDirectory = value()
 		case "--window-file":
 			windowFiles.append(value())
 		case "--window-dir":
@@ -154,7 +166,8 @@ while !arguments.isEmpty
 				+ "[--ordering unordered|sequential|both] "
 				+ "[--sensitivity normal|high|both] [--detail reduced] "
 				+ "[--subject scene|object] [--drop-blurriest 20] [--timeout 1800] "
-				+ "[--download] [--list] [--window-dir DIR] [--window-file FILE]")
+				+ "[--download] [--list] [--window-dir DIR] [--window-file FILE] "
+				+ "[--poses-out DIR]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -538,6 +551,7 @@ func makeWindow(fromList path: String, label: String) throws -> (folder: URL, dr
 		dropped = kept.count - survivors.count
 		kept = survivors.map { kept[$0] }
 	}
+	currentWindowPaths = kept
 	for (index, source) in kept.enumerated()
 	{
 		let url = URL(fileURLWithPath: source)
@@ -757,6 +771,46 @@ struct Measurement
 	var outcome = "ok"
 }
 
+/// 姿勢を「元の写真のパス」に紐づけて書き出す。
+///
+/// **窓は一時フォルダへ連番でリンクしてある**ので、返ってくる URL も連番の
+/// ほう。`currentWindowPaths` で元へ戻す。
+@available(macOS 14.0, *)
+func writePoses(_ poses: PhotogrammetrySession.Poses, label: String)
+{
+	guard !posesOutDirectory.isEmpty
+	else
+	{
+		return
+	}
+	let directory = URL(fileURLWithPath: posesOutDirectory, isDirectory: true)
+	try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+	var lines = ["# path\tposed\tx\ty\tz"]
+	for (sample, url) in poses.urlsBySample.sorted(by: { $0.key < $1.key })
+	{
+		// 00042.jpg → 42 → 元のパス
+		let stem = url.deletingPathExtension().lastPathComponent
+		guard let index = Int(stem), index < currentWindowPaths.count
+		else
+		{
+			continue
+		}
+		let original = currentWindowPaths[index]
+		if let pose = poses.posesBySample[sample]
+		{
+			let position = pose.translation
+			lines.append("\(original)\t1\t\(position.x)\t\(position.y)\t\(position.z)")
+		}
+		else
+		{
+			lines.append("\(original)\t0\t\t\t")
+		}
+	}
+	try? lines.joined(separator: "\n")
+		.write(to: directory.appendingPathComponent("\(label).poses.tsv"),
+			atomically: true, encoding: .utf8)
+}
+
 func stageName(_ stage: PhotogrammetrySession.Output.ProcessingStage) -> String
 {
 	switch stage
@@ -785,16 +839,16 @@ func measure(
 	var measurement = Measurement()
 	let began = Date()
 
+	let windowLabel = listPath
+		.map { ($0 as NSString).lastPathComponent.replacingOccurrences(of: ".txt", with: "") }
+		?? "start\(start)-count\(count)"
 	let folder: URL
 	do
 	{
 		let window: (folder: URL, dropped: Int)
 		if let listPath
 		{
-			window = try makeWindow(
-				fromList: listPath,
-				label: (listPath as NSString).lastPathComponent.replacingOccurrences(
-					of: ".txt", with: ""))
+			window = try makeWindow(fromList: listPath, label: windowLabel)
 		}
 		else
 		{
@@ -888,6 +942,7 @@ func measure(
 					if #available(macOS 14.0, *), case .poses(let poses) = result
 					{
 						measurement.posed = poses.posesBySample.count
+						writePoses(poses, label: windowLabel)
 					}
 				case .requestError(_, let error):
 					// **その場で畳む。** 以前はここで記録だけして
