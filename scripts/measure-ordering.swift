@@ -1703,6 +1703,12 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		}
 	}
 	let strayCount = strays.count
+	/// 窓ごとの「はぐれ（後から見た目だけで入れた写真）」。**支持成長で育てた
+	/// 部分はグラフ上で必ず連結**（支持数 1 以上でしか足さないため）なので、
+	/// 窓が内部で分断されるとしたら原因はここにしかない。実データで最大成分が
+	/// 0.48〜0.62 まで落ちた窓があり、それは「繋がらない 2 つの塊を 1 回の
+	/// 再構成へ渡している」ことを意味する（設計 §6.2.2）。
+	var strayMembers = [Set<Int>](repeating: [], count: kept.count)
 	if !kept.isEmpty, !strays.isEmpty
 	{
 		// 受け入れ側の写真 → 窓の番号
@@ -1738,6 +1744,7 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 				if let index = owner[bestHost]
 				{
 					kept[index].append(stray)
+					strayMembers[index].insert(stray)
 				}
 			}
 		}
@@ -1963,8 +1970,16 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		}
 	}
 
+	// **はぐれを外した「芯」も書き出す。** 支持成長で育てた部分はグラフ上で必ず
+	// 連結なので、芯は「1 回の再構成で繋がるはず」と言い切れる唯一の集合になる。
+	// 窓が落ちたときに、原因がはぐれの混入なのか中身そのものなのかを、往復せずに
+	// 切り分けられる（設計 §3.6 の梯子の 3 段目より前に試すべき手）。
+	let coreDirectory = directory.appendingPathComponent("core", isDirectory: true)
+	try? FileManager.default.createDirectory(at: coreDirectory, withIntermediateDirectories: true)
+	var coreCount = 0
+
 	var verification: [(Int, Int, Double, Int, Int)] = []
-	print("  【EXIF 不使用】番号  枚数  重なり  内部次数  3コア  最大成分  支持数中央  コンダクタンス")
+	print("  【EXIF 不使用】番号  枚数  はぐれ  重なり  内部次数  3コア  最大成分  支持数中央  コンダクタンス")
 	for (index, window) in windows.enumerated()
 	{
 		let sequence = localOrder(window)
@@ -1975,6 +1990,22 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		let lines = sequence.map { root.appendingPathComponent(members[$0].relativePath).path }
 		let file = directory.appendingPathComponent(String(format: "window-%02d.txt", index + 1))
 		try? lines.joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+
+		let strayHere = index < strayMembers.count ? strayMembers[index] : []
+		if !strayHere.isEmpty
+		{
+			let core = window.filter { !strayHere.contains($0) }
+			if core.count >= keepFloor
+			{
+				let coreLines = localOrder(core)
+					.map { root.appendingPathComponent(members[$0].relativePath).path }
+				try? coreLines.joined(separator: "\n").write(
+					to: coreDirectory.appendingPathComponent(
+						String(format: "window-%02d.txt", index + 1)),
+					atomically: true, encoding: .utf8)
+				coreCount += 1
+			}
+		}
 
 		// **撮影順の「塊」の数**。四分位範囲（散らばり）では、別日に同じ場所を
 		// 撮った窓が正しくても大きく出てしまい、混入と区別が付かない。
@@ -2001,8 +2032,8 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		let supports = (index < supportsPerWindow.count ? supportsPerWindow[index] : []).sorted()
 		let medianSupport = supports.isEmpty ? 0 : supports[supports.count / 2]
 		print(String(
-			format: "               %4d %5d %7d %9@ %6@ %9@ %10d %14@",
-			index + 1, window.count, maximumShared[index],
+			format: "               %4d %5d %7d %7d %9@ %6@ %9@ %10d %14@",
+			index + 1, window.count, strayHere.count, maximumShared[index],
 			format(structure.degree, 1) as NSString,
 			format(structure.core, 2) as NSString,
 			format(structure.largest, 2) as NSString,
@@ -2108,6 +2139,8 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	}
 	print("  分割案: \(splitCount) 個を \(splitDirectory.lastPathComponent)/ へ書き出し"
 		+ "（error 6 の窓はこちらで再試行できる）")
+	print("  はぐれ抜きの芯: \(coreCount) 個を \(coreDirectory.lastPathComponent)/ へ書き出し"
+		+ "（**最大成分が 1.00 未満の窓は、はぐれが原因**。まずこちらで試す）")
 
 	print("  所属する窓の数の分布: "
 		+ histogram.sorted { $0.key < $1.key }.map { "\($0.key)個×\($0.value)枚" }
