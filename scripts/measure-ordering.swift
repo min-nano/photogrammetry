@@ -74,6 +74,11 @@ var overlapRatio = 0.3
 /// **Object Capture の結果で共視グラフを直す**（`--feedback DIR`）。
 /// measure-poses --poses-out が書いた `*.poses.tsv` を読む。
 var feedbackDirectory = ""
+/// **前の巡の窓と突き合わせる**（`--compare-windows DIR`）。窓は毎巡グラフから
+/// 作り直すので、**辺が直れば悪い窓は作られなくなる**はず。それが本当に起きて
+/// いるかを見るための機能で、成長は決定的（乱数なし）なので、
+/// **近傍の辺が 1 本も変わらなければまったく同じ窓が再び出る**。
+var previousWindowDirectory = ""
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -103,11 +108,15 @@ while !arguments.isEmpty
 			overlapRatio = (arguments.isEmpty ? nil : Double(arguments.removeFirst())) ?? overlapRatio
 		case "--feedback":
 			feedbackDirectory = arguments.isEmpty ? feedbackDirectory : arguments.removeFirst()
+		case "--compare-windows":
+			previousWindowDirectory = arguments.isEmpty
+				? previousWindowDirectory : arguments.removeFirst()
 		case "-h", "--help":
 			print("使い方: measure-ordering <写真フォルダ> [--no-recursive] [--limit N] "
 				+ "[--max-pairs N] [--segments N] [--seriate 12] "
 				+ "[--windows 200] [--window-dir DIR] [--neighbours 12] "
-				+ "[--overlap-ratio 0.3] [--feedback DIR] [--download]")
+				+ "[--overlap-ratio 0.3] [--feedback DIR] [--compare-windows DIR] "
+				+ "[--download]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -2199,6 +2208,79 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	print("    塊が大半を占めていれば健全**。別日の再訪でも塊は 2〜3 個で収まる。")
 	print("    細かい塊に散っていたら混入（設計 §9-2 のかたまりの空似）")
 	print("  書き出し先: \(directory.path)")
+
+	// --- 前の巡の窓との突き合わせ（--compare-windows） ---
+	//
+	// **窓は毎巡グラフから作り直すので、辺が直れば悪い窓は作られなくなるはず。**
+	// ただし成長は決定的（乱数なし・同数なら添字の小さいほう）なので、
+	// **その領域の近傍で辺が 1 本も変わらなければ、まったく同じ窓が再び出る**。
+	// つまり「悪い窓が消えるかどうか」は自動ではなく、修正がそこまで届いたかの
+	// 関数になる。それを見るための突き合わせ（設計 §3.10）。
+	if !previousWindowDirectory.isEmpty
+	{
+		var indexOfPath: [String: Int] = [:]
+		for (index, record) in members.enumerated()
+		{
+			indexOfPath[root.appendingPathComponent(record.relativePath).path] = index
+		}
+		let names = ((try? FileManager.default.contentsOfDirectory(
+			atPath: previousWindowDirectory)) ?? [])
+			.filter { $0.hasPrefix("window-") && $0.hasSuffix(".txt") }
+			.sorted()
+		var previous: [(name: String, members: Set<Int>)] = []
+		for name in names
+		{
+			let path = (previousWindowDirectory as NSString).appendingPathComponent(name)
+			guard let text = try? String(contentsOfFile: path, encoding: .utf8)
+			else
+			{
+				continue
+			}
+			let indices = text.split(separator: "\n").compactMap { indexOfPath[String($0)] }
+			if !indices.isEmpty
+			{
+				previous.append((name, Set(indices)))
+			}
+		}
+		print("")
+		if previous.isEmpty
+		{
+			print("■ 前の巡の窓が読めませんでした: \(previousWindowDirectory)")
+		}
+		print("■ 前の巡の窓との突き合わせ（\(previousWindowDirectory)）")
+		print("  前の窓  枚数  いちばん近い今の窓  一致度  そのまま残ったか")
+		var identical = 0
+		for (name, before) in previous
+		{
+			var bestIndex = -1
+			var bestScore = 0.0
+			for (index, window) in windows.enumerated()
+			{
+				let after = Set(window)
+				let union = before.union(after).count
+				let score = union > 0
+					? Double(before.intersection(after).count) / Double(union) : 0
+				if score > bestScore
+				{
+					bestScore = score
+					bestIndex = index
+				}
+			}
+			let same = bestScore >= 0.999
+			if same
+			{
+				identical += 1
+			}
+			print(String(format: "  %-12@ %5d %18@ %7@ %@",
+				name as NSString, before.count,
+				(bestIndex >= 0 ? String(format: "window-%02d", bestIndex + 1) : "—") as NSString,
+				format(bestScore, 2) as NSString,
+				(same ? "**そのまま**" : "作り直された") as NSString))
+		}
+		print("  そのまま残った窓: \(identical) / \(previous.count) 個")
+		print("  → **落ちた窓がそのまま残っているなら、修正がその近傍まで届いていない**")
+		print("    （成長は決定的なので、辺が変わらなければ同じ窓が再び出る）")
+	}
 }
 
 print("")
