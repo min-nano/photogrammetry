@@ -170,6 +170,23 @@ else
 {
 	fail("使い方: measure-poses <写真フォルダ> [オプション]")
 }
+
+// **綴り違いを黙って別の設定へ落とさない。**
+// `--sensitivity hight` が `normal` として走り、15 窓ぶんの測定を無駄にした。
+// 設計原則（黙って悪い結果を出さない）を、この計測スクリプト自身にも課す。
+func validate(_ name: String, _ value: String, _ allowed: [String])
+{
+	guard allowed.contains(value)
+	else
+	{
+		fail("\(name) の値が不正です: \(value)（使えるのは \(allowed.joined(separator: " / "))）")
+	}
+}
+validate("--mode", modeName, ["poses", "model", "both"])
+validate("--ordering", orderingName, ["unordered", "sequential", "both"])
+validate("--sensitivity", sensitivityName, ["normal", "high", "both"])
+validate("--detail", detailName, ["preview", "reduced", "medium", "full", "raw"])
+validate("--subject", subjectName, ["scene", "object"])
 let root = URL(fileURLWithPath: inputPath, isDirectory: true).standardizedFileURL
 
 @Sendable func log(_ message: String)
