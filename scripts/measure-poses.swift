@@ -107,6 +107,9 @@ var posesOutDirectory = ""
 /// いま投げている窓の、連番 → 元のパス。姿勢は一時フォルダの名前で返ってくる
 /// ので、元の写真へ戻すために要る。
 var currentWindowPaths: [String] = []
+/// **測る前に ANE モデルキャッシュを消す**（`--purge-model-cache`）。壊れると
+/// 以降の窓が同じところで落ち続け、測定が丸ごと無駄になる（`ModelCache` 参照）。
+var purgeModelCache = false
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -160,6 +163,8 @@ while !arguments.isEmpty
 			}
 		case "--timeout":
 			timeoutSeconds = Double(value()) ?? timeoutSeconds
+		case "--purge-model-cache":
+			purgeModelCache = true
 		case "-h", "--help":
 			print("使い方: measure-poses <写真フォルダ> [--counts 100,200] "
 				+ "[--starts 0,400,600] [--mode poses|model|both] "
@@ -167,7 +172,7 @@ while !arguments.isEmpty
 				+ "[--sensitivity normal|high|both] [--detail reduced] "
 				+ "[--subject scene|object] [--drop-blurriest 20] [--timeout 1800] "
 				+ "[--download] [--list] [--window-dir DIR] [--window-file FILE] "
-				+ "[--poses-out DIR]")
+				+ "[--poses-out DIR] [--purge-model-cache]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -205,6 +210,31 @@ let root = URL(fileURLWithPath: inputPath, isDirectory: true).standardizedFileUR
 @Sendable func log(_ message: String)
 {
 	FileHandle.standardError.write(Data("\(message)\n".utf8))
+}
+
+/// ANE 用にコンパイルされた ML モデルの置き場。バンドル ID の無い素の実行体では
+/// プロセス名で切られる（実機で `~/Library/Caches/measure-poses/…` を確認）。
+/// 名前は `ModelCache.bundleCacheDirectoryName` と対。
+let modelCacheDirectory: URL? = FileManager.default
+	.urls(for: .cachesDirectory, in: .userDomainMask).first?
+	.appendingPathComponent(
+		Bundle.main.bundleIdentifier ?? ProcessInfo.processInfo.processName, isDirectory: true)
+	.appendingPathComponent("com.apple.e5rt.e5bundlecache", isDirectory: true)
+
+if purgeModelCache
+{
+	if let modelCacheDirectory
+	{
+		let existed = FileManager.default.fileExists(atPath: modelCacheDirectory.path)
+		try? FileManager.default.removeItem(at: modelCacheDirectory)
+		log(existed
+			? "ANE モデルキャッシュを削除しました: \(modelCacheDirectory.path)"
+			: "ANE モデルキャッシュはありませんでした: \(modelCacheDirectory.path)")
+	}
+	else
+	{
+		log("ANE モデルキャッシュの場所が分かりませんでした")
+	}
 }
 
 /// 1 件ごとに必ず吐き出す。abort() で落ちても、そこまでの測定値を残すため。
@@ -1052,6 +1082,14 @@ Task
 	}
 	emit("# 入力 \(ordered.count) 枚 / detail=\(detailName) / subject=\(subjectName)")
 	emit("# ハードウェア上限 \(PhotogrammetrySession.limits.maximumNumberOfInputImages) 枚")
+	// **ANE 用モデルキャッシュの場所を必ず出しておく。** 実機で E5RT /
+	// MILCompilerForANE の例外が測定の途中から出た。これは `ModelCache` が
+	// 名指ししている故障で、写真にも設定にも原因が無い一方、**出た後の窓の成否は
+	// 測定として信用できない**。消す場所が分からないと手の打ちようがないので、
+	// 常に案内する（Core の ModelCache と同じ場所・同じ理屈）。
+	emit("# ANE モデルキャッシュ: \(modelCacheDirectory?.path ?? "（不明）")")
+	emit("#   E5RT / ANECCompile / MILCompilerForANE の行が出たら、"
+		+ "ここを消してから測り直す（それ以降の結果は無効）")
 
 	// **一覧ファイルが指定されていたら、そちらだけを投げる。**
 	// measure-ordering --windows が支持成長で作った窓が、実際に Object Capture を

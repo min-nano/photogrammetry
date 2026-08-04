@@ -1806,10 +1806,43 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	///   細い繋ぎで付いている写真が次々に剥がれて小さくなる**
 	/// - 最大成分: 3 コアの中で最大の連結成分が窓に占める割合。**ひとかたまりなら
 	///   1 に近く、断片の寄せ集めなら小さい**（「最大の塊」の EXIF 不使用版）
-	func interiorStructure(_ window: [Int]) -> (degree: Double, core: Double, largest: Double)
+	func interiorStructure(_ window: [Int])
+		-> (degree: Double, core: Double, largest: Double, connected: Double)
 	{
 		let inside = Set(window)
 		var alive = inside
+
+		/// 与えられた集合の中での最大連結成分の大きさ。
+		func largestComponent(_ nodes: Set<Int>) -> Int
+		{
+			var unseen = nodes
+			var largest = 0
+			while let start = unseen.first
+			{
+				var size = 0
+				var queue = [start]
+				unseen.remove(start)
+				var head = 0
+				while head < queue.count
+				{
+					let node = queue[head]
+					head += 1
+					size += 1
+					for next in graph[node] where unseen.contains(next)
+					{
+						unseen.remove(next)
+						queue.append(next)
+					}
+				}
+				largest = max(largest, size)
+			}
+			return largest
+		}
+
+		// **窓そのものの連結性**（3 コアに削る前）。支持成長で育てた部分は必ず
+		// 連結なので、これが 1.00 を下回るぶんは**後から入れたはぐれ**にしか
+		// 由来しない。**1 回の再構成で繋がりようがない写真が何割いるか**を表す。
+		let connectedShare = Double(largestComponent(inside)) / Double(max(1, window.count))
 		var internalEdges = 0
 		for node in window
 		{
@@ -1832,29 +1865,11 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		}
 		let coreShare = Double(alive.count) / Double(max(1, window.count))
 
-		// 3 コアの中の最大連結成分
-		var unseen = alive
-		var largest = 0
-		while let start = unseen.first
-		{
-			var size = 0
-			var queue = [start]
-			unseen.remove(start)
-			var head = 0
-			while head < queue.count
-			{
-				let node = queue[head]
-				head += 1
-				size += 1
-				for next in graph[node] where unseen.contains(next)
-				{
-					unseen.remove(next)
-					queue.append(next)
-				}
-			}
-			largest = max(largest, size)
-		}
-		return (averageDegree, coreShare, Double(largest) / Double(max(1, window.count)))
+		// 3 コアの中の最大連結成分（**芯の太さ**。上の connectedShare とは別物で、
+		// こちらは必ず coreShare 以下になる）
+		let largest = largestComponent(alive)
+		return (averageDegree, coreShare,
+			Double(largest) / Double(max(1, window.count)), connectedShare)
 	}
 
 	/// 窓から外へ出る辺の割合（設計 §3.1.1-(2)）。**停止条件ではなく指標**。
@@ -1979,7 +1994,7 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	var coreCount = 0
 
 	var verification: [(Int, Int, Double, Int, Int)] = []
-	print("  【EXIF 不使用】番号  枚数  はぐれ  重なり  内部次数  3コア  最大成分  支持数中央  コンダクタンス")
+	print("  【EXIF 不使用】番号  枚数  はぐれ  重なり  連結  内部次数  3コア  芯の成分  支持数中央  コンダクタンス")
 	for (index, window) in windows.enumerated()
 	{
 		let sequence = localOrder(window)
@@ -2032,8 +2047,9 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		let supports = (index < supportsPerWindow.count ? supportsPerWindow[index] : []).sorted()
 		let medianSupport = supports.isEmpty ? 0 : supports[supports.count / 2]
 		print(String(
-			format: "               %4d %5d %7d %7d %9@ %6@ %9@ %10d %14@",
+			format: "               %4d %5d %7d %7d %5@ %9@ %6@ %9@ %10d %14@",
 			index + 1, window.count, strayHere.count, maximumShared[index],
+			format(structure.connected, 2) as NSString,
 			format(structure.degree, 1) as NSString,
 			format(structure.core, 2) as NSString,
 			format(structure.largest, 2) as NSString,
