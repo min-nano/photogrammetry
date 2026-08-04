@@ -785,27 +785,46 @@ func writePoses(_ poses: PhotogrammetrySession.Poses, label: String)
 	}
 	let directory = URL(fileURLWithPath: posesOutDirectory, isDirectory: true)
 	try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-	var lines = ["# path\tposed\tx\ty\tz"]
-	for (sample, url) in poses.urlsBySample.sorted(by: { $0.key < $1.key })
+
+	// **投げた写真すべてを台帳にする。** `urlsBySample` が姿勢の付いた分しか
+	// 返さない可能性があり、そちらを台帳にすると「姿勢なし」の行が 1 本も出ず、
+	// --feedback が反証（片方だけ姿勢＝辺を消す）を学べなくなる。落ちた写真こそ
+	// 欲しい情報なので、窓のファイル一覧を土台にして姿勢を上書きする。
+	var positions = [String: SIMD3<Float>]()
+	for (sample, pose) in poses.posesBySample
 	{
-		// 00042.jpg → 42 → 元のパス
-		let stem = url.deletingPathExtension().lastPathComponent
-		guard let index = Int(stem), index < currentWindowPaths.count
+		// 00042.jpg → 42 → 元のパス。URL が無いときは標本番号を添字として使う
+		// （一時フォルダへは窓の順で連番リンクしてある）。
+		var index = sample
+		if let url = poses.urlsBySample[sample],
+			let parsed = Int(url.deletingPathExtension().lastPathComponent)
+		{
+			index = parsed
+		}
+		guard index >= 0, index < currentWindowPaths.count
 		else
 		{
 			continue
 		}
-		let original = currentWindowPaths[index]
-		if let pose = poses.posesBySample[sample]
+		positions[currentWindowPaths[index]] = pose.translation
+	}
+
+	var lines = ["# path\tposed\tx\ty\tz"]
+	for path in currentWindowPaths
+	{
+		if let position = positions[path]
 		{
-			let position = pose.translation
-			lines.append("\(original)\t1\t\(position.x)\t\(position.y)\t\(position.z)")
+			lines.append("\(path)\t1\t\(position.x)\t\(position.y)\t\(position.z)")
 		}
 		else
 		{
-			lines.append("\(original)\t0\t\t\t")
+			lines.append("\(path)\t0\t\t\t")
 		}
 	}
+	// urlsBySample の中身は実測しないと分からないので、突き合わせて残す。
+	log("  姿勢を書き出しました: \(label).poses.tsv"
+		+ "（投入 \(currentWindowPaths.count) 枚・姿勢 \(positions.count) 枚・"
+		+ "urlsBySample \(poses.urlsBySample.count) 件）")
 	try? lines.joined(separator: "\n")
 		.write(to: directory.appendingPathComponent("\(label).poses.tsv"),
 			atomically: true, encoding: .utf8)
