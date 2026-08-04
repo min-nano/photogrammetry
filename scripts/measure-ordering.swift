@@ -1571,16 +1571,21 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 
 	// --- はぐれの吸収 ---
 	//
-	// **グラフ上で孤立した写真は、そのままだと 1 枚の窓になる。** 合成サンプルで
-	// 実際にそうなった（48 枚が 37 個の窓に散った）。実データでも次数 0 の写真は
-	// 必ず出るので、ここを塞がないと「1 枚の窓」を Object Capture へ投げることに
-	// なる。**最も見た目の近い写真がいる窓へ入れる**（設計 §1.2 のとおり、混ぜる
-	// コストは低い）。
+	// **小さい窓は解体しない。** 実機で 40 枚の窓（床下）が単独で通り、35 枚中
+	// 15 枚に姿勢が付いた。**単独でモデルになるなら、他へ混ぜて容量を食わせるより
+	// そのまま出したほうが有用**（混ぜた先を汚す危険も無い）。
+	//
+	// 解体するのは `keepFloor` を下回るものだけ。グラフ上で孤立した写真
+	// （実データで次数 0 が 155 枚）は 1 枚の窓になってしまうので、そこだけは
+	// **最も見た目の近い写真がいる窓へ入れる**。
+	/// これを下回る窓だけ解体する。**再構成に足りるかどうかは Object Capture が
+	/// 決めることなので、こちらで先回りして捨てない。**
+	let keepFloor = max(8, minimumWindow / 2)
 	var strays = (0 ..< total).filter { !covered[$0] }
 	var kept: [[Int]] = []
 	for window in windows
 	{
-		if window.count >= minimumWindow
+		if window.count >= keepFloor
 		{
 			kept.append(window)
 		}
@@ -1831,6 +1836,90 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	{
 		histogram[value, default: 0] += 1
 	}
+	// --- 分割案の書き出し ---
+	//
+	// **error 6 で落ちた窓は、その場で半分に割って試せるようにしておく。**
+	// 実機で「散っている窓（撮影順の塊 23 個）」が落ちたが、同じ現場の写真である
+	// 以上、まとまりさえすればモデルになるはず。設計 §3.6 の「縮めて再試行」を
+	// 往復無しでできるよう、窓の中でもう一度支持成長を回した結果を添えておく。
+	let splitDirectory = directory.appendingPathComponent("split", isDirectory: true)
+	try? FileManager.default.createDirectory(
+		at: splitDirectory, withIntermediateDirectories: true)
+
+	/// 与えられた集合の中だけで支持成長する（窓を割るため）。
+	func growWithin(_ nodes: [Int], from seed: Int, capacity: Int) -> [Int]
+	{
+		let allowed = Set(nodes)
+		var inside: Set<Int> = [seed]
+		var order = [seed]
+		var support: [Int: Int] = [:]
+		for node in graph[seed] where allowed.contains(node)
+		{
+			support[node, default: 0] += 1
+		}
+		while inside.count < capacity, !support.isEmpty
+		{
+			var bestNode = -1
+			var bestSupport = -1
+			for (node, value) in support
+			{
+				if value > bestSupport || (value == bestSupport && node < bestNode)
+				{
+					bestNode = node
+					bestSupport = value
+				}
+			}
+			support.removeValue(forKey: bestNode)
+			inside.insert(bestNode)
+			order.append(bestNode)
+			for next in graph[bestNode] where allowed.contains(next) && !inside.contains(next)
+			{
+				support[next, default: 0] += 1
+			}
+		}
+		return order
+	}
+
+	var splitCount = 0
+	for (index, window) in windows.enumerated() where window.count >= keepFloor * 3
+	{
+		let half = (window.count + 1) / 2
+		var remaining = Set(window)
+		var parts: [[Int]] = []
+		while !remaining.isEmpty, parts.count < 4
+		{
+			// 種は残りのうち次数が最大のもの（同数なら添字の小さいほう）。
+			var seed = -1
+			var seedDegree = -1
+			for node in remaining.sorted()
+			{
+				let degree = graph[node].filter { remaining.contains($0) }.count
+				if degree > seedDegree
+				{
+					seed = node
+					seedDegree = degree
+				}
+			}
+			let part = growWithin(Array(remaining), from: seed, capacity: half)
+			parts.append(part)
+			remaining.subtract(part)
+		}
+		for (order, part) in parts.enumerated() where part.count >= keepFloor
+		{
+			let sequence = localOrder(part)
+			let lines = sequence.map { root.appendingPathComponent(members[$0].relativePath).path }
+			let name = String(
+				format: "window-%02d%@.txt", index + 1,
+				String(UnicodeScalar(UInt8(97 + min(order, 25)))))
+			try? lines.joined(separator: "\n")
+				.write(to: splitDirectory.appendingPathComponent(name),
+					atomically: true, encoding: .utf8)
+			splitCount += 1
+		}
+	}
+	print("  分割案: \(splitCount) 個を \(splitDirectory.lastPathComponent)/ へ書き出し"
+		+ "（error 6 の窓はこちらで再試行できる）")
+
 	print("  所属する窓の数の分布: "
 		+ histogram.sorted { $0.key < $1.key }.map { "\($0.key)個×\($0.value)枚" }
 			.joined(separator: " "))
