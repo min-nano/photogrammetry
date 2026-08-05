@@ -1653,6 +1653,35 @@ func format(_ value: Double, _ digits: Int) -> String
 	value.isFinite ? String(format: "%.\(digits)f", value) : "—"
 }
 
+/// 表示上の桁数。**日本語や記号は 2 桁ぶんの幅**として数える。
+func displayWidth(_ text: String) -> Int
+{
+	var width = 0
+	for scalar in text.unicodeScalars
+	{
+		switch scalar.value
+		{
+			case 0x1100 ... 0x115F, 0x2E80 ... 0x303E, 0x3041 ... 0x33FF,
+				0x3400 ... 0x4DBF, 0x4E00 ... 0x9FFF, 0xA000 ... 0xA4CF,
+				0xAC00 ... 0xD7A3, 0xF900 ... 0xFAFF, 0xFE30 ... 0xFE4F,
+				0xFF00 ... 0xFF60, 0xFFE0 ... 0xFFE6, 0x20000 ... 0x3FFFD:
+				width += 2
+			default:
+				width += 1
+		}
+	}
+	return width
+}
+
+/// 表の桁合わせ。**`String(format:)` の `%@` は幅指定を黙って無視する**ので
+/// （実際に表が崩れた）、自前で詰める。人が読む表がこの道具の主な出力なので、
+/// ここが崩れると数字を見比べられない。
+func pad(_ text: String, _ width: Int, right: Bool = false) -> String
+{
+	let spaces = String(repeating: " ", count: max(0, width - displayWidth(text)))
+	return right ? spaces + text : text + spaces
+}
+
 func percentile(_ sorted: [Float], _ fraction: Double) -> Double
 {
 	guard !sorted.isEmpty
@@ -1971,16 +2000,17 @@ func analyze(truth: Truth)
 		.filter { !$0.same.isEmpty && !$0.different.isEmpty }
 	print("")
 	print("■ 指標の分離能（同じ場所の組 vs 違う場所の組）")
-	print("  指標                組(同)   組(別)   AUC  隣接AUC  同中央  同90%  別中央  90%時誤り  最良J  その閾値")
+	let widths = [20, 9, 9, 7, 9, 9, 8, 9, 11, 7, 10]
+	let headers = ["指標", "組(同)", "組(別)", "AUC", "隣接AUC", "同中央", "同90%",
+		"別中央", "90%時誤り", "最良J", "その閾値"]
+	print("  " + zip(headers, widths).enumerated()
+		.map { pad($1.0, $1.1, right: $0 > 0) }.joined())
 	for entry in statistics
 	{
 		let columns = entry.report.split(separator: "\t", omittingEmptySubsequences: false)
 			.map(String.init)
-		print(String(format: "  %-18@ %7@ %8@ %5@ %8@ %7@ %6@ %7@ %10@ %6@ %9@",
-			columns[0] as NSString, columns[1] as NSString, columns[2] as NSString,
-			columns[3] as NSString, columns[4] as NSString, columns[5] as NSString,
-			columns[6] as NSString, columns[7] as NSString, columns[8] as NSString,
-			columns[9] as NSString, columns[10] as NSString))
+		print("  " + zip(columns, widths).enumerated()
+			.map { pad($1.0, $1.1, right: $0 > 0) }.joined())
 	}
 	print("  AUC = 同じ場所の組のほうが小さい値になる確率。0.5 は当てずっぽう、1.0 は完全に分離。")
 	print("  **隣接AUC は「歩く順で隣り合うラベルどうし」だけを相手にしたもの**で、")
@@ -2086,10 +2116,10 @@ func analyze(truth: Truth)
 			chance += Double(family) / Double(max(1, subjects.count - 1))
 		}
 		chance /= Double(subjects.count)
-		print(String(format: "  %-4d %10@ %17@ %11@", k,
-			format(precisionTotal / Double(counted), 3) as NSString,
-			format(recallTotal / Double(counted), 3) as NSString,
-			format(chance, 3) as NSString))
+		print("  " + pad("\(k)", 5)
+			+ pad(format(precisionTotal / Double(counted), 3), 11, right: true)
+			+ pad(format(recallTotal / Double(counted), 3), 18, right: true)
+			+ pad(format(chance, 3), 12, right: true))
 		neighbourRows.append("近傍k\(k)\t\(format(precisionTotal / Double(counted), 4))"
 			+ "\t\(format(recallTotal / Double(counted), 4))\t\(format(chance, 4))")
 	}
@@ -2213,11 +2243,11 @@ func analyze(truth: Truth)
 		let left = truth.labels[parts[0]]
 		let right = truth.labels[parts[1]]
 		let neighbouring = abs(parts[0] - parts[1]) == 1
-		print(String(format: "  %-16@ ↔ %-16@ %5d 本  (%d 枚 / %d 枚)%@",
-			displayName(parts[0], left.name) as NSString,
-			displayName(parts[1], right.name) as NSString, count,
-			left.members.count, right.members.count,
-			(neighbouring ? "  歩く順で隣" : "") as NSString))
+		print("  " + pad(displayName(parts[0], left.name), 18)
+			+ "↔ " + pad(displayName(parts[1], right.name), 18)
+			+ pad("\(count) 本", 9, right: true)
+			+ "  (\(left.members.count) 枚 / \(right.members.count) 枚)"
+			+ (neighbouring ? "  歩く順で隣" : ""))
 	}
 	for (key, count) in worst
 	{
@@ -2236,17 +2266,21 @@ func analyze(truth: Truth)
 
 	print("")
 	print("■ ラベルごとの成績（辺のうち同じ場所へ向かった割合）")
-	print("  ラベル              枚数   辺   同じ場所  撮影順の塊  最大の塊")
+	print("  " + pad("ラベル", 20) + pad("枚数", 7, right: true)
+		+ pad("辺", 7, right: true) + pad("同じ場所", 11, right: true)
+		+ pad("撮影順の塊", 13, right: true) + pad("最大の塊", 11, right: true))
 	var labelLines = ["#label\tphotos\tedges\tsamerate\truns\tlargestrun"]
 	for (index, label) in truth.labels.enumerated()
 	{
 		let chunks = runs(of: label.members)
 		let rate = Double(sameOfLabel[index]) / Double(max(1, edgesOfLabel[index]))
 		let largest = Double(chunks.max() ?? 0) / Double(max(1, label.members.count))
-		print(String(format: "  %-18@ %5d %5d %9@ %10d %9@",
-			displayName(index, label.name) as NSString, label.members.count,
-			edgesOfLabel[index], format(rate, 3) as NSString, chunks.count,
-			format(largest, 2) as NSString))
+		print("  " + pad(displayName(index, label.name), 20)
+			+ pad("\(label.members.count)", 7, right: true)
+			+ pad("\(edgesOfLabel[index])", 7, right: true)
+			+ pad(format(rate, 3), 11, right: true)
+			+ pad("\(chunks.count)", 13, right: true)
+			+ pad(format(largest, 2), 11, right: true))
 		labelLines.append("\(displayName(index, label.name))\t\(label.members.count)"
 			+ "\t\(edgesOfLabel[index])\t\(format(rate, 4))\t\(chunks.count)"
 			+ "\t\(format(largest, 3))")
@@ -2392,7 +2426,10 @@ func scoreWindows(directory: String, truth: Truth)
 
 	print("")
 	print("■ 窓の採点: \(base.path)")
-	print("  窓                    枚数  ラベル  最大ラベル  純度  混入  塊  ラベル無し")
+	print("  " + pad("窓", 22) + pad("枚数", 7, right: true)
+		+ pad("ラベル", 9, right: true) + pad("最大ラベル", 13, right: true)
+		+ pad("純度", 7, right: true) + pad("混入", 7, right: true)
+		+ pad("塊", 6, right: true) + pad("ラベル無し", 12, right: true))
 	var lines = ["#window\tphotos\tlabels\ttoplabel\tpurity\tforeign\truns\tunlabelled"]
 	var purityTotal = 0.0
 	for window in windows
@@ -2418,16 +2455,23 @@ func scoreWindows(directory: String, truth: Truth)
 		purityTotal += purity.isFinite ? purity : 0
 		let chunks = runs(of: window.members)
 		let topName = top.map { displayName($0.key, truth.labels[$0.key].name) } ?? "—"
-		print(String(format: "  %-20@ %5d %7d %11@ %5@ %5d %4d %10d",
-			window.name as NSString, window.members.count, counts.count, topName as NSString,
-			format(purity, 2) as NSString, labelled - (top?.value ?? 0), chunks.count, unlabelled))
+		print("  " + pad(window.name, 22)
+			+ pad("\(window.members.count)", 7, right: true)
+			+ pad("\(counts.count)", 9, right: true)
+			+ pad(topName, 13, right: true)
+			+ pad(format(purity, 2), 7, right: true)
+			+ pad("\(labelled - (top?.value ?? 0))", 7, right: true)
+			+ pad("\(chunks.count)", 6, right: true)
+			+ pad("\(unlabelled)", 12, right: true))
 		lines.append("\(window.name)\t\(window.members.count)\t\(counts.count)\t\(topName)"
 			+ "\t\(format(purity, 3))\t\(labelled - (top?.value ?? 0))\t\(chunks.count)"
 			+ "\t\(unlabelled)")
 	}
 
 	print("")
-	print("  ラベル              枚数  最大の窓へ  散った窓  判定")
+	print("  " + pad("ラベル", 20) + pad("枚数", 7, right: true)
+		+ pad("最大の窓へ", 13, right: true) + pad("散った窓", 11, right: true)
+		+ "  判定")
 	lines.append("#label\tname\tphotos\tcoverage\tspread")
 	var broken: [String] = []
 	var coverageTotal = 0.0
@@ -2459,9 +2503,10 @@ func scoreWindows(directory: String, truth: Truth)
 		{
 			broken.append(displayName(index, label.name))
 		}
-		print(String(format: "  %-18@ %5d %11@ %9d  %@",
-			displayName(index, label.name) as NSString, members.count,
-			format(coverage, 2) as NSString, spread, verdict as NSString))
+		print("  " + pad(displayName(index, label.name), 20)
+			+ pad("\(members.count)", 7, right: true)
+			+ pad(format(coverage, 2), 13, right: true)
+			+ pad("\(spread)", 11, right: true) + "  " + verdict)
 		lines.append("#label\t\(displayName(index, label.name))\t\(members.count)"
 			+ "\t\(format(coverage, 3))\t\(spread)")
 	}

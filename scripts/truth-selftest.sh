@@ -109,7 +109,7 @@ mv "$renamed" "$(dirname "$renamed")/かべ-01.jpg"
 check "truth.tsv ができる" test -f "$out/truth.tsv"
 check "元の写真へ辿れないファイルが無い" bash -c "! grep -q '辿れなかった' '$work/read.log'"
 check "除外が 1 枚" bash -c "awk -F'\t' '\$3 == \"_除外\"' '$out/truth.tsv' | wc -l | tr -d ' ' | grep -qx 1"
-check "両方のラベルに入る写真がある" bash -c "grep -q '部屋A|部屋B' '$out/truth.tsv'"
+check "両方のラベルに入る写真がある" bash -c "grep -q '部屋A|002-部屋B' '$out/truth.tsv'"
 check "未仕分けが無い" bash -c "! grep -q '_未仕分け' '$out/truth.tsv'"
 check "Object Capture へ投げる一覧ができる" test "$(ls -1 "$out/truth-windows" | wc -l | tr -d ' ')" -eq 2
 
