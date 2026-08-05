@@ -33,7 +33,7 @@
 #   rounds/NNN/poses-*.log    Object Capture の出力
 #   attempts/<ラベル>.txt     実際に投げた窓の一覧（そのまま再現できる）
 #   poses/<ラベル>.poses.tsv  姿勢（**累積**。次の巡の --feedback の入力）
-#   models/<ラベル>.usdz      3D モデル（**目で確かめるため**。--no-models で止まる）
+#   models/<ラベル>.usdz      3D モデル（**--models のときだけ**。所要 +45%）
 #   points/<ラベル>.points.bin 点群（**実際に重なっているかを計算する材料**）
 #   ledger.tsv               1 行 1 回の実行（指標と結果を並べてある）
 #
@@ -69,7 +69,11 @@ drop_blurriest=10
 timeout=3600
 limit=""
 ladder=1
-models=1
+# **モデルは既定で作らない。** 同じ窓の A/B で、モデルを要求すると
+# メッシュ 552 秒 + テクスチャ 173 秒（所要の 45%）、ピークメモリ 4.7GB → 14.4GB。
+# 要求しなければこの 2 段は 8 秒で終わる。反復の燃料は姿勢と点群なので、
+# 目で見たい窓だけ後から作るほうが安い（投げた窓の一覧は残してある）。
+models=0
 points=1
 skip_similar=0.9
 plan_only=0
@@ -97,7 +101,8 @@ usage()
   --timeout SEC        1 回の再構成の上限（既定 3600。打ち切りは失敗より高い）
   --limit N            写真の先頭 N 枚だけで試す（下見用）
   --no-ladder          落ちた窓を「はぐれ抜きの芯」で試し直さない
-  --no-models          3D モデル（usdz）を書き出さない（既定は書き出す）
+  --models             3D モデル（usdz）も作る（所要 +45%・メモリ 3 倍。既定は作らない）
+  --no-models          3D モデルを作らない（既定）
   --no-points          点群を書き出さない（既定は書き出す）
   --skip-similar J     既に投げた窓と Jaccard がこれ以上なら投げない（既定 0.9）
   --plan-only          窓を作って順位だけ出す（Object Capture は動かさない）
@@ -125,6 +130,7 @@ do
 		--timeout) timeout="$2"; shift 2 ;;
 		--limit) limit="$2"; shift 2 ;;
 		--no-ladder) ladder=0; shift ;;
+		--models) models=1; shift ;;
 		--no-models) models=0; shift ;;
 		--no-points) points=0; shift ;;
 		--skip-similar) skip_similar="$2"; shift 2 ;;
