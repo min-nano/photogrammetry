@@ -68,6 +68,10 @@ drop_blurriest=10
 # 窓は 256 枚まである（重なりの補修で容量を超える）ので、そこは素直に長く取る。
 timeout=3600
 limit=""
+# **窓の成長で被覆を見ないか**（`--grow-full`）。既定の 2 段階だと、先に育った窓が
+# その領域の良い写真を先取りし、後の窓が痩せる（実データで 212 → 164 枚・芯 0.92
+# → 0.79 で error 6）。1 巡に 1 窓しか投げない以上、窓が増えるコストはほぼ無い。
+grow_full=0
 ladder=1
 # **モデルは既定で作らない。** 同じ窓の A/B で、モデルを要求すると
 # メッシュ 552 秒 + テクスチャ 173 秒（所要の 45%）、ピークメモリ 4.7GB → 14.4GB。
@@ -104,6 +108,7 @@ usage()
   --drop-blurriest P   ブレの大きい下位 P% を落としてから投げる（既定 10）
   --timeout SEC        1 回の再構成の上限（既定 3600。打ち切りは失敗より高い）
   --limit N            写真の先頭 N 枚だけで試す（下見用）
+  --grow-full          窓の成長で被覆を見ない（どの窓もその領域で最良の N 枚になる）
   --no-ladder          落ちた窓を「はぐれ抜きの芯」で試し直さない
   --models             3D モデル（usdz）も作る（所要 +45%・メモリ 3 倍。既定は作らない）
   --no-models          3D モデルを作らない（既定）
@@ -134,6 +139,7 @@ do
 		--drop-blurriest) drop_blurriest="$2"; shift 2 ;;
 		--timeout) timeout="$2"; shift 2 ;;
 		--limit) limit="$2"; shift 2 ;;
+		--grow-full) grow_full=1; shift ;;
 		--no-ladder) ladder=0; shift ;;
 		--models) models=1; shift ;;
 		--no-models) models=0; shift ;;
@@ -521,6 +527,7 @@ do
 			--overlap-ratio "$overlap_ratio"
 			--cache "$state/cache/featureprints.cache"
 		)
+		[ "$grow_full" = 1 ] && ordering_args+=(--grow-full)
 		[ -n "$limit" ] && ordering_args+=(--limit "$limit")
 		[ "$download" = 1 ] && ordering_args+=(--download)
 		if compgen -G "$state/poses/*.poses.tsv" >/dev/null

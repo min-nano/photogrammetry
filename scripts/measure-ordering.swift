@@ -39,6 +39,11 @@
 //    --feedback DIR     **Object Capture の結果で共視グラフを直す**。
 //                       measure-poses --poses-out が書いた *.poses.tsv を読む
 //    --compare-windows DIR 前の巡の窓と一致度を比べる
+//    --grow-full        **窓の成長で被覆を見ない**（既定は 2 段階）。既定では
+//                       段階 1 が「まだどの窓にも入っていない写真」だけで育てる
+//                       ので、**先に育った窓がその領域の良い写真を先取りし**、
+//                       後から育つ窓は遠くの弱い写真で枠を埋める羽目になる。
+//                       これを付けると、どの窓も全写真から最良の N 枚になる
 //    --cache FILE       視覚特徴とブレ指標をファイルへ残し、次回は読み直さない。
 //                       **反復（trial-clustering.sh）では毎巡ここを通る**ので、
 //                       1424 枚の読み取り（数分）が 2 巡目以降ほぼゼロになる
@@ -97,6 +102,17 @@ var previousWindowDirectory = ""
 /// 撮影メタデータを古いまま使う事故を避けたい）ので、残すのは画素から作った
 /// 2 つだけにしてある。
 var cachePath = ""
+/// **窓の成長で被覆を見ない**（`--grow-full`）。
+///
+/// 既定の 2 段階（未被覆だけで枠まで → 襟を容量まで）は「窓が増えすぎる」のを
+/// 防ぐために入れたものだが、その代償として**窓の中身が成長順に依存する**。
+/// 先に育った窓が良い写真を先取りし、後の窓は遠くの弱い写真で枠を埋める。
+/// 実データで、同じ領域の窓が巡を追って 212 → 164 枚に痩せ、芯の成分が
+/// 0.92 → 0.79 まで落ちて error 6 になった。
+///
+/// 反復では 1 巡に 1 窓しか投げないので、**窓が増えること自体のコストはほぼ無い**
+/// （選ばれなかった窓は作られただけで終わる）。
+var growFull = false
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -131,12 +147,14 @@ while !arguments.isEmpty
 				? previousWindowDirectory : arguments.removeFirst()
 		case "--cache":
 			cachePath = arguments.isEmpty ? cachePath : arguments.removeFirst()
+		case "--grow-full":
+			growFull = true
 		case "-h", "--help":
 			print("使い方: measure-ordering <写真フォルダ> [--no-recursive] [--limit N] "
 				+ "[--max-pairs N] [--segments N] [--seriate 12] "
 				+ "[--windows 200] [--window-dir DIR] [--neighbours 12] "
 				+ "[--overlap-ratio 0.3] [--feedback DIR] [--compare-windows DIR] "
-				+ "[--cache FILE] [--download]")
+				+ "[--cache FILE] [--grow-full] [--download]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -1926,6 +1944,18 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 			}
 		}
 
+		// **--grow-full: 被覆を見ずに容量まで育てる。** どの窓も、その領域で
+		// 最良の N 枚になる（成長順に左右されない）。重なりは増えるが、設計は
+		// 「重なりは多いほど良い」側（§1.2・§3.3）。
+		if growFull
+		{
+			while inside.count < capacity, let candidate = best(freshOnly: false)
+			{
+				add(candidate.node, candidate.support)
+			}
+			return order
+		}
+
 		while fresh < freshTarget, inside.count < capacity, let candidate = best(freshOnly: true)
 		{
 			add(candidate.node, candidate.support)
@@ -2491,7 +2521,8 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		+ "\tkcorecomp\tmedsupport\tconductance\tthin\truns\tlargestrun\thascore\tsplits"
 	var tsvLines: [String] = [
 		"# measure-ordering --windows \(capacity) --neighbours \(neighbourCount)"
-			+ " --overlap-ratio \(format(overlapRatio, 2))",
+			+ " --overlap-ratio \(format(overlapRatio, 2))"
+			+ (growFull ? " --grow-full" : ""),
 		"# total=\(total) edges=\(edgesAfter) isolated=\(isolated) windows=\(windows.count)"
 			+ " strays=\(strayCount) judgedwindows=\(judgedWindows) judgededges=\(judgedEdges)"
 			+ " confirmed=\(confirmedEdges) removed=\(removedEdges)",
