@@ -1042,6 +1042,7 @@ func describeGeometry(_ points: [SIMD3<Float>])
 	}
 	log("  → **前方が大半で角度が視野角の内側なら、点群と姿勢は同じ座標系**。"
 		+ "前後が半々なら無関係")
+}
 
 func stageName(_ stage: PhotogrammetrySession.Output.ProcessingStage) -> String
 {
