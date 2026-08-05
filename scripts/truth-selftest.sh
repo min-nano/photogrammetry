@@ -84,9 +84,9 @@ out="$work/truth-analysis"
 # --- 1. 下書き ---
 "$BIN" "$work/photos" --truth "$truth" --draft 24 --out "$out" > "$work/draft.log" 2>&1
 check "下書きが 2 フォルダできる" test "$(ls -1d "$truth"/0* | wc -l | tr -d ' ')" -eq 2
-check "写真が全部置かれる" test "$(find "$truth" -name '*.jpg' -not -path '*_sheets*' | wc -l | tr -d ' ')" -eq "$photos"
+check "写真が全部置かれる" test "$(find "$truth" -iname '*.jpg' -not -path '*_sheets*' | wc -l | tr -d ' ')" -eq "$photos"
 # ハードリンクなので、原本と inode が一致する（＝ディスクも増えない）。
-first_link="$(find "$truth/001" -name '*.jpg' | sort | head -1)"
+first_link="$(find "$truth/001" -iname '*.jpg' | sort | head -1)"
 original="$work/photos/$(basename "$first_link" | sed 's/^[0-9]*_//')"
 check "ハードリンクになっている" test "$(stat -f %i "$first_link")" = "$(stat -f %i "$original")"
 check "接触シートができる" test -f "$truth/_sheets/index.html"
@@ -96,13 +96,13 @@ check "撮影順のシートができる" test -f "$truth/_sheets/sequence.html"
 mv "$truth/001" "$truth/001-部屋A"
 mv "$truth/002" "$truth/002-部屋B"
 mkdir -p "$truth/_除外"
-excluded="$(find "$truth/001-部屋A" -name '*.jpg' | sort | tail -1)"
+excluded="$(find "$truth/001-部屋A" -iname '*.jpg' | sort | tail -1)"
 mv "$excluded" "$truth/_除外/"
 # 戸口の写真のつもりで、部屋 A の 1 枚を部屋 B にも置く（**被覆なので正しい状態**）。
-shared="$(find "$truth/001-部屋A" -name '*.jpg' | sort | tail -1)"
+shared="$(find "$truth/001-部屋A" -iname '*.jpg' | sort | tail -1)"
 ln "$shared" "$truth/002-部屋B/$(basename "$shared")"
 # 名前を変えても inode で戻れること（人はフォルダの中で名前を整えることがある）。
-renamed="$(find "$truth/002-部屋B" -name '*.jpg' | sort | head -1)"
+renamed="$(find "$truth/002-部屋B" -iname '*.jpg' | sort | head -1)"
 mv "$renamed" "$(dirname "$renamed")/かべ-01.jpg"
 
 "$BIN" "$work/photos" --truth "$truth" --out "$out" --read > "$work/read.log" 2>&1
@@ -137,7 +137,7 @@ shuffled="$work/truth-shuffled"
 rm -rf "$shuffled"
 mkdir -p "$shuffled/001-混ぜたA" "$shuffled/002-混ぜたB"
 index=0
-for file in $(find "$work/photos" -name '*.jpg' | sort)
+for file in $(find "$work/photos" -iname '*.jpg' | sort)
 do
 	if [ $(( index % 2 )) -eq 0 ]
 	then
