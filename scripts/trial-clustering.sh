@@ -142,7 +142,7 @@ validate()
 	do
 		[ "$value" = "$allowed" ] && return 0
 	done
-	echo "$name の値が不正です: $value（使えるのは: $*）" >&2
+	echo "$name の値が不正です: ${value}（使えるのは: $*）" >&2
 	exit 2
 }
 validate --sensitivity "$sensitivity" normal high
@@ -239,7 +239,7 @@ summarize()
 	fi
 	coverage=$(awk -v a="$posed_photos" -v b="$total" 'BEGIN { printf "%.3f", (b > 0 ? a / b : 0) }')
 	echo ""
-	echo "■ 姿勢の付いた写真: $posed_photos / $total（$coverage）"
+	echo "■ 姿勢の付いた写真: $posed_photos / ${total}（${coverage}）"
 
 	local attempts ok_count
 	attempts=$(awk -F'\t' 'NR>1' "$LEDGER" | wc -l | tr -d ' ')
@@ -307,8 +307,8 @@ say ""
 say "=== 試行開始 $(date '+%Y-%m-%d %H:%M:%S') ==="
 say "写真: $photos"
 say "作業場所: $state"
-say "設定: 容量 $capacity・近傍 $neighbours・重なり $overlap_ratio・"\
-"$sensitivity/$ordering・ブレ除去 ${drop_blurriest}%・上限 ${timeout}s"
+say "設定: 容量 ${capacity}・近傍 ${neighbours}・重なり ${overlap_ratio}・"\
+"$sensitivity/${ordering}・ブレ除去 ${drop_blurriest}%・上限 ${timeout}s"
 
 # ---------------------------------------------------------------------
 # 小道具
@@ -560,7 +560,7 @@ do
 	print=$(fingerprint "$list")
 
 	say ""
-	say "  → $choice を投げます（$label・$(wc -l < "$list" | tr -d ' ') 枚・順位 $choice_rank）"
+	say "  → $choice を投げます（${label}・$(wc -l < "$list" | tr -d ' ') 枚・順位 ${choice_rank}）"
 	outcome=$(run_object_capture "$label" "$list" "$round_dir/poses-$label.log" \
 		"$([ "$round" = 1 ] && [ ! -f "$state/.purged" ] && echo 1 || echo 0)")
 	touch "$state/.purged"
@@ -583,7 +583,7 @@ do
 		elapsed=$(printf '%s' "$outcome" | cut -f3)
 	fi
 
-	say "  結果: $result（姿勢 $posed 枚・${elapsed}s）"
+	say "  結果: ${result}（姿勢 $posed 枚・${elapsed}s）"
 	printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n' \
 		"$round" "$label" "window" "$choice" "$photos_count" "$connected" "$kcorecomp" \
 		"$medsupport" "$conductance" "$choice_rank" "$result" "$posed" "$elapsed" "$print" \
@@ -608,7 +608,7 @@ do
 		core_result=$(printf '%s' "$outcome" | cut -f1)
 		core_posed=$(printf '%s' "$outcome" | cut -f2)
 		core_elapsed=$(printf '%s' "$outcome" | cut -f3)
-		say "  芯の結果: $core_result（姿勢 $core_posed 枚・${core_elapsed}s）"
+		say "  芯の結果: ${core_result}（姿勢 $core_posed 枚・${core_elapsed}s）"
 		printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n' \
 			"$round" "$core_label" "core" "$choice" "$(wc -l < "$core_list" | tr -d ' ')" \
 			"$connected" "$kcorecomp" "$medsupport" "$conductance" "$choice_rank" \
@@ -628,5 +628,5 @@ do
 done
 
 say ""
-say "=== 試行終了（$stop_reason）$(date '+%Y-%m-%d %H:%M:%S') ==="
+say "=== 試行終了（${stop_reason}）$(date '+%Y-%m-%d %H:%M:%S') ==="
 summarize | tee -a "$LOG"
