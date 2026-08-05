@@ -76,6 +76,10 @@ ladder=1
 models=0
 points=1
 skip_similar=0.9
+# **連続で落ち始めたら止める。** 実データで 8 連続 error 6（芯を含む）を踏んだ。
+# 窓の中身の問題なら順位の下の窓でも散発するはずで、**連続するのは環境か、
+# グラフの側が壊れている印**。40 分ぶんを黙って捨てるより、止めて切り分ける。
+max_failures=3
 plan_only=0
 summary_only=0
 download=0
@@ -105,6 +109,7 @@ usage()
   --no-models          3D モデルを作らない（既定）
   --no-points          点群を書き出さない（既定は書き出す）
   --skip-similar J     既に投げた窓と Jaccard がこれ以上なら投げない（既定 0.9）
+  --max-failures N     N 回連続で落ちたら止める（既定 3。0 で無制限）
   --plan-only          窓を作って順位だけ出す（Object Capture は動かさない）
   --summary            既存の --state から集計だけ出す
   --download           iCloud Drive の未ダウンロードを落としてから始める
@@ -134,6 +139,7 @@ do
 		--no-models) models=0; shift ;;
 		--no-points) points=0; shift ;;
 		--skip-similar) skip_similar="$2"; shift 2 ;;
+		--max-failures) max_failures="$2"; shift 2 ;;
 		--plan-only) plan_only=1; shift ;;
 		--summary) summary_only=1; shift ;;
 		--download) download=1; shift ;;
@@ -486,6 +492,7 @@ fi
 # 決定的なので**まったく同じ窓が出る**（設計 §6.2.5）。作り直す意味が無いので、
 # その場合は前の巡の窓をそのまま使って次の候補へ進む。
 reuse_previous=0
+consecutive_failures=0
 stop_reason="rounds"
 
 while [ "$round" -le "$rounds" ]
@@ -707,9 +714,29 @@ do
 	if [ "$gained" -gt 0 ]
 	then
 		reuse_previous=0
+		consecutive_failures=0
 	else
 		# 何も学べなかった巡。グラフは変わらないので窓も変わらない。
 		reuse_previous=1
+		consecutive_failures=$(( consecutive_failures + 1 ))
+		if [ "$max_failures" != 0 ] && [ "$consecutive_failures" -ge "$max_failures" ]
+		then
+			say ""
+			say "**${consecutive_failures} 巡続けて姿勢が 1 枚も取れませんでした。ここで止めます。**"
+			say "  窓の中身の問題なら散発するはずで、**連続するのは別の原因の印**です。"
+			say "  切り分け: 一度通った窓をそのまま投げ直してください（環境か、窓かが決まります）"
+			say ""
+			say "    \$state/bin/measure-poses <写真フォルダ> \\"
+			say "        --window-file \$state/attempts/<通った窓>.txt \\"
+			say "        --poses-out /tmp/recheck --points-out /tmp/recheck \\"
+			say "        --ordering ${ordering} --sensitivity ${sensitivity} \\"
+			say "        --drop-blurriest ${drop_blurriest} --timeout ${timeout}"
+			say ""
+			say "  通れば環境ではない（窓かグラフの側）。落ちれば環境の問題で、"
+			say "  それ以降の測定は信用できません（設計 §6.2.4）。--max-failures 0 で無効化"
+			stop_reason="consecutive-failures"
+			break
+		fi
 	fi
 	previous_windows="$windows"
 	round=$(( round + 1 ))
