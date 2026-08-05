@@ -18,12 +18,14 @@ set -euo pipefail
 window=""
 out=""
 models=""
+points=""
 while [ $# -gt 0 ]
 do
 	case "$1" in
 		--window-file) window="$2"; shift 2 ;;
 		--poses-out) out="$2"; shift 2 ;;
 		--models-out) models="$2"; shift 2 ;;
+		--points-out) points="$2"; shift 2 ;;
 		--purge-model-cache|--download|--list) shift ;;
 		--ordering|--sensitivity|--detail|--subject|--drop-blurriest|--timeout|--window-dir)
 			shift 2 ;;
@@ -82,10 +84,19 @@ then
 	model="$label.usdz"
 fi
 
+# 点群の身代わり。中身に意味は無く、台帳へ点数が伝わるかだけを見る。
+cloud=-1
+if [ -n "$points" ] && [ "$fail" = 0 ]
+then
+	mkdir -p "$points"
+	printf 'OCPC1\n' > "$points/$label.points.bin"
+	cloud=1234
+fi
+
 if [ "$fail" = 1 ]
 then
-	printf 'window name=%s.txt mode=poses ordering=sequential sensitivity=high elapsed=1.0 posed=0 skipped=0 invalid=0 dropped=0 peak=0.1GB stages=- model=%s result=error: fake failure\n' "$label" "$model"
+	printf 'window name=%s.txt mode=poses ordering=sequential sensitivity=high elapsed=1.0 posed=0 skipped=0 invalid=0 dropped=0 peak=0.1GB stages=- model=%s points=-1 result=error: fake failure\n' "$label" "$model"
 else
-	printf 'window name=%s.txt mode=poses ordering=sequential sensitivity=high elapsed=1.0 posed=%s skipped=0 invalid=0 dropped=0 peak=0.1GB stages=- model=%s result=ok\n' "$label" "$posed" "$model"
+	printf 'window name=%s.txt mode=poses ordering=sequential sensitivity=high elapsed=1.0 posed=%s skipped=0 invalid=0 dropped=0 peak=0.1GB stages=- model=%s points=%s result=ok\n' "$label" "$posed" "$model" "$cloud"
 fi
 printf 'done\n'

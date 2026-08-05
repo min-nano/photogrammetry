@@ -53,6 +53,10 @@
 //    --poses-out DIR        写真ごとの「姿勢が付いたか」と 3 次元位置を書き出す。
 //                           measure-ordering --feedback に渡すと、**OC の結果で
 //                           共視グラフを直せる**（かたまりの空似への唯一の手）
+//    --points-out DIR       **点群も同じセッションで書き出す**（<ラベル>.points.bin）。
+//                           Pose は位置と回転しか返さないので、「2 枚が実際に
+//                           重なっているか」を言うには面の側が要る。姿勢と同じ
+//                           座標系かどうかも、この出力で確かめられる
 //    --models-out DIR       **3D モデル（usdz）も同じセッションで書き出す**。
 //                           位置合わせが所要の 95% なので、モデルはほぼ無料で
 //                           付いてくる（設計 §3.7）。姿勢の枚数は「繋がったか」
@@ -69,6 +73,7 @@ import CoreGraphics
 import Foundation
 import ImageIO
 import RealityKit
+import simd
 
 // ---------------------------------------------------------------------
 // 引数
@@ -112,6 +117,10 @@ var posesOutDirectory = ""
 /// `mode=poses` の**同じセッション**で `.modelFile` も要求する（設計 §3.7）。
 /// 位置合わせが所要の 95% なので、モデルはほぼ無料で付いてくる。
 var modelsOutDirectory = ""
+/// **点群の書き出し先**（`--points-out DIR`）。`.pointCloud` を同じセッションで
+/// 要求する。`pointCloudGeneration` の段階は姿勢を取るときも既に走っているので、
+/// 追加コストはほぼ無い。
+var pointsOutDirectory = ""
 /// いま投げている窓の、連番 → 元のパス。姿勢は一時フォルダの名前で返ってくる
 /// ので、元の写真へ戻すために要る。
 var currentWindowPaths: [String] = []
@@ -162,6 +171,8 @@ while !arguments.isEmpty
 			posesOutDirectory = value()
 		case "--models-out":
 			modelsOutDirectory = value()
+		case "--points-out":
+			pointsOutDirectory = value()
 		case "--window-file":
 			windowFiles.append(value())
 		case "--window-dir":
@@ -182,7 +193,8 @@ while !arguments.isEmpty
 				+ "[--sensitivity normal|high|both] [--detail reduced] "
 				+ "[--subject scene|object] [--drop-blurriest 20] [--timeout 1800] "
 				+ "[--download] [--list] [--window-dir DIR] [--window-file FILE] "
-				+ "[--poses-out DIR] [--models-out DIR] [--purge-model-cache]")
+				+ "[--poses-out DIR] [--models-out DIR] [--points-out DIR] "
+				+ "[--purge-model-cache]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -814,7 +826,13 @@ struct Measurement
 	/// 姿勢が取れていれば反復は進むので、そこを一緒くたにすると窓を落ちた扱いに
 	/// して芯や分割を無駄に投げ直すことになる。
 	var modelOutcome = "-"
+	/// 点群の点数（`--points-out` を指定したときだけ）。-1 は要求していない。
+	var points = -1
 }
+
+/// 直前に書き出した窓のカメラ位置。**点群と同じ座標系かどうか**を突き合わせる
+/// ためだけに持つ（要求の完了順は決まっていないので、両方揃ってから比べる）。
+var lastCameraPositions: [SIMD3<Float>] = []
 
 /// 姿勢を「元の写真のパス」に紐づけて書き出す。
 ///
@@ -835,7 +853,11 @@ func writePoses(_ poses: PhotogrammetrySession.Poses, label: String)
 	// 返さない可能性があり、そちらを台帳にすると「姿勢なし」の行が 1 本も出ず、
 	// --feedback が反証（片方だけ姿勢＝辺を消す）を学べなくなる。落ちた写真こそ
 	// 欲しい情報なので、窓のファイル一覧を土台にして姿勢を上書きする。
-	var positions = [String: SIMD3<Float>]()
+	// **回転も残す。** 位置だけでは「背中合わせに立った 2 枚」と「同じ壁を
+	// 一緒に見ている 2 枚」を区別できない。Pose が返すのは位置と回転だけで
+	// 内部パラメータ（投影）は無いので、視野の向きはここでしか手に入らない。
+	// 貯め直しには窓 1 個あたり数十分かかるため、使う当てが決まる前でも取る。
+	var placements = [String: (position: SIMD3<Float>, rotation: simd_quatf)]()
 	for (sample, pose) in poses.posesBySample
 	{
 		// 00042.jpg → 42 → 元のパス。URL が無いときは標本番号を添字として使う
@@ -851,19 +873,25 @@ func writePoses(_ poses: PhotogrammetrySession.Poses, label: String)
 		{
 			continue
 		}
-		positions[currentWindowPaths[index]] = pose.translation
+		placements[currentWindowPaths[index]] = (pose.translation, pose.rotation)
 	}
+	// 座標系の突き合わせ（点群と同じ系かどうか）に使う。
+	lastCameraPositions = placements.values.map(\.position)
 
-	var lines = ["# path\tposed\tx\ty\tz"]
+	let positions = placements.mapValues(\.position)
+	var lines = ["# path\tposed\tx\ty\tz\tqx\tqy\tqz\tqw"]
 	for path in currentWindowPaths
 	{
-		if let position = positions[path]
+		if let placement = placements[path]
 		{
-			lines.append("\(path)\t1\t\(position.x)\t\(position.y)\t\(position.z)")
+			let position = placement.position
+			let rotation = placement.rotation.vector
+			lines.append("\(path)\t1\t\(position.x)\t\(position.y)\t\(position.z)"
+				+ "\t\(rotation.x)\t\(rotation.y)\t\(rotation.z)\t\(rotation.w)")
 		}
 		else
 		{
-			lines.append("\(path)\t0\t\t\t")
+			lines.append("\(path)\t0\t\t\t\t\t\t\t")
 		}
 	}
 	// urlsBySample の中身は実測しないと分からないので、突き合わせて残す。
@@ -873,6 +901,122 @@ func writePoses(_ poses: PhotogrammetrySession.Poses, label: String)
 	try? lines.joined(separator: "\n")
 		.write(to: directory.appendingPathComponent("\(label).poses.tsv"),
 			atomically: true, encoding: .utf8)
+}
+
+/// 点群を書き出す。**形式は自前の素朴な並び**（読み手はこちらで書くので、
+/// usdz を経由するより確実で軽い）。
+///
+///   "OCPC1\n" + UInt32(点数) + 点数ぶんの [Float32 x, y, z, UInt8 r, g, b, a]
+///
+/// 1 点 16 バイト。50 万点でも 8MB で収まる。
+func writePoints(_ cloud: PhotogrammetrySession.PointCloud, label: String) -> Int
+{
+	guard !pointsOutDirectory.isEmpty
+	else
+	{
+		return -1
+	}
+	var data = Data("OCPC1\n".utf8)
+	withUnsafeBytes(of: UInt32(cloud.points.count)) { data.append(contentsOf: $0) }
+	for point in cloud.points
+	{
+		withUnsafeBytes(of: point.position.x) { data.append(contentsOf: $0) }
+		withUnsafeBytes(of: point.position.y) { data.append(contentsOf: $0) }
+		withUnsafeBytes(of: point.position.z) { data.append(contentsOf: $0) }
+		data.append(contentsOf: [point.color.x, point.color.y, point.color.z, point.color.w])
+	}
+	let url = URL(fileURLWithPath: pointsOutDirectory, isDirectory: true)
+		.appendingPathComponent("\(label).points.bin")
+	do
+	{
+		try data.write(to: url, options: .atomic)
+	}
+	catch
+	{
+		log("    !! 点群を書き出せませんでした: \(error.localizedDescription)")
+		return -1
+	}
+	if lastCameraPositions.isEmpty
+	{
+		log("  （姿勢より先に点群が返ったので、座標系の突き合わせはこの窓では出せません）")
+	}
+	log("  点群を書き出しました: \(url.lastPathComponent)"
+		+ "（\(cloud.points.count) 点・\(String(format: "%.1f", Double(data.count) / 1_048_576))MB）")
+	describeGeometry(cloud.points.map(\.position))
+	return cloud.points.count
+}
+
+/// **点群とカメラが同じ座標系・同じ尺度に乗っているか**を、その場で言い切る。
+///
+/// これが成り立たないと「実際に重なっているか」の計算が丸ごと無意味になるので、
+/// 数字を出さずに前提だけ置くわけにはいかない（#12 で踏んだ形そのもの）。
+func describeGeometry(_ points: [SIMD3<Float>])
+{
+	guard !points.isEmpty
+	else
+	{
+		return
+	}
+
+	func bounds(_ values: [SIMD3<Float>]) -> (min: SIMD3<Float>, max: SIMD3<Float>)
+	{
+		var low = values[0]
+		var high = values[0]
+		for value in values
+		{
+			low = SIMD3(min(low.x, value.x), min(low.y, value.y), min(low.z, value.z))
+			high = SIMD3(max(high.x, value.x), max(high.y, value.y), max(high.z, value.z))
+		}
+		return (low, high)
+	}
+
+	func text(_ value: SIMD3<Float>) -> String
+	{
+		String(format: "(%.2f, %.2f, %.2f)", value.x, value.y, value.z)
+	}
+
+	let cloud = bounds(points)
+	let diagonal = simd_length(cloud.max - cloud.min)
+	log("  点群の範囲 \(text(cloud.min)) 〜 \(text(cloud.max))"
+		+ "  対角 \(String(format: "%.2f", diagonal))")
+	guard !lastCameraPositions.isEmpty
+	else
+	{
+		return
+	}
+	let cameras = bounds(lastCameraPositions)
+	let inside = lastCameraPositions.filter
+	{ position in
+		position.x >= cloud.min.x && position.x <= cloud.max.x
+			&& position.y >= cloud.min.y && position.y <= cloud.max.y
+			&& position.z >= cloud.min.z && position.z <= cloud.max.z
+	}
+	log("  カメラの範囲 \(text(cameras.min)) 〜 \(text(cameras.max))"
+		+ "  対角 \(String(format: "%.2f", simd_length(cameras.max - cameras.min)))")
+	log("  → カメラ \(lastCameraPositions.count) 個のうち \(inside.count) 個が点群の範囲の中"
+		+ "（**同じ座標系なら大半が中に入る**）")
+
+	// カメラから最も近い点までの距離。点群が疎すぎないか・尺度が合っているかの目安。
+	// 全点との突き合わせは重いので、点群を間引いて測る。
+	let step = max(1, points.count / 20_000)
+	let sample = stride(from: 0, to: points.count, by: step).map { points[$0] }
+	var nearest: [Float] = []
+	for camera in lastCameraPositions.prefix(64)
+	{
+		var best = Float.greatestFiniteMagnitude
+		for point in sample
+		{
+			best = min(best, simd_length_squared(point - camera))
+		}
+		nearest.append(best.squareRoot())
+	}
+	nearest.sort()
+	if !nearest.isEmpty
+	{
+		let median = nearest[nearest.count / 2]
+		log("  カメラから最も近い点までの距離: 中央値 \(String(format: "%.3f", median))"
+			+ "（対角の \(String(format: "%.1f", Double(median / max(diagonal, 1e-6)) * 100))%）")
+	}
 }
 
 func stageName(_ stage: PhotogrammetrySession.Output.ProcessingStage) -> String
@@ -944,6 +1088,22 @@ func measure(
 			withIntermediateDirectories: true)
 	}
 
+	// **点群も同じセッションで要求する。** `Pose` は外部パラメータ（位置と回転）
+	// しか返さず、内部パラメータ（投影）は返ってこない。したがって「2 枚が実際に
+	// 重なっているか」を言うには、**面の側**が要る。点群は
+	// `pointCloudGeneration` の段階が既に走っているので、これも追加コストが
+	// ほぼ無い（設計 §6.2 の段階別所要時間）。
+	//
+	// 内部パラメータは EXIF の 35mm 換算焦点距離から組める（測量ではなく
+	// 「同じ面が両方に写っているか」の判定なので、この精度で足りる）。
+	let wantsPoints = (mode == .poses) && !pointsOutDirectory.isEmpty
+	if wantsPoints
+	{
+		try? FileManager.default.createDirectory(
+			at: URL(fileURLWithPath: pointsOutDirectory, isDirectory: true),
+			withIntermediateDirectories: true)
+	}
+
 	var configuration = PhotogrammetrySession.Configuration()
 	configuration.sampleOrdering = ordering == "sequential" ? .sequential : .unordered
 	// **白い壁ばかりの室内は特徴が少ない。** RealityKit はそのための設定を
@@ -1004,9 +1164,17 @@ func measure(
 					measurement.outcome = "poses-unavailable(macOS 14 未満)"
 					return measurement
 				}
-				requests = wantsModel
-					? [.poses, .modelFile(url: output, detail: detail)]
-					: [.poses]
+				// **姿勢を先頭に置く。** 同時要求が拒まれたときは先頭だけで
+				// 投げ直すので、いちばん落としたくないものを先に置いておく。
+				requests = [.poses]
+				if wantsModel
+				{
+					requests.append(.modelFile(url: output, detail: detail))
+				}
+				if wantsPoints
+				{
+					requests.append(.pointCloud)
+				}
 			case .model:
 				requests = [.modelFile(url: output, detail: detail)]
 		}
@@ -1064,6 +1232,10 @@ func measure(
 						measurement.modelOutcome = url.lastPathComponent
 						log("  3D モデルを書き出しました: \(url.path)"
 							+ "（\(String(format: "%.1f", Double(bytes) / 1_048_576))MB）")
+					}
+					if #available(macOS 13.0, *), case .pointCloud(let cloud) = result
+					{
+						measurement.points = writePoints(cloud, label: windowLabel)
 					}
 				case .requestError(let request, let error):
 					// **その場で畳む。** 以前はここで記録だけして
@@ -1143,7 +1315,7 @@ func line(
 	return String(
 		format: "run mode=%@ start=%d count=%d ordering=%@ sensitivity=%@ elapsed=%.1f posed=%d "
 			+ "skipped=%d invalid=%d dropped=%d downsampled=%@ peak=%@ span=%.0f lenses=%@ "
-			+ "stages=%@ model=%@ result=%@",
+			+ "stages=%@ model=%@ points=%d result=%@",
 		mode.rawValue, start, count, ordering, sensitivity, measurement.elapsed, measurement.posed,
 		measurement.skipped, measurement.invalid, measurement.dropped,
 		measurement.downsampled ? "yes" : "no",
@@ -1151,6 +1323,7 @@ func line(
 		window.span, window.lenses,
 		stages.isEmpty ? "-" : stages,
 		measurement.modelOutcome,
+		measurement.points,
 		measurement.outcome)
 }
 
@@ -1191,7 +1364,8 @@ Task
 		emit("# 窓の一覧 \(windowFiles.count) 個 / ordering=\(orderingName) "
 			+ "/ sensitivity=\(sensitivityName) / drop-blurriest=\(dropBlurriestPercent)%"
 			+ (modelsOutDirectory.isEmpty
-				? "" : " / models=\(modelsOutDirectory)（detail=\(detailName)）"))
+				? "" : " / models=\(modelsOutDirectory)（detail=\(detailName)）")
+			+ (pointsOutDirectory.isEmpty ? "" : " / points=\(pointsOutDirectory)"))
 		for path in windowFiles
 		{
 			let name = (path as NSString).lastPathComponent
@@ -1212,12 +1386,12 @@ Task
 						emit(String(
 							format: "window name=%@ mode=%@ ordering=%@ sensitivity=%@ "
 								+ "elapsed=%.1f posed=%d skipped=%d invalid=%d dropped=%d "
-								+ "peak=%@ stages=%@ model=%@ result=%@",
+								+ "peak=%@ stages=%@ model=%@ points=%d result=%@",
 							name, mode.rawValue, ordering, sensitivity, measurement.elapsed,
 							measurement.posed, measurement.skipped, measurement.invalid,
 							measurement.dropped, gigabytes(measurement.peakBytes),
 							stages.isEmpty ? "-" : stages, measurement.modelOutcome,
-							measurement.outcome))
+							measurement.points, measurement.outcome))
 					}
 				}
 			}

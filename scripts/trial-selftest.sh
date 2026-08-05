@@ -88,6 +88,10 @@ check "台帳にモデルを記録している" \
 	awk -F'\t' 'NR>1 && $15 ~ /usdz/ { found = 1 } END { exit found ? 0 : 1 }' \
 	"$state/ledger.tsv"
 check "集計にモデルの場所が出る" contains "$work/run1.log" "3D モデル:"
+check "点群を書き出している" test -s "$state/points/r001-window-01.points.bin"
+check "台帳に点群の点数を記録している" \
+	awk -F'\t' 'NR>1 && $16 ~ /^[0-9]+$/ { found = 1 } END { exit found ? 0 : 1 }' \
+	"$state/ledger.tsv"
 
 # **合成写真の共視グラフが 1 つの窓しか作れないことがある。** 合成画像は平らな
 # 矩形の集まりで、feature print から見ればどれも似たようなもの（設計 §4.8）。
