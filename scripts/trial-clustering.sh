@@ -99,7 +99,7 @@ usage()
   --capacity N         窓の容量（既定 200）
   --neighbours K       共視グラフの相互近傍数（既定 12）
   --overlap-ratio R    窓のうち重なりに充てる割合（既定 0.3）
-  --rounds N           最大の巡数（既定 30）
+  --rounds N           **この実行で回す巡の数**（既定 30）。続きから始めても効く
   --budget-hours H     これを超えたら次の窓を投げずに終わる（既定 0＝無制限）
   --sensitivity S      normal|high（既定 high・設計 §3.5）
   --ordering O         unordered|sequential（既定 unordered。§3.4 の宣言が嘘になるため）
@@ -274,7 +274,10 @@ summarize()
 	latest=$(ls -d "$state"/rounds/*/windows 2>/dev/null | tail -1 || true)
 	if [ -n "$latest" ] && compgen -G "$latest/window-*.txt" >/dev/null
 	then
-		total=$(cat "$latest"/window-*.txt | sort -u | wc -l | tr -d ' ')
+		# **cat で繋がない。** 窓の一覧は末尾に改行が無いので、cat すると
+		# 隣のファイルの 1 行目とくっついて実在しないパスができる（実データで
+		# 1424 枚のはずが 1431 と出た）。awk 1 は行として読み直す。
+		total=$(awk 1 "$latest"/window-*.txt | sort -u | wc -l | tr -d ' ')
 	fi
 	coverage=$(awk -v a="$posed_photos" -v b="$total" 'BEGIN { printf "%.3f", (b > 0 ? a / b : 0) }')
 	echo ""
@@ -501,7 +504,11 @@ reuse_previous=0
 consecutive_failures=0
 stop_reason="rounds"
 
-while [ "$round" -le "$rounds" ]
+# **この実行で何巡回したか。** 以前は「巡の通し番号 ≤ --rounds」で止めていたので、
+# 12 巡ぶん溜まった state に --rounds 6 を渡すと**何もせずに終わって**いた
+# （しかも普通の集計を出すので、成功したように見える）。数えるのは回した数。
+rounds_done=0
+while [ "$rounds_done" -lt "$rounds" ]
 do
 	round_dir=$(printf '%s/rounds/%03d' "$state" "$round")
 	windows="$round_dir/windows"
@@ -747,8 +754,13 @@ do
 	fi
 	previous_windows="$windows"
 	round=$(( round + 1 ))
+	rounds_done=$(( rounds_done + 1 ))
 done
 
 say ""
+if [ "$rounds_done" = 0 ] && [ "$plan_only" != 1 ] && [ "$stop_reason" = "rounds" ]
+then
+	say "**1 巡も回していません**（--rounds ${rounds} が 0 以下か、指定が小さすぎます）"
+fi
 say "=== 試行終了（${stop_reason}）$(date '+%Y-%m-%d %H:%M:%S') ==="
 summarize | tee -a "$LOG"
