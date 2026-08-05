@@ -38,7 +38,17 @@
 //    --overlap-ratio 0.3 窓のうち重なりに充てる割合（残りが新規の枠）
 //    --feedback DIR     **Object Capture の結果で共視グラフを直す**。
 //                       measure-poses --poses-out が書いた *.poses.tsv を読む
+//    --compare-windows DIR 前の巡の窓と一致度を比べる
+//    --cache FILE       視覚特徴とブレ指標をファイルへ残し、次回は読み直さない。
+//                       **反復（trial-clustering.sh）では毎巡ここを通る**ので、
+//                       1424 枚の読み取り（数分）が 2 巡目以降ほぼゼロになる
 //    --download         iCloud Drive の未ダウンロードをまとめて落としてから進む
+//
+//  `--windows` を付けると、窓の一覧（window-NN.txt）と一緒に **windows.tsv**
+//  （窓ごとの指標を機械可読にしたもの）を書き出す。人が読む表と同じ数字で、
+//  trial-clustering.sh はこれを見て「次にどの窓を Object Capture へ投げるか」を
+//  決める。**表を目で読んで選ぶ作業を自動化するためだけのもの**で、判断そのものは
+//  増えていない。
 //
 
 import CoreGraphics
@@ -79,6 +89,14 @@ var feedbackDirectory = ""
 /// いるかを見るための機能で、成長は決定的（乱数なし）なので、
 /// **近傍の辺が 1 本も変わらなければまったく同じ窓が再び出る**。
 var previousWindowDirectory = ""
+/// **視覚特徴とブレ指標の置き場**（`--cache FILE`）。
+///
+/// 反復（設計 §3.10）では同じ写真フォルダを何巡も読み直すことになるが、
+/// 縮小画像のデコードと Vision の推論は毎回まったく同じ答えを返す。1424 枚で
+/// 数分かかるので、**巡の数だけ無駄になる**。EXIF は毎回読み直す（安いうえ、
+/// 撮影メタデータを古いまま使う事故を避けたい）ので、残すのは画素から作った
+/// 2 つだけにしてある。
+var cachePath = ""
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty
@@ -111,12 +129,14 @@ while !arguments.isEmpty
 		case "--compare-windows":
 			previousWindowDirectory = arguments.isEmpty
 				? previousWindowDirectory : arguments.removeFirst()
+		case "--cache":
+			cachePath = arguments.isEmpty ? cachePath : arguments.removeFirst()
 		case "-h", "--help":
 			print("使い方: measure-ordering <写真フォルダ> [--no-recursive] [--limit N] "
 				+ "[--max-pairs N] [--segments N] [--seriate 12] "
 				+ "[--windows 200] [--window-dir DIR] [--neighbours 12] "
 				+ "[--overlap-ratio 0.3] [--feedback DIR] [--compare-windows DIR] "
-				+ "[--download]")
+				+ "[--cache FILE] [--download]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -499,7 +519,191 @@ final class Collector: @unchecked Sendable
 	return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
 }
 
-@Sendable func read(url: URL, relativePath: String) -> Record?
+// ---------------------------------------------------------------------
+// 画素から作った値の置き場（--cache）
+//
+// **残すのは画素からしか作れない 2 つ（視覚特徴・ブレ指標）だけ。** EXIF は
+// 毎回読み直す — 属性の読み取りは安く、しかも「メタデータだけ差し替えた写真」を
+// 古いまま使う事故が起きない。写真の同一性は**大きさと更新時刻**で見る。
+//
+// 形式（すべてリトルエンディアン）:
+//   "MOFPC1\n" + UInt32(root のパスの長さ) + root のパス
+//   + UInt32(件数) + 件数ぶんの
+//     UInt32(相対パスの長さ) + 相対パス + UInt64(バイト数) + Double(更新時刻)
+//     + Double(ブレ指標。無ければ NaN) + UInt32(次元) + 次元ぶんの Float32
+// ---------------------------------------------------------------------
+
+/// キャッシュに残す 1 枚ぶん。**写真の同一性はここで判定する。**
+struct CacheEntry
+{
+	var size: UInt64
+	var modified: Double
+	var sharpness: Double?
+	var elements: [Float]?
+}
+
+let cacheMagic = Data("MOFPC1\n".utf8)
+
+/// ファイルの大きさと更新時刻。取れなければ nil（＝キャッシュを使わない）。
+@Sendable func fileStamp(_ url: URL) -> (size: UInt64, modified: Double)?
+{
+	guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+		let size = values.fileSize, let modified = values.contentModificationDate
+	else
+	{
+		return nil
+	}
+	return (UInt64(size), modified.timeIntervalSince1970)
+}
+
+func loadCache(_ path: String, root: URL) -> [String: CacheEntry]
+{
+	guard !path.isEmpty, let data = FileManager.default.contents(atPath: path),
+		data.count > cacheMagic.count, data.prefix(cacheMagic.count) == cacheMagic
+	else
+	{
+		return [:]
+	}
+	var offset = cacheMagic.count
+
+	func take(_ count: Int) -> Data?
+	{
+		guard offset + count <= data.count
+		else
+		{
+			return nil
+		}
+		defer { offset += count }
+		return data.subdata(in: (data.startIndex + offset) ..< (data.startIndex + offset + count))
+	}
+
+	func takeUInt32() -> UInt32?
+	{
+		take(4).map { $0.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) } }
+	}
+
+	func takeUInt64() -> UInt64?
+	{
+		take(8).map { $0.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) } }
+	}
+
+	func takeDouble() -> Double?
+	{
+		take(8).map { $0.withUnsafeBytes { $0.loadUnaligned(as: Double.self) } }
+	}
+
+	func takeString() -> String?
+	{
+		guard let length = takeUInt32(), let bytes = take(Int(length))
+		else
+		{
+			return nil
+		}
+		return String(data: bytes, encoding: .utf8)
+	}
+
+	// **別のフォルダのキャッシュを黙って使わない。** 相対パスで引いているので、
+	// root が違えば同じ相対パスが別の写真を指しうる。
+	guard let storedRoot = takeString(), storedRoot == root.path, let count = takeUInt32()
+	else
+	{
+		log("キャッシュは別の写真フォルダのものでした（使わずに読み直します）: \(path)")
+		return [:]
+	}
+	var result: [String: CacheEntry] = [:]
+	result.reserveCapacity(Int(count))
+	for _ in 0 ..< count
+	{
+		guard let relativePath = takeString(), let size = takeUInt64(),
+			let modified = takeDouble(), let sharpness = takeDouble(),
+			let dimension = takeUInt32()
+		else
+		{
+			log("キャッシュが途中で壊れていました（\(result.count) 件まで使います）: \(path)")
+			return result
+		}
+		var elements: [Float]?
+		if dimension > 0
+		{
+			guard let bytes = take(Int(dimension) * 4)
+			else
+			{
+				log("キャッシュが途中で壊れていました（\(result.count) 件まで使います）: \(path)")
+				return result
+			}
+			elements = bytes.withUnsafeBytes
+			{ buffer in
+				Array(UnsafeBufferPointer(
+					start: buffer.baseAddress?.assumingMemoryBound(to: Float.self),
+					count: Int(dimension)))
+			}
+		}
+		result[relativePath] = CacheEntry(
+			size: size, modified: modified,
+			sharpness: sharpness.isNaN ? nil : sharpness, elements: elements)
+	}
+	return result
+}
+
+func saveCache(_ path: String, root: URL, entries: [String: CacheEntry])
+{
+	guard !path.isEmpty
+	else
+	{
+		return
+	}
+	var data = cacheMagic
+
+	func append(_ value: UInt32)
+	{
+		withUnsafeBytes(of: value) { data.append(contentsOf: $0) }
+	}
+
+	func append(_ value: UInt64)
+	{
+		withUnsafeBytes(of: value) { data.append(contentsOf: $0) }
+	}
+
+	func append(_ value: Double)
+	{
+		withUnsafeBytes(of: value) { data.append(contentsOf: $0) }
+	}
+
+	func append(_ text: String)
+	{
+		let bytes = Data(text.utf8)
+		append(UInt32(bytes.count))
+		data.append(bytes)
+	}
+
+	append(root.path)
+	append(UInt32(entries.count))
+	for (relativePath, entry) in entries.sorted(by: { $0.key < $1.key })
+	{
+		append(relativePath)
+		append(entry.size)
+		append(entry.modified)
+		append(entry.sharpness ?? Double.nan)
+		append(UInt32(entry.elements?.count ?? 0))
+		if let elements = entry.elements
+		{
+			elements.withUnsafeBytes { data.append(contentsOf: $0) }
+		}
+	}
+	let url = URL(fileURLWithPath: path)
+	try? FileManager.default.createDirectory(
+		at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+	do
+	{
+		try data.write(to: url, options: .atomic)
+	}
+	catch
+	{
+		log("キャッシュを書き出せませんでした（処理は続けます）: \(error.localizedDescription)")
+	}
+}
+
+@Sendable func read(url: URL, relativePath: String, cached: CacheEntry?) -> Record?
 {
 	guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
 		CGImageSourceGetCount(source) > 0
@@ -526,6 +730,15 @@ final class Collector: @unchecked Sendable
 		exposure: exposureValue(exif: exif),
 		hasLocation: gps[kCGImagePropertyGPSLatitude] != nil,
 		elements: nil)
+
+	// **画素から作る 2 つだけはキャッシュを使う。** 同じ写真なら必ず同じ答えに
+	// なるので、反復のたびにデコードと推論をやり直す理由が無い。
+	if let cached
+	{
+		record.elements = cached.elements
+		record.sharpness = cached.sharpness
+		return record
+	}
 
 	if let image = thumbnail(source: source)
 	{
@@ -616,10 +829,35 @@ final class Collector: @unchecked Sendable
 
 let collector = Collector(capacity: files.count)
 let started = Date()
+let cacheBefore = loadCache(cachePath, root: root)
+/// キャッシュから来た枚数。**「使えた」と「読み直した」を必ず report する** —
+/// 黙って古い値を使っていたら、測定そのものが信用できなくなる。
+let reused = NSLock()
+var reusedCount = 0
+var freshStamps = [String: (size: UInt64, modified: Double)]()
 DispatchQueue.concurrentPerform(iterations: files.count)
 { index in
 	let file = files[index]
-	let done = collector.put(read(url: file.url, relativePath: file.relativePath), at: index)
+	let stamp = fileStamp(file.url)
+	// 大きさと更新時刻が一致したときだけキャッシュを信じる。
+	var hit: CacheEntry?
+	if let stamp, let entry = cacheBefore[file.relativePath],
+		entry.size == stamp.size, abs(entry.modified - stamp.modified) < 0.001
+	{
+		hit = entry
+	}
+	let record = read(url: file.url, relativePath: file.relativePath, cached: hit)
+	reused.lock()
+	if hit != nil
+	{
+		reusedCount += 1
+	}
+	if let stamp, record != nil
+	{
+		freshStamps[file.relativePath] = stamp
+	}
+	reused.unlock()
+	let done = collector.put(record, at: index)
 	if done % 100 == 0 || done == files.count
 	{
 		log("  読み取り \(done)/\(files.count)")
@@ -627,6 +865,25 @@ DispatchQueue.concurrentPerform(iterations: files.count)
 }
 let readSeconds = Date().timeIntervalSince(started)
 let records = collector.finish()
+
+if !cachePath.isEmpty
+{
+	var entries: [String: CacheEntry] = [:]
+	for record in records.compactMap({ $0 })
+	{
+		guard let stamp = freshStamps[record.relativePath]
+		else
+		{
+			continue
+		}
+		entries[record.relativePath] = CacheEntry(
+			size: stamp.size, modified: stamp.modified,
+			sharpness: record.sharpness, elements: record.elements)
+	}
+	saveCache(cachePath, root: root, entries: entries)
+	log("視覚特徴のキャッシュ: 再利用 \(reusedCount) 枚 / 読み直し "
+		+ "\(files.count - reusedCount) 枚（\(cachePath)）")
+}
 
 let unreadable = records.filter { $0 == nil }.count
 let photos = records.compactMap { $0 }
@@ -2036,6 +2293,12 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	var coreCount = 0
 
 	var verification: [(Int, Int, Double, Int, Int)] = []
+	/// **windows.tsv の行**（機械可読）。人が読む表とまったく同じ数字で、
+	/// trial-clustering.sh が「次にどの窓を投げるか」を決めるのに使う。
+	/// 目で読んで選ぶ作業を自動化するためのもので、判断は増えていない。
+	var machineRows: [String] = []
+	/// 窓ごとの芯の有無（windows.tsv の hascore 列）。
+	var hasCore = [Bool](repeating: false, count: windows.count)
 	print("  【EXIF 不使用】番号  枚数  はぐれ  重なり  連結  内部次数  3コア  芯の成分  支持数中央  コンダクタンス")
 	for (index, window) in windows.enumerated()
 	{
@@ -2061,6 +2324,7 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 						String(format: "window-%02d.txt", index + 1)),
 					atomically: true, encoding: .utf8)
 				coreCount += 1
+				hasCore[index] = true
 			}
 		}
 
@@ -2099,6 +2363,24 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 			format(conductance(window), 3) as NSString))
 		verification.append((index + 1, runs.count, share, window.count - positions.count,
 			index < crossingsPerWindow.count ? crossingsPerWindow[index] : 0))
+		// **型注釈を付けておく。** 要素の多い配列リテラルは型推論が重く、
+		// このリポジトリでは実際に型検査が終わらなくなったことがある。
+		let columns: [String] = [
+			String(format: "window-%02d.txt", index + 1),
+			String(window.count),
+			String(strayHere.count),
+			String(maximumShared[index]),
+			format(structure.connected, 4),
+			format(structure.degree, 3),
+			format(structure.core, 4),
+			format(structure.largest, 4),
+			String(medianSupport),
+			format(conductance(window), 4),
+			String(index < crossingsPerWindow.count ? crossingsPerWindow[index] : 0),
+			String(runs.count),
+			format(share, 4),
+		]
+		machineRows.append(columns.joined(separator: "\t"))
 	}
 
 	print("  【検算・EXIF】  番号  撮影順の塊  最大の塊  時刻なし  細い繋ぎ目")
@@ -2159,6 +2441,7 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	}
 
 	var splitCount = 0
+	var splitsPerWindow = [Int](repeating: 0, count: windows.count)
 	for (index, window) in windows.enumerated() where window.count >= keepFloor * 3
 	{
 		let half = (window.count + 1) / 2
@@ -2193,8 +2476,35 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 				.write(to: splitDirectory.appendingPathComponent(name),
 					atomically: true, encoding: .utf8)
 			splitCount += 1
+			splitsPerWindow[index] += 1
 		}
 	}
+
+	// --- 機械可読の指標（windows.tsv）---
+	//
+	// **反復（設計 §3.10）を人が表を読みながら回すのは現実的でない。** 1 巡ごとに
+	// 「どの窓を次に投げるか」を選ぶ必要があり、それが数十回続く。選び方そのものは
+	// 上の表に出ている数字だけで決まるので、同じ数字を機械可読で置いておく。
+	// **人が読む表と 1 つも違う数字を出さない**（食い違えば、どちらを信じるかが
+	// 分からなくなる）。
+	let tsvHeader = "#name\tphotos\tstrays\tshared\tconnected\tavgdeg\tkcore"
+		+ "\tkcorecomp\tmedsupport\tconductance\tthin\truns\tlargestrun\thascore\tsplits"
+	var tsvLines: [String] = [
+		"# measure-ordering --windows \(capacity) --neighbours \(neighbourCount)"
+			+ " --overlap-ratio \(format(overlapRatio, 2))",
+		"# total=\(total) edges=\(edgesAfter) isolated=\(isolated) windows=\(windows.count)"
+			+ " strays=\(strayCount) judgedwindows=\(judgedWindows) judgededges=\(judgedEdges)"
+			+ " confirmed=\(confirmedEdges) removed=\(removedEdges)",
+		tsvHeader,
+	]
+	for (index, row) in machineRows.enumerated()
+	{
+		tsvLines.append(row + "\t" + (hasCore[index] ? "1" : "0")
+			+ "\t" + String(splitsPerWindow[index]))
+	}
+	try? tsvLines.joined(separator: "\n").appending("\n").write(
+		to: directory.appendingPathComponent("windows.tsv"),
+		atomically: true, encoding: .utf8)
 	print("  分割案: \(splitCount) 個を \(splitDirectory.lastPathComponent)/ へ書き出し"
 		+ "（error 6 の窓はこちらで再試行できる）")
 	print("  はぐれ抜きの芯: \(coreCount) 個を \(coreDirectory.lastPathComponent)/ へ書き出し"
@@ -2208,6 +2518,8 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	print("    塊が大半を占めていれば健全**。別日の再訪でも塊は 2〜3 個で収まる。")
 	print("    細かい塊に散っていたら混入（設計 §9-2 のかたまりの空似）")
 	print("  書き出し先: \(directory.path)")
+	print("  機械可読の指標: \(directory.appendingPathComponent("windows.tsv").path)"
+		+ "（trial-clustering.sh が次に投げる窓を選ぶのに使う）")
 
 	// --- 前の巡の窓との突き合わせ（--compare-windows） ---
 	//
