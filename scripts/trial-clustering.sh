@@ -49,7 +49,15 @@ overlap_ratio=0.3
 rounds=30
 budget_hours=0
 sensitivity=high
-ordering=sequential
+# **既定は unordered。** `sequential` は「与えた並びの隣どうしは空間的に隣接して
+# いる」という**こちらからの宣言**で、OC はそれを信じて総当たりの対応付けを
+# 省く。ところが窓の中の並びは共視グラフ上の幅優先で、**枝が違えば隣り合っても
+# 空間的に遠い**。宣言が嘘になれば、実際は重なっている 2 枚が並びの上で離れて
+# いるだけで対応付けられない — 分断は混入よりはるかに高い（設計 §1.2）。
+#
+# §6.2 で sequential が効いたのは**撮影順で切った窓**での実測で、そこでは宣言が
+# 真だった。支持成長の窓へはその根拠は移らない。
+ordering=unordered
 detail=reduced
 subject=scene
 drop_blurriest=10
@@ -82,7 +90,7 @@ usage()
   --rounds N           最大の巡数（既定 30）
   --budget-hours H     これを超えたら次の窓を投げずに終わる（既定 0＝無制限）
   --sensitivity S      normal|high（既定 high・設計 §3.5）
-  --ordering O         unordered|sequential（既定 sequential）
+  --ordering O         unordered|sequential（既定 unordered。§3.4 の宣言が嘘になるため）
   --detail D           preview|reduced|medium|full|raw（既定 reduced）
   --subject S          scene|object（既定 scene）
   --drop-blurriest P   ブレの大きい下位 P% を落としてから投げる（既定 10）
@@ -526,21 +534,25 @@ do
 	# 重みを付けて足し合わせるのではなく**辞書式**にしてあるのは、単位の違う
 	# 数字を足した点数で切る場所を選ぶのを #12 で棄却したのと同じ理由。
 	#
-	#   1. 連結が 1.00（窓そのものが 1 つに繋がっている）を最優先
+	#   1. **容量の半分以上の大きさ**か — 実データで、16 枚の窓が指標を満点に
+	#      しながら姿勢 3 枚で終わり、212 枚の窓が 180 枚を得た。小さい窓は指標が
+	#      飽和して区別が付かず、**判定の届く辺の数は枚数にほぼ比例する**
+	#   2. 連結が 1.00（窓そのものが 1 つに繋がっている）
 	#      — 繋がっていない窓は、1 回の再構成で繋がりようがない
-	#   2. 芯の成分（3 コアの最大連結成分の割合）が大きい順 — 芯が太い
-	#   3. 支持数の中央値が大きい順 — 1 枚ずつが強く結ばれて入った
-	#   4. コンダクタンスが小さい順 — 外へ漏れていない（自然な切れ目）
-	#   5. 窓の番号（同着を決定的に解く）
+	#   3. 芯の成分（3 コアの最大連結成分の割合）が大きい順 — 芯が太い
+	#   4. 支持数の中央値が大きい順 — 1 枚ずつが強く結ばれて入った
+	#   5. コンダクタンスが小さい順 — 外へ漏れていない（自然な切れ目）
+	#   6. 窓の番号（同着を決定的に解く）
 	ranked="$round_dir/ranked.txt"
-	awk -F'\t' 'BEGIN { OFS = " " }
+	awk -F'\t' -v cap="$capacity" 'BEGIN { OFS = " " }
 		/^#/ { next }
 		NF >= 15 {
+			small = ($2 * 2 < cap) ? 1 : 0
 			broken = ($5 >= 0.999) ? 0 : 1
-			printf "%d %.4f %d %.4f %s %d %.4f %.4f %d %.4f %d\n",
-				broken, 1 - $8, 99 - $9, $10, $1, $2, $5, $8, $9, $10, $14
+			printf "%d %d %.4f %d %.4f %s %d %.4f %.4f %d %.4f %d\n",
+				small, broken, 1 - $8, 99 - $9, $10, $1, $2, $5, $8, $9, $10, $14
 		}' "$windows/windows.tsv" \
-		| sort -k1,1n -k2,2g -k3,3n -k4,4g -k5,5 > "$ranked"
+		| sort -k1,1n -k2,2n -k3,3g -k4,4n -k5,5g -k6,6 > "$ranked"
 
 	if [ ! -s "$ranked" ]
 	then
@@ -551,7 +563,7 @@ do
 
 	say "  内部指標の順位（上から投げる）:"
 	awk '{ printf "    %2d. %-16s 枚数 %4d  連結 %s  芯の成分 %s  支持数 %2d  コンダクタンス %s\n",
-		NR, $5, $6, $7, $8, $9, $10 }' "$ranked" | tee -a "$LOG"
+		NR, $6, $7, $8, $9, $10, $11 }' "$ranked" | tee -a "$LOG"
 
 	if [ "$plan_only" = 1 ]
 	then
@@ -564,7 +576,7 @@ do
 	# --- まだ投げていない窓のうち、いちばん良いものを 1 つ選ぶ ---
 	choice=""
 	choice_rank=0
-	while read -r _ _ _ _ name photos_count connected kcorecomp medsupport conductance hascore
+	while read -r _ _ _ _ _ name photos_count connected kcorecomp medsupport conductance hascore
 	do
 		choice_rank=$(( choice_rank + 1 ))
 		list="$windows/$name"
