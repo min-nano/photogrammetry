@@ -69,6 +69,7 @@ run_trial()
 		--neighbours "${NEIGHBOURS:-16}" \
 		--rounds "$2" \
 		--drop-blurriest 0 \
+		--models \
 		--ordering-cmd "$work/bin/measure-ordering" \
 		--poses-cmd "$SCRIPT_DIR/trial-fake-poses.sh"
 }
@@ -81,8 +82,8 @@ check "窓の指標（windows.tsv）が書き出される" \
 	test -s "$state/rounds/001/windows/windows.tsv"
 check "1 巡目に窓を投げた" test "$(rows "$state/ledger.tsv")" -ge 1
 check "投げた窓の一覧を残している" test -s "$state/attempts/r001-window-01.txt"
-# **3D モデルは目で確かめるためのもの**なので、出来たかどうかと台帳への記録まで
-# を見る（中身は身代わりなので意味が無い）。
+# **3D モデルは既定では作らない**（所要 +45%）ので、自己診断では `--models` を
+# 付けて経路だけ確かめる。中身は身代わりなので意味が無い。
 check "3D モデルを書き出している" test -s "$state/models/r001-window-01.usdz"
 check "台帳にモデルを記録している" \
 	awk -F'\t' 'NR>1 && $15 ~ /usdz/ { found = 1 } END { exit found ? 0 : 1 }' \
