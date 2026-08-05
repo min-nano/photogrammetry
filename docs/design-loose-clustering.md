@@ -1113,6 +1113,9 @@ scripts/trial-clustering.sh <写真フォルダ> --state ~/Desktop/trial --plan-
 scripts/trial-clustering.sh <写真フォルダ> --state ~/Desktop/trial \
     --capacity 200 --rounds 20 --budget-hours 8 | tee -a ~/Desktop/trial/run.txt
 
+# 出来た 3D モデルを見る（窓ごとに 1 つ）
+open ~/Desktop/trial/models
+
 # 途中経過・結果だけ見る
 scripts/trial-clustering.sh --state ~/Desktop/trial --summary
 ```

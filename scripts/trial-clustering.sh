@@ -52,7 +52,10 @@ ordering=sequential
 detail=reduced
 subject=scene
 drop_blurriest=10
-timeout=900
+# 1 回の上限。**900 秒では足りない。** 実測で 153 枚の窓が位置合わせだけに
+# 649 秒かけて通っている（設計 §6.2.1）ので、容量 200 で走らせると、あと少しで
+# 終わる再構成を打ち切ってしまう。モデルも一緒に作るぶん（+2.5%）も乗る。
+timeout=1800
 limit=""
 ladder=1
 models=1
@@ -79,7 +82,7 @@ usage()
   --detail D           preview|reduced|medium|full|raw（既定 reduced）
   --subject S          scene|object（既定 scene）
   --drop-blurriest P   ブレの大きい下位 P% を落としてから投げる（既定 10）
-  --timeout SEC        1 回の再構成の上限（既定 900）
+  --timeout SEC        1 回の再構成の上限（既定 1800。§6.2.1 の実測より）
   --limit N            写真の先頭 N 枚だけで試す（下見用）
   --no-ladder          落ちた窓を「はぐれ抜きの芯」で試し直さない
   --no-models          3D モデル（usdz）を書き出さない（既定は書き出す）
