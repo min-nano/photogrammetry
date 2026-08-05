@@ -234,7 +234,11 @@ while :; do
 		incomplete="$(echo "$state" | cut -f4)"
 		size="$(echo "$state" | cut -f5)"
 
-		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		# **`%s` の数は引数の数（12）に合わせる。列の数（15）ではない。**
+		# `$processes` は 1 引数の中にタブ区切りで 4 列ぶんを持っているため。
+		# 数を合わせないと余った `%s` が空文字で埋まり、行末に空の列が生えて
+		# awk の NF がずれる（最初の版がこれで 2 列よけいに出していた）。
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 			"$stamp" "$cache" "$builds" "$models" "$bundles" "$incomplete" "$size" \
 			"$processes" "$free_disk" "$free_mem" "$swap" "$pressure" >> "$OUT"
 
