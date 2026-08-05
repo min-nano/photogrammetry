@@ -53,6 +53,10 @@
 //    --poses-out DIR        写真ごとの「姿勢が付いたか」と 3 次元位置を書き出す。
 //                           measure-ordering --feedback に渡すと、**OC の結果で
 //                           共視グラフを直せる**（かたまりの空似への唯一の手）
+//    --models-out DIR       **3D モデル（usdz）も同じセッションで書き出す**。
+//                           位置合わせが所要の 95% なので、モデルはほぼ無料で
+//                           付いてくる（設計 §3.7）。姿勢の枚数は「繋がったか」
+//                           しか言わないが、モデルは何がどう繋がったかを見せる
 //    --drop-blurriest 20    窓の中でブレの大きい下位 N% を落としてから投げる。
 //                           既存の QualityFilter が error 6 を救えるかを試す
 //    --download             iCloud Drive の未ダウンロードをまとめて落としてから進む
@@ -104,6 +108,10 @@ var windowFiles: [String] = []
 /// 3 次元位置を出す。これを measure-ordering --feedback へ渡すと、
 /// **Object Capture の結果で共視グラフを直せる**（設計の新しい柱）。
 var posesOutDirectory = ""
+/// **3D モデル（usdz）の書き出し先**（`--models-out DIR`）。指定すると
+/// `mode=poses` の**同じセッション**で `.modelFile` も要求する（設計 §3.7）。
+/// 位置合わせが所要の 95% なので、モデルはほぼ無料で付いてくる。
+var modelsOutDirectory = ""
 /// いま投げている窓の、連番 → 元のパス。姿勢は一時フォルダの名前で返ってくる
 /// ので、元の写真へ戻すために要る。
 var currentWindowPaths: [String] = []
@@ -152,6 +160,8 @@ while !arguments.isEmpty
 			dropBlurriestPercent = Int(value()) ?? 0
 		case "--poses-out":
 			posesOutDirectory = value()
+		case "--models-out":
+			modelsOutDirectory = value()
 		case "--window-file":
 			windowFiles.append(value())
 		case "--window-dir":
@@ -172,7 +182,7 @@ while !arguments.isEmpty
 				+ "[--sensitivity normal|high|both] [--detail reduced] "
 				+ "[--subject scene|object] [--drop-blurriest 20] [--timeout 1800] "
 				+ "[--download] [--list] [--window-dir DIR] [--window-file FILE] "
-				+ "[--poses-out DIR] [--purge-model-cache]")
+				+ "[--poses-out DIR] [--models-out DIR] [--purge-model-cache]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -799,6 +809,11 @@ struct Measurement
 	/// 段階名 → その段階が最初に現れた時刻（開始からの秒）。
 	var stageStarts: [(String, TimeInterval)] = []
 	var outcome = "ok"
+	/// 3D モデルの結末（`--models-out` を指定したときだけ）。書けたらファイル名、
+	/// 要求していなければ `-`。**姿勢とは別に持つ** — モデルだけ失敗しても
+	/// 姿勢が取れていれば反復は進むので、そこを一緒くたにすると窓を落ちた扱いに
+	/// して芯や分割を無駄に投げ直すことになる。
+	var modelOutcome = "-"
 }
 
 /// 姿勢を「元の写真のパス」に紐づけて書き出す。
@@ -916,6 +931,19 @@ func measure(
 		try? FileManager.default.removeItem(at: folder)
 	}
 
+	// **姿勢と 3D モデルは同じセッションで要求する**（設計 §3.7）。段階ごとの
+	// 実測で位置合わせが全体の 95%、メッシュとテクスチャは合計 2.5% しかないので、
+	// **モデルはほぼ無料で付いてくる**。別のセッションで取り直すと丸ごと 2 倍。
+	// 反復の途中経過を目で見られることの値打ちは大きい — 姿勢の枚数は「繋がった
+	// かどうか」しか言わないが、モデルは**何がどう繋がったか**を見せる。
+	let wantsModel = (mode == .poses) && !modelsOutDirectory.isEmpty
+	if wantsModel
+	{
+		try? FileManager.default.createDirectory(
+			at: URL(fileURLWithPath: modelsOutDirectory, isDirectory: true),
+			withIntermediateDirectories: true)
+	}
+
 	var configuration = PhotogrammetrySession.Configuration()
 	configuration.sampleOrdering = ordering == "sequential" ? .sequential : .unordered
 	// **白い壁ばかりの室内は特徴が少ない。** RealityKit はそのための設定を
@@ -925,9 +953,23 @@ func measure(
 	// 破綻してアライメントが落ちる。PhotogrammetryEngine と同じ判断）。
 	configuration.isObjectMaskingEnabled = (subjectName == "object")
 
-	let output = FileManager.default.temporaryDirectory
-		.appendingPathComponent("measure-poses-\(start)-\(count).usdz")
+	// **残すのは --models-out を指定されたときだけ。** 測るだけの実行で
+	// ディスクを埋めない（1 窓ぶんの usdz は数十 MB になる）。
+	let output = wantsModel
+		? URL(fileURLWithPath: modelsOutDirectory, isDirectory: true)
+			.appendingPathComponent("\(windowLabel).usdz")
+		: FileManager.default.temporaryDirectory
+			.appendingPathComponent("measure-poses-\(start)-\(count).usdz")
 	defer
+	{
+		if !wantsModel
+		{
+			try? FileManager.default.removeItem(at: output)
+		}
+	}
+	// 前回の実行の残骸に騙されないよう、始める前に消しておく（**出来ていない
+	// モデルを「出来た」と報告しない**）。
+	if wantsModel
 	{
 		try? FileManager.default.removeItem(at: output)
 	}
@@ -943,6 +985,15 @@ func measure(
 			// （次の条件へ進めないと、一晩かけて 1 件も測れないことになる）。
 			session.cancel()
 		}
+		let detail: PhotogrammetrySession.Request.Detail
+		switch detailName
+		{
+			case "preview": detail = .preview
+			case "medium": detail = .medium
+			case "full": detail = .full
+			case "raw": detail = .raw
+			default: detail = .reduced
+		}
 		var requests: [PhotogrammetrySession.Request] = []
 		switch mode
 		{
@@ -953,22 +1004,34 @@ func measure(
 					measurement.outcome = "poses-unavailable(macOS 14 未満)"
 					return measurement
 				}
-				requests = [.poses]
+				requests = wantsModel
+					? [.poses, .modelFile(url: output, detail: detail)]
+					: [.poses]
 			case .model:
-				let detail: PhotogrammetrySession.Request.Detail
-				switch detailName
-				{
-					case "preview": detail = .preview
-					case "medium": detail = .medium
-					case "full": detail = .full
-					case "raw": detail = .raw
-					default: detail = .reduced
-				}
 				requests = [.modelFile(url: output, detail: detail)]
 		}
 
 		monitor.start()
-		try session.process(requests: requests)
+		do
+		{
+			try session.process(requests: requests)
+		}
+		catch
+		{
+			// **2 つの要求を同時に受け付けない OS があるかもしれない。**
+			// そのときに巡ごと落とすのは高くつく（姿勢が取れれば反復は進む）ので、
+			// モデルを諦めて姿勢だけで投げ直す。**諦めたことは必ず言う。**
+			guard wantsModel, requests.count > 1
+			else
+			{
+				throw error
+			}
+			log("    !! 姿勢とモデルの同時要求が拒まれました（\(error.localizedDescription)）。"
+				+ "モデルを諦めて姿勢だけで投げ直します")
+			measurement.modelOutcome = "rejected"
+			requests = [requests[0]]
+			try session.process(requests: requests)
+		}
 
 		for try await event in session.outputs
 		{
@@ -993,11 +1056,39 @@ func measure(
 						measurement.posed = poses.posesBySample.count
 						writePoses(poses, label: windowLabel)
 					}
-				case .requestError(_, let error):
+					if case .modelFile(let url) = result
+					{
+						let attributes = try? FileManager.default
+							.attributesOfItem(atPath: url.path)
+						let bytes = (attributes?[.size] as? NSNumber)?.uint64Value ?? 0
+						measurement.modelOutcome = url.lastPathComponent
+						log("  3D モデルを書き出しました: \(url.path)"
+							+ "（\(String(format: "%.1f", Double(bytes) / 1_048_576))MB）")
+					}
+				case .requestError(let request, let error):
 					// **その場で畳む。** 以前はここで記録だけして
 					// processingComplete を待っていたが、要求が失敗したあとに
 					// 完了が来る保証は無く、来なければ永久に待つことになる。
-					measurement.outcome = "error: \(error.localizedDescription)"
+					//
+					// ただし**モデルだけ失敗して姿勢は取れている**なら、窓は
+					// 落ちていない（姿勢が反復の燃料で、モデルは目で見るための
+					// おまけ）。ここを一緒くたにすると、通った窓を落ちた扱いに
+					// して芯や分割を無駄に投げ直すことになる。
+					var modelOnly = false
+					if case .modelFile = request, measurement.posed > 0
+					{
+						modelOnly = true
+					}
+					if modelOnly
+					{
+						measurement.modelOutcome = "error"
+						log("    !! モデルの書き出しに失敗しました（姿勢は取れています）: "
+							+ error.localizedDescription)
+					}
+					else
+					{
+						measurement.outcome = "error: \(error.localizedDescription)"
+					}
 					measurement.elapsed = Date().timeIntervalSince(began)
 					measurement.peakBytes = monitor.stop()
 					session.cancel()
@@ -1052,13 +1143,14 @@ func line(
 	return String(
 		format: "run mode=%@ start=%d count=%d ordering=%@ sensitivity=%@ elapsed=%.1f posed=%d "
 			+ "skipped=%d invalid=%d dropped=%d downsampled=%@ peak=%@ span=%.0f lenses=%@ "
-			+ "stages=%@ result=%@",
+			+ "stages=%@ model=%@ result=%@",
 		mode.rawValue, start, count, ordering, sensitivity, measurement.elapsed, measurement.posed,
 		measurement.skipped, measurement.invalid, measurement.dropped,
 		measurement.downsampled ? "yes" : "no",
 		gigabytes(measurement.peakBytes),
 		window.span, window.lenses,
 		stages.isEmpty ? "-" : stages,
+		measurement.modelOutcome,
 		measurement.outcome)
 }
 
@@ -1097,7 +1189,9 @@ Task
 	if !windowFiles.isEmpty
 	{
 		emit("# 窓の一覧 \(windowFiles.count) 個 / ordering=\(orderingName) "
-			+ "/ sensitivity=\(sensitivityName) / drop-blurriest=\(dropBlurriestPercent)%")
+			+ "/ sensitivity=\(sensitivityName) / drop-blurriest=\(dropBlurriestPercent)%"
+			+ (modelsOutDirectory.isEmpty
+				? "" : " / models=\(modelsOutDirectory)（detail=\(detailName)）"))
 		for path in windowFiles
 		{
 			let name = (path as NSString).lastPathComponent
@@ -1118,11 +1212,12 @@ Task
 						emit(String(
 							format: "window name=%@ mode=%@ ordering=%@ sensitivity=%@ "
 								+ "elapsed=%.1f posed=%d skipped=%d invalid=%d dropped=%d "
-								+ "peak=%@ stages=%@ result=%@",
+								+ "peak=%@ stages=%@ model=%@ result=%@",
 							name, mode.rawValue, ordering, sensitivity, measurement.elapsed,
 							measurement.posed, measurement.skipped, measurement.invalid,
 							measurement.dropped, gigabytes(measurement.peakBytes),
-							stages.isEmpty ? "-" : stages, measurement.outcome))
+							stages.isEmpty ? "-" : stages, measurement.modelOutcome,
+							measurement.outcome))
 					}
 				}
 			}

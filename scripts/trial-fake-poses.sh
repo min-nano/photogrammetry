@@ -17,11 +17,13 @@ set -euo pipefail
 
 window=""
 out=""
+models=""
 while [ $# -gt 0 ]
 do
 	case "$1" in
 		--window-file) window="$2"; shift 2 ;;
 		--poses-out) out="$2"; shift 2 ;;
+		--models-out) models="$2"; shift 2 ;;
 		--purge-model-cache|--download|--list) shift ;;
 		--ordering|--sensitivity|--detail|--subject|--drop-blurriest|--timeout|--window-dir)
 			shift 2 ;;
@@ -68,10 +70,22 @@ fi
 } > "$out/$label.poses.tsv"
 
 posed=$(awk -F'\t' '$2 == 1' "$out/$label.poses.tsv" | wc -l | tr -d ' ')
+
+# 3D モデルの身代わり。**中身に意味は無い**（本物は Object Capture が書く）。
+# 確かめられるのは「trial-clustering.sh が --models-out を渡し、出来たモデルを
+# 台帳に記録するか」だけ。
+model="-"
+if [ -n "$models" ] && [ "$fail" = 0 ]
+then
+	mkdir -p "$models"
+	printf 'fake usdz for %s\n' "$label" > "$models/$label.usdz"
+	model="$label.usdz"
+fi
+
 if [ "$fail" = 1 ]
 then
-	printf 'window name=%s.txt mode=poses ordering=sequential sensitivity=high elapsed=1.0 posed=0 skipped=0 invalid=0 dropped=0 peak=0.1GB stages=- result=error: fake failure\n' "$label"
+	printf 'window name=%s.txt mode=poses ordering=sequential sensitivity=high elapsed=1.0 posed=0 skipped=0 invalid=0 dropped=0 peak=0.1GB stages=- model=%s result=error: fake failure\n' "$label" "$model"
 else
-	printf 'window name=%s.txt mode=poses ordering=sequential sensitivity=high elapsed=1.0 posed=%s skipped=0 invalid=0 dropped=0 peak=0.1GB stages=- result=ok\n' "$label" "$posed"
+	printf 'window name=%s.txt mode=poses ordering=sequential sensitivity=high elapsed=1.0 posed=%s skipped=0 invalid=0 dropped=0 peak=0.1GB stages=- model=%s result=ok\n' "$label" "$posed" "$model"
 fi
 printf 'done\n'

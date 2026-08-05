@@ -33,6 +33,7 @@
 #   rounds/NNN/poses-*.log    Object Capture の出力
 #   attempts/<ラベル>.txt     実際に投げた窓の一覧（そのまま再現できる）
 #   poses/<ラベル>.poses.tsv  姿勢（**累積**。次の巡の --feedback の入力）
+#   models/<ラベル>.usdz      3D モデル（**目で確かめるため**。--no-models で止まる）
 #   ledger.tsv               1 行 1 回の実行（指標と結果を並べてある）
 #
 set -euo pipefail
@@ -54,6 +55,7 @@ drop_blurriest=10
 timeout=900
 limit=""
 ladder=1
+models=1
 skip_similar=0.9
 plan_only=0
 summary_only=0
@@ -80,6 +82,7 @@ usage()
   --timeout SEC        1 回の再構成の上限（既定 900）
   --limit N            写真の先頭 N 枚だけで試す（下見用）
   --no-ladder          落ちた窓を「はぐれ抜きの芯」で試し直さない
+  --no-models          3D モデル（usdz）を書き出さない（既定は書き出す）
   --skip-similar J     既に投げた窓と Jaccard がこれ以上なら投げない（既定 0.9）
   --plan-only          窓を作って順位だけ出す（Object Capture は動かさない）
   --summary            既存の --state から集計だけ出す
@@ -106,6 +109,7 @@ do
 		--timeout) timeout="$2"; shift 2 ;;
 		--limit) limit="$2"; shift 2 ;;
 		--no-ladder) ladder=0; shift ;;
+		--no-models) models=0; shift ;;
 		--skip-similar) skip_similar="$2"; shift 2 ;;
 		--plan-only) plan_only=1; shift ;;
 		--summary) summary_only=1; shift ;;
@@ -174,11 +178,11 @@ summarize()
 		echo "  まだ 1 つも投げていません"
 		return 0
 	fi
-	printf '  %-14s %-6s %6s %6s %8s %6s %8s %8s  %s\n' \
-		ラベル 種別 枚数 連結 芯の成分 支持数 コンダク 姿勢 結果
+	printf '  %-18s %-6s %6s %6s %8s %6s %8s %6s %-22s %s\n' \
+		ラベル 種別 枚数 連結 芯の成分 支持数 コンダク 姿勢 モデル 結果
 	awk -F'\t' 'NR>1 {
-		printf "  %-14s %-6s %6s %6s %8s %6s %8s %8s  %s\n",
-			$2, $3, $5, $6, $7, $8, $9, $12, $11
+		printf "  %-18s %-6s %6s %6s %8s %6s %8s %6s %-22s %s\n",
+			$2, $3, $5, $6, $7, $8, $9, $12, ($15 == "" ? "-" : $15), $11
 	}' "$LEDGER"
 
 	# **内部指標は本当に成否を予言したのか。** これが分からないと「最良の窓から
@@ -244,11 +248,24 @@ summarize()
 	# 一度踏んでいる。
 	echo "■ 姿勢の付いた写真: $posed_photos / ${total}（窓に入った写真のうち・${coverage}）"
 
+	# 3D モデル。**姿勢の枚数は「繋がったか」しか言わない**ので、何がどう
+	# 繋がったかは開いて見るしかない。場所を必ず出す。
+	local model_count=0
+	if compgen -G "$state/models/*.usdz" >/dev/null
+	then
+		model_count=$(ls -1 "$state"/models/*.usdz | wc -l | tr -d ' ')
+		echo ""
+		echo "■ 3D モデル: $model_count 個（$state/models）"
+		du -h "$state"/models/*.usdz 2>/dev/null | sed 's/^/  /' || true
+		echo "  → Finder で開けば（クイックルック / プレビュー）そのまま見える。"
+		echo "    **窓ごとに 1 つ**なので、隣り合う窓が同じ場所を写しているかも目で確かめられる"
+	fi
+
 	local attempts ok_count
 	attempts=$(awk -F'\t' 'NR>1' "$LEDGER" | wc -l | tr -d ' ')
 	ok_count=$(awk -F'\t' 'NR>1 && $11 == "ok"' "$LEDGER" | wc -l | tr -d ' ')
 	echo ""
-	echo "result=summary attempts=$attempts ok=$ok_count posed=$posed_photos total=$total coverage=$coverage"
+	echo "result=summary attempts=$attempts ok=$ok_count posed=$posed_photos total=$total coverage=$coverage models=$model_count"
 }
 
 if [ "$summary_only" = 1 ]
@@ -303,7 +320,9 @@ fi
 
 if [ ! -s "$LEDGER" ]
 then
-	printf 'round\tlabel\tkind\tsource\tphotos\tconnected\tkcorecomp\tmedsupport\tconductance\trank\tresult\tposed\telapsed\tfingerprint\n' > "$LEDGER"
+	# **新しい列は末尾に足す。** 途中に入れると、前の実行で書いた台帳の列が
+	# ずれて集計が黙って別の数字を出す。
+	printf 'round\tlabel\tkind\tsource\tphotos\tconnected\tkcorecomp\tmedsupport\tconductance\trank\tresult\tposed\telapsed\tfingerprint\tmodel\n' > "$LEDGER"
 fi
 
 say ""
@@ -360,6 +379,10 @@ run_object_capture()
 	local extra=()
 	[ "$purge" = 1 ] && extra+=(--purge-model-cache)
 	[ "$download" = 1 ] && extra+=(--download)
+	# **モデルは同じセッションのついでに作る**（設計 §3.7）。位置合わせが所要の
+	# 95% なので、姿勢を取る実行に足してもほぼ増えない。姿勢の枚数は「繋がったか」
+	# しか言わないが、モデルは**何がどう繋がったか**を目で見せる。
+	[ "$models" = 1 ] && extra+=(--models-out "$state/models")
 	set +e
 	# bash 3.2（macOS 既定）では set -u のもとで空配列の展開が落ちるので、
 	# 空なら展開そのものを消す書き方にしてある。
@@ -379,20 +402,21 @@ run_object_capture()
 	# 終わらない（黙って先へ進んでしまう）。
 	if [ "$status" = 3 ]
 	then
-		printf 'unsupported\t0\t0'
+		printf 'unsupported\t0\t0\t-'
 		return 0
 	fi
-	local line result posed elapsed
+	local line result posed elapsed model
 	line=$(grep -m1 '^window ' "$log" || true)
 	if [ -z "$line" ]
 	then
-		printf 'no-output\t0\t0'
+		printf 'no-output\t0\t0\t-'
 		return 0
 	fi
 	result=$(printf '%s' "$line" | sed -n 's/.* result=\(.*\)$/\1/p')
 	posed=$(printf '%s' "$line" | sed -n 's/.* posed=\([0-9]*\) .*/\1/p')
 	elapsed=$(printf '%s' "$line" | sed -n 's/.* elapsed=\([0-9.]*\) .*/\1/p')
-	printf '%s\t%s\t%s' "${result:-unknown}" "${posed:-0}" "${elapsed:-0}"
+	model=$(printf '%s' "$line" | sed -n 's/.* model=\([^ ]*\) .*/\1/p')
+	printf '%s\t%s\t%s\t%s' "${result:-unknown}" "${posed:-0}" "${elapsed:-0}" "${model:--}"
 }
 
 # **ML モデルキャッシュの故障を見分ける**（設計 §6.2.4・ModelCache と同じ印）。
@@ -570,6 +594,7 @@ do
 	result=$(printf '%s' "$outcome" | cut -f1)
 	posed=$(printf '%s' "$outcome" | cut -f2)
 	elapsed=$(printf '%s' "$outcome" | cut -f3)
+	model=$(printf '%s' "$outcome" | cut -f4)
 	if [ "$result" = "unsupported" ]
 	then
 		say "この Mac は Object Capture に対応していません（measure-poses が result=unsupported）"
@@ -584,13 +609,14 @@ do
 		result=$(printf '%s' "$outcome" | cut -f1)
 		posed=$(printf '%s' "$outcome" | cut -f2)
 		elapsed=$(printf '%s' "$outcome" | cut -f3)
+		model=$(printf '%s' "$outcome" | cut -f4)
 	fi
 
-	say "  結果: ${result}（姿勢 $posed 枚・${elapsed}s）"
-	printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n' \
+	say "  結果: ${result}（姿勢 $posed 枚・${elapsed}s・モデル ${model}）"
+	printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n' \
 		"$round" "$label" "window" "$choice" "$photos_count" "$connected" "$kcorecomp" \
 		"$medsupport" "$conductance" "$choice_rank" "$result" "$posed" "$elapsed" "$print" \
-		>> "$LEDGER"
+		"$model" >> "$LEDGER"
 
 	gained="$posed"
 
@@ -611,11 +637,12 @@ do
 		core_result=$(printf '%s' "$outcome" | cut -f1)
 		core_posed=$(printf '%s' "$outcome" | cut -f2)
 		core_elapsed=$(printf '%s' "$outcome" | cut -f3)
-		say "  芯の結果: ${core_result}（姿勢 $core_posed 枚・${core_elapsed}s）"
-		printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n' \
+		core_model=$(printf '%s' "$outcome" | cut -f4)
+		say "  芯の結果: ${core_result}（姿勢 $core_posed 枚・${core_elapsed}s・モデル ${core_model}）"
+		printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n' \
 			"$round" "$core_label" "core" "$choice" "$(awk 'END { print NR }' "$core_list")" \
 			"$connected" "$kcorecomp" "$medsupport" "$conductance" "$choice_rank" \
-			"$core_result" "$core_posed" "$core_elapsed" "$core_print" >> "$LEDGER"
+			"$core_result" "$core_posed" "$core_elapsed" "$core_print" "$core_model" >> "$LEDGER"
 		gained=$(( gained + core_posed ))
 	fi
 

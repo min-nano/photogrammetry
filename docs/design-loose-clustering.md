@@ -301,6 +301,13 @@ Object Capture の `sampleOrdering = .sequential` は「**与えた並びの隣�
 （§6.2）。したがって「姿勢だけ安く求める」余地は無く、**本番のついでに取るのが
 唯一正しい**。追加コストはほぼゼロ。
 
+**同じ理由でモデルも同時に取る。** `.modelFile` を一緒に要求しても増えるのは
+メッシュとテクスチャの 2.5% だけで、**反復の途中経過を目で確かめられる**ように
+なる。姿勢の枚数は「繋がったか」しか言わないが、モデルは**何がどう繋がったか**
+を見せる — 窓の中身が本当に 1 つの場所なのか、隣り合う窓が同じ場所を写して
+いるのかは、開いて見るのがいちばん速い。`trial-clustering.sh` は既定で
+`<state>/models/<ラベル>.usdz` へ書き出す。
+
 得られる姿勢は 3 つに効く。
 
 1. **合成（`merge`）の対応点そのもの**（写真の URL に紐づく）
@@ -884,6 +891,7 @@ EXIF は毎回読み直す。写真の同一性は大きさと更新時刻で見
 | --- | --- |
 | `--window-dir DIR` / `--window-file F` | 窓の一覧を投げる（`--window-file` は複数可） |
 | `--poses-out DIR` | **姿勢を `<窓名>.poses.tsv` に書く**（`--feedback` の入力） |
+| `--models-out DIR` | **3D モデル（usdz）も同じセッションで書く**（§3.7）。位置合わせが所要の 95% なのでほぼ無料。モデルだけ失敗しても姿勢は活かす |
 | `--ordering` / `--sensitivity` / `--detail` / `--subject` | OC の設定（§3.5） |
 | `--drop-blurriest P` | ブレの大きい下位 P% を落としてから投げる |
 | `--purge-model-cache` | ANE モデルキャッシュを消してから始める（§6.2.4） |
@@ -914,6 +922,7 @@ scripts/trial-clustering.sh --state ~/Desktop/trial --summary
 | 窓を作る（姿勢を累積して反映・前の巡と突き合わせ） | `rounds/NNN/ordering.log` |
 | 内部指標で順位を付け、まだ投げていない最良の窓を選ぶ | `rounds/NNN/ranked.txt` |
 | その窓を Object Capture へ投げる | `rounds/NNN/poses-*.log` |
+| **3D モデルを書き出す**（目で確かめるため・`--no-models` で止まる） | `models/<ラベル>.usdz` |
 | 落ちたら「はぐれ抜きの芯」で試し直す（§3.6・§6.2.3） | 同上（`--no-ladder` で止められる） |
 | 指標と結果を 1 行ずつ残す | `ledger.tsv` |
 
@@ -1117,6 +1126,7 @@ scripts/trial-clustering.sh --state ~/Desktop/trial --summary
 | **そのまま残った窓**の数 | 修正がその近傍まで届いたか（§6.2.5） |
 | `core` の行と `window` の行の対比 | 落ちた原因がはぐれか中身か（§6.2.3・未解決 1） |
 | **姿勢の付いた写真 / 全体** | 「撮り直し」と名指しできる写真がどれだけあるか |
+| **`models/*.usdz` を開いて見る** | 数字では分からないこと — 窓の中身が 1 つの場所か、隣り合う窓が同じ場所を写しているか、どこが崩れているか |
 
 手で 1 巡ずつ回したいときの元の手順（`measure-ordering` → `measure-poses` →
 `--feedback` で 1 に戻る）は §6.5 の表のとおりで、`trial-clustering.sh` が

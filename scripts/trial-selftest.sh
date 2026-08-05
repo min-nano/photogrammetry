@@ -81,6 +81,13 @@ check "窓の指標（windows.tsv）が書き出される" \
 	test -s "$state/rounds/001/windows/windows.tsv"
 check "1 巡目に窓を投げた" test "$(rows "$state/ledger.tsv")" -ge 1
 check "投げた窓の一覧を残している" test -s "$state/attempts/r001-window-01.txt"
+# **3D モデルは目で確かめるためのもの**なので、出来たかどうかと台帳への記録まで
+# を見る（中身は身代わりなので意味が無い）。
+check "3D モデルを書き出している" test -s "$state/models/r001-window-01.usdz"
+check "台帳にモデルを記録している" \
+	awk -F'\t' 'NR>1 && $15 ~ /usdz/ { found = 1 } END { exit found ? 0 : 1 }' \
+	"$state/ledger.tsv"
+check "集計にモデルの場所が出る" contains "$work/run1.log" "3D モデル:"
 
 # **合成写真の共視グラフが 1 つの窓しか作れないことがある。** 合成画像は平らな
 # 矩形の集まりで、feature print から見ればどれも似たようなもの（設計 §4.8）。
