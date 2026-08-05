@@ -416,7 +416,12 @@ run_trial() {
 			' "$samples")"
 	fi
 
-	cache_after_kb="$(du -sk "$CACHE_DIR" 2>/dev/null | awk '{print $1}')"
+	# **`du` の失敗を飲み込む。** キャッシュが無いのは普通のこと（試行の頭で
+	# 消しているし、コンパイルに失敗すれば作られない）。`set -o pipefail` の下では
+	# パイプの左側の失敗がそのまま代入の失敗になり、`set -e` で試行の途中で
+	# スクリプトごと落ちる — CI の自己確認で実際にこれを踏んで、1 試行目の
+	# 記録すら残らなかった。
+	cache_after_kb="$( { du -sk "$CACHE_DIR" 2>/dev/null || true; } | awk '{print $1}')"
 	[ -n "$cache_after_kb" ] || cache_after_kb=0
 
 	mb() { [ -n "$1" ] && [ "$1" != "0" ] && echo $(( $1 / 1048576 )) || echo "-"; }

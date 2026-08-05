@@ -135,7 +135,7 @@ Sources/
   互いに繋がず**並列に走る**（ビルドの結果を待たずにテストの結果が見え、
   テストの結果を待たずにビルドが進む）。テスト・ビルドの合否は branch
   protection の required checks 側で見る。
-  - `test.yml`: 2 ジョブ。`test`（macos-15、カバレッジ計測つきで `swift
+  - `test.yml`: 2 ジョブ。`test`（macos-26、カバレッジ計測つきで `swift
     test` を 1 回実行しアーティファクト化）→ `coverage`（ubuntu-latest、
     アーティファクトを PR にコメント・しきい値でゲート。テスト方針節を参照）。
   - `build.yml`: `ctx` ジョブで commit/ref/リリースチャンネルを解決し、
@@ -144,6 +144,11 @@ Sources/
   - main への push → タグ `stable` のローリングリリース（削除して作り直し）。
   - PR への push → タグ `dev-<slug>` のプレリリース（同上）。fork PR は公開不可。
   - ブランチ削除 → `cleanup-dev-release.yml` がプレリリースを掃除。
+- **ランナーと Xcode の指定（`macos-26` / Xcode 26.6）は 3 本のワークフロー
+  （`build.yml` / `test.yml` / `ci-debug.yml`）に同じ形で書いてある対**。
+  上げるときは 3 本まとめて上げる — `ci-debug` だけ古いと、調査で見ている挙動が
+  リリースされる `.app` のビルドと違うものになり、調査そのものが嘘になる。
+  ランナーイメージに何が入っているかは actions/runner-images の README で見る。
 - 自動アップデートは Info.plist のスタンプ（`GitCommit` / `GitBranch` /
   `BuildChannel`）とリリースを突き合わせる。スタンプは `package-app.sh` が書く。
 - **アプリアイコンは `scripts/make-app-icon.py` が唯一の原典**（寸法・色はすべて
