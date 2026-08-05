@@ -213,16 +213,31 @@ summarize()
 		echo "  まだ 1 つも投げていません"
 		return 0
 	fi
-	printf '  %-18s %-6s %6s %6s %8s %6s %8s %6s %10s %s\n' \
-		ラベル 種別 枚数 連結 芯の成分 支持数 コンダク 姿勢 点群 結果
+	printf '  %-18s %-6s %6s %6s %8s %4s %7s %6s %10s %s\n' \
+		ラベル 種別 枚数 連結 芯の成分 塊 最大塊 姿勢 点群 結果
 	awk -F'\t' 'NR>1 {
-		printf "  %-18s %-6s %6s %6s %8s %6s %8s %6s %10s %s\n",
-			$2, $3, $5, $6, $7, $8, $9, $12, ($16 == "" ? "-" : $16), $11
+		printf "  %-18s %-6s %6s %6s %8s %4s %7s %6s %10s %s\n",
+			$2, $3, $5, $6, $7, ($17 == "" ? "-" : $17), ($18 == "" ? "-" : $18),
+			$12, ($16 == "" ? "-" : $16), $11
 	}' "$LEDGER"
 
 	# **内部指標は本当に成否を予言したのか。** これが分からないと「最良の窓から
 	# 投げる」という手順自体に根拠が無いままになる。連結（窓が 1 つに繋がって
 	# いるか）で二分して成功率を並べる。
+	echo ""
+	echo "■ 撮影順の塊は成否を予言したか（**窓を作るのには使っていない検算の列**）"
+	awk -F'\t' 'NR>1 && $17 != "" {
+		key = ($17 <= 6) ? "塊 6 以下" : "塊 7 以上"
+		total[key]++
+		if ($11 == "ok") { ok[key]++ }
+	}
+	END {
+		for (key in total)
+		{
+			printf "  %-12s 投げた %2d 回 / 通った %2d 回\n", key, total[key], ok[key] + 0
+		}
+	}' "$LEDGER"
+
 	echo ""
 	echo "■ 内部指標は成否を予言したか（連結 = 窓そのものの最大連結成分）"
 	awk -F'\t' 'NR>1 {
@@ -360,7 +375,7 @@ if [ ! -s "$LEDGER" ]
 then
 	# **新しい列は末尾に足す。** 途中に入れると、前の実行で書いた台帳の列が
 	# ずれて集計が黙って別の数字を出す。
-	printf 'round\tlabel\tkind\tsource\tphotos\tconnected\tkcorecomp\tmedsupport\tconductance\trank\tresult\tposed\telapsed\tfingerprint\tmodel\tpoints\n' > "$LEDGER"
+	printf 'round\tlabel\tkind\tsource\tphotos\tconnected\tkcorecomp\tmedsupport\tconductance\trank\tresult\tposed\telapsed\tfingerprint\tmodel\tpoints\truns\tlargestrun\n' > "$LEDGER"
 fi
 
 say ""
@@ -576,8 +591,8 @@ do
 		NF >= 15 {
 			small = ($2 * 2 < cap) ? 1 : 0
 			broken = ($5 >= 0.999) ? 0 : 1
-			printf "%d %d %.4f %d %.4f %s %d %.4f %.4f %d %.4f %d\n",
-				small, broken, 1 - $8, 99 - $9, $10, $1, $2, $5, $8, $9, $10, $14
+			printf "%d %d %.4f %d %.4f %s %d %.4f %.4f %d %.4f %d %d %.4f\n",
+				small, broken, 1 - $8, 99 - $9, $10, $1, $2, $5, $8, $9, $10, $14, $12, $13
 		}' "$windows/windows.tsv" \
 		| sort -k1,1n -k2,2n -k3,3g -k4,4n -k5,5g -k6,6 > "$ranked"
 
@@ -589,8 +604,10 @@ do
 	fi
 
 	say "  内部指標の順位（上から投げる）:"
-	awk '{ printf "    %2d. %-16s 枚数 %4d  連結 %s  芯の成分 %s  支持数 %2d  コンダクタンス %s\n",
-		NR, $6, $7, $8, $9, $10, $11 }' "$ranked" | tee -a "$LOG"
+	# **撮影順の塊も並べて出す。** 窓を作るのには使っていない検算の列だが、
+	# 実データではこれだけが成否と対応した（通った窓は塊 5〜6・落ちた窓は 9〜18）。
+	awk '{ printf "    %2d. %-16s 枚数 %4d  連結 %s  芯 %s  支持 %2d  cond %s  撮影順の塊 %2d（最大 %s）\n",
+		NR, $6, $7, $8, $9, $10, $11, $13, $14 }' "$ranked" | tee -a "$LOG"
 
 	if [ "$plan_only" = 1 ]
 	then
@@ -603,7 +620,8 @@ do
 	# --- まだ投げていない窓のうち、いちばん良いものを 1 つ選ぶ ---
 	choice=""
 	choice_rank=0
-	while read -r _ _ _ _ _ name photos_count connected kcorecomp medsupport conductance hascore
+	while read -r _ _ _ _ _ name photos_count connected kcorecomp medsupport conductance hascore \
+		runs largestrun
 	do
 		choice_rank=$(( choice_rank + 1 ))
 		list="$windows/$name"
@@ -689,10 +707,10 @@ do
 
 	say "  結果: ${result}（姿勢 $posed 枚・${elapsed}s・モデル ${model}・点群 ${cloud} 点）"
 	show_geometry "$round_dir/poses-$label.log"
-	printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+	printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 		"$round" "$label" "window" "$choice" "$photos_count" "$connected" "$kcorecomp" \
 		"$medsupport" "$conductance" "$choice_rank" "$result" "$posed" "$elapsed" "$print" \
-		"$model" "$cloud" >> "$LEDGER"
+		"$model" "$cloud" "$runs" "$largestrun" >> "$LEDGER"
 
 	gained="$posed"
 
@@ -717,11 +735,11 @@ do
 		core_cloud=$(printf '%s' "$outcome" | cut -f5)
 		say "  芯の結果: ${core_result}（姿勢 $core_posed 枚・${core_elapsed}s・モデル ${core_model}）"
 		show_geometry "$round_dir/poses-$core_label.log"
-		printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 			"$round" "$core_label" "core" "$choice" "$(awk 'END { print NR }' "$core_list")" \
 			"$connected" "$kcorecomp" "$medsupport" "$conductance" "$choice_rank" \
 			"$core_result" "$core_posed" "$core_elapsed" "$core_print" "$core_model" \
-			"$core_cloud" >> "$LEDGER"
+			"$core_cloud" "$runs" "$largestrun" >> "$LEDGER"
 		gained=$(( gained + core_posed ))
 	fi
 
