@@ -332,7 +332,7 @@ struct Record
 	var hash: UInt64?
 }
 
-func timeZone(fromOffset text: String) -> TimeZone?
+@Sendable func timeZone(fromOffset text: String) -> TimeZone?
 {
 	let trimmed = text.trimmingCharacters(in: .whitespaces)
 	guard trimmed.count >= 3, let sign = trimmed.first, sign == "+" || sign == "-"
@@ -874,7 +874,7 @@ let thumbnailDirectory = sheetDirectory.appendingPathComponent("thumbs", isDirec
 	CGImageDestinationFinalize(destination)
 }
 
-func thumbnailName(for relativePath: String) -> String
+@Sendable func thumbnailName(for relativePath: String) -> String
 {
 	// 相対パスをそのままファイル名にする（`/` は使えないので置き換える）。
 	// **写真とサムネイルの対応が目で追える**ほうが、見直しのときに効く。
