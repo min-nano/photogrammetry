@@ -254,6 +254,10 @@ E5RT encountered an STL exception. msg = MILCompilerForANE error: … ANECCompil
 rm -rf ~/Library/Caches/com.minnano.photogrammetry/com.apple.e5rt.e5bundlecache
 ```
 
+なお、これは**対処であって原因ではありません**（なぜコンパイルが失敗するのかは
+未解明です）。原因を潰していく記録と、手元で測るためのスクリプトは
+`docs/investigate-ane-compile-failure.md` にあります。
+
 **その他の理由で処理の途中に異常終了する**
 macOS の Object Capture 本体（`CorePhotogrammetry`）が内部エラーで処理を中断
 した状態です。アプリ側では捕捉できない中断なので、**生成は別プロセス
