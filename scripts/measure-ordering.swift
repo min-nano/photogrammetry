@@ -2008,11 +2008,18 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 	let keepFloor = max(8, minimumWindow / 2)
 	var strays = (0 ..< total).filter { !covered[$0] }
 	var kept: [[Int]] = []
-	for window in windows
+	// **解体したぶんは、付随する配列からも同時に落とす。** ここを揃えないと
+	// 以降の添字が 1 つずつずれ、**支持数中央とコンダクタンスが別の窓の値**に
+	// なる（順位付けが第 4 段でこれを見ているので、選ぶ窓まで変わる）。
+	var keptCrossings: [Int] = []
+	var keptSupports: [[Int]] = []
+	for (index, window) in windows.enumerated()
 	{
 		if window.count >= keepFloor
 		{
 			kept.append(window)
+			keptCrossings.append(index < crossingsPerWindow.count ? crossingsPerWindow[index] : 0)
+			keptSupports.append(index < supportsPerWindow.count ? supportsPerWindow[index] : [])
 		}
 		else
 		{
@@ -2071,8 +2078,12 @@ if let capacity = windowCapacity, capacity > 1, dominantDimension > 0
 		// 十分な大きさの窓が 1 つも作れなかった（グラフがほぼ空）。
 		// 全部を 1 つの窓にして、判断は Object Capture へ渡す。
 		kept = [Array(0 ..< total)]
+		keptCrossings = [0]
+		keptSupports = [[]]
 	}
 	windows = kept
+	crossingsPerWindow = keptCrossings
+	supportsPerWindow = keptSupports
 
 	// --- 窓の中の並び（設計 §3.4）: 端から端への幅優先 ---
 	func localOrder(_ window: [Int]) -> [Int]
