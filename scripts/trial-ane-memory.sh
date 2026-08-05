@@ -65,6 +65,9 @@
 #                    **測定としては意味を失う**ので、比較用にだけ使う
 #   --stop-on-fail   最初の失敗で止める（原因を手で調べたいとき）
 #   --dry-run        何を回すかだけ出して終わる
+#   --force          Object Capture 非対応のマシンでも止まらずに回す。
+#                    **道具そのものの自己確認用**（記録・集計の流れが動くかを
+#                    CI の macOS ランナーで確かめるために要る。測定値は出ない）
 #
 # 注意（--ballast）:
 #   重しはシステム全体を圧迫する。他のアプリが落ちる・強制的にスワップする・
@@ -89,6 +92,7 @@ TIMEOUT=1800
 KEEP_CACHE=0
 STOP_ON_FAIL=0
 DRY_RUN=0
+FORCE=0
 
 die() { echo "エラー: $*" >&2; exit 2; }
 
@@ -104,6 +108,7 @@ while [ $# -gt 0 ]; do
 		--keep-cache) KEEP_CACHE=1; shift ;;
 		--stop-on-fail) STOP_ON_FAIL=1; shift ;;
 		--dry-run) DRY_RUN=1; shift ;;
+		--force) FORCE=1; shift ;;
 		-h|--help) sed -n '2,80p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		-*) die "不明な引数: $1" ;;
 		*)
@@ -228,7 +233,11 @@ swiftc -O "$HARNESS_SOURCE" -o "$BIN" || die "measure-ane のビルドに失敗�
 "$BIN" --selftest > "$OUT/selftest.txt" 2>&1 || true
 cat "$OUT/selftest.txt"
 if grep -q "isSupported: false" "$OUT/selftest.txt"; then
-	die "このマシンでは Object Capture が使えません（PhotogrammetrySession.isSupported == false）"
+	if [ "$FORCE" = 0 ]; then
+		die "このマシンでは Object Capture が使えません（PhotogrammetrySession.isSupported == false）"
+	fi
+	say "!! Object Capture 非対応のマシンです。--force が指定されているので続けますが、"
+	say "!! 出るのは全部 outcome=unsupported で、ANE の話は 1 ミリも進みません。"
 fi
 say ""
 
