@@ -434,6 +434,14 @@ run_object_capture()
 		"${model:--}" "${cloud:--1}"
 }
 
+# 幾何まわりの行を手元のログにも出す。**点群と姿勢が同じ座標系に乗っているか**は
+# この試行でいちばん確かめたいことなので、窓ごとのログの中に埋もれさせない。
+show_geometry()
+{
+	grep -E '姿勢を書き出しました|3D モデルを書き出しました|点群を書き出しました|点群の範囲|カメラの範囲|点群の範囲の中|最も近い点まで' \
+		"$1" | tee -a "$LOG" || true
+}
+
 # **ML モデルキャッシュの故障を見分ける**（設計 §6.2.4・ModelCache と同じ印）。
 # これが出た後の成否は測定として信用できないので、黙って「error 6 が増えた」と
 # 記録するのが最悪。消して 1 度だけやり直す。
@@ -630,6 +638,7 @@ do
 	fi
 
 	say "  結果: ${result}（姿勢 $posed 枚・${elapsed}s・モデル ${model}・点群 ${cloud} 点）"
+	show_geometry "$round_dir/poses-$label.log"
 	printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 		"$round" "$label" "window" "$choice" "$photos_count" "$connected" "$kcorecomp" \
 		"$medsupport" "$conductance" "$choice_rank" "$result" "$posed" "$elapsed" "$print" \
@@ -657,6 +666,7 @@ do
 		core_model=$(printf '%s' "$outcome" | cut -f4)
 		core_cloud=$(printf '%s' "$outcome" | cut -f5)
 		say "  芯の結果: ${core_result}（姿勢 $core_posed 枚・${core_elapsed}s・モデル ${core_model}）"
+		show_geometry "$round_dir/poses-$core_label.log"
 		printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 			"$round" "$core_label" "core" "$choice" "$(awk 'END { print NR }' "$core_list")" \
 			"$connected" "$kcorecomp" "$medsupport" "$conductance" "$choice_rank" \
