@@ -804,9 +804,14 @@ let thumbnailDirectory = sheetDirectory.appendingPathComponent("thumbs", isDirec
 			negative: "W"),
 		elements: nil)
 
-	// キャッシュで足りるならデコードしない。**足りるかどうかは要る値で決まる**
-	// （知覚ハッシュや接触シートを求められたら、キャッシュがあっても画素が要る）。
-	if let cached, !needsPixels
+	// キャッシュで足りるならデコードしない。**足りるかどうかは要る値で決まる。**
+	// 接触シートはサムネイルが既にあれば作り直す必要が無い — 人は写真を動かす
+	// たびに --sheets を回すので、ここで毎回全枚数をデコードすると道具が使われ
+	// なくなる（HTML の作り直しだけなら一瞬で終わる）。
+	let thumbnailReady = !wantsThumbnails
+		|| FileManager.default.fileExists(atPath: thumbnailDirectory
+			.appendingPathComponent(thumbnailName(for: relativePath)).path)
+	if let cached, cached.elements != nil, !wantsDHash, thumbnailReady
 	{
 		record.elements = cached.elements
 		record.sharpness = cached.sharpness

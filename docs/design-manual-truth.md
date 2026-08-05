@@ -142,9 +142,14 @@ swiftc -O scripts/measure-truth.swift -o /tmp/measure-truth
 **3. 見直す**（20 分）
 
 ```bash
-/tmp/measure-truth ~/Pictures/現場 --truth ~/Desktop/truth --sheets
+/tmp/measure-truth ~/Pictures/現場 --truth ~/Desktop/truth --sheets \
+    --cache ~/Desktop/trial/cache.bin
 open ~/Desktop/truth/_sheets/index.html
 ```
+
+**`--cache` は毎回付ける。** サムネイルと視覚特徴が残っていれば写真を 1 枚も
+デコードし直さないので、2 回目からの `--sheets` は一瞬で終わる（付けないと
+1424 枚のデコードで数分かかり、見直しの往復が続かない）。
 
 3 つのページができる。それぞれ違う間違いを見つけるためのもの。
 
@@ -339,8 +344,9 @@ swiftc -O scripts/measure-truth.swift -o /tmp/measure-truth
 
 # …Finder で直す…
 
-# 接触シートを作り直して見直す
-/tmp/measure-truth ~/Pictures/現場 --truth ~/Desktop/truth --sheets
+# 接触シートを作り直して見直す（--cache があれば読み直しゼロ）
+/tmp/measure-truth ~/Pictures/現場 --truth ~/Desktop/truth --sheets \
+    --cache ~/Desktop/trial/cache.bin
 
 # 読み戻し（truth.tsv と truth-windows/）
 /tmp/measure-truth ~/Pictures/現場 --truth ~/Desktop/truth --read --capacity 200
