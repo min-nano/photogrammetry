@@ -14,6 +14,18 @@
 
 **続きから始める人は §10 を先に読む。**
 
+**方針は次の 4 つに定まっている**（#11 / #12 の模索の結論）。
+
+| 決めたこと | どこ |
+| --- | --- |
+| EXIF 由来の撮影順ソート（#8）は仕分けの土台にしない | §2.3・§3.8・§7.5 |
+| 繋がっているかどうかの正解は **Object Capture の姿勢**を信じる | §3.10 |
+| 窓は**共視グラフからの支持成長**で作る | §3.1 |
+| 姿勢を蓄積してグラフを直し、窓を作り直す**反復**にする | §3.10・§3.11 |
+
+**この 4 つを実データで最後まで回すのが `scripts/trial-clustering.sh`**（§6.5）。
+まずこれを現場の写真で通し、出てきた数字で §5 の本実装へ進むかを決める。
+
 前提となる失敗の記録は PR #11（視覚クラスタリング）と PR #12（画素相関による
 グループ分け・**棄却済み**）にある。この文書はその 2 つと、そこから続いた
 実測（§6）の上に立っている。
@@ -1046,6 +1058,12 @@ Hendrickson 1998）という定理があり、この現場の実測（隔たり�
    窓の連結性を壊している疑いがある（§6.2.3）。**`core/` を投げれば決まる。**
 8. **反復が実際に収束するかは未測定。** 単調性から有限回で止まることは言えるが、
    「何巡で落ち着くか」「除去率が下がっていくか」は実データで見ていない。
+9. **内部指標（§3.11 の順位）が成否を予言するかは未測定。** §6.2 で確かめたのは
+   「窓の中身の統計は成否と相関しない」ことで、**グラフの構造については測って
+   いない**。予言しないなら「最良の窓から投げる」に根拠が無くなり、順序は
+   「どれから投げても同じ」へ落ちる（反復そのものは成立する）。
+   `trial-clustering.sh` の `ledger.tsv` は、まさにこれを答え合わせするために
+   指標と結果を並べて残している。
 
 ---
 
@@ -1067,29 +1085,42 @@ Hendrickson 1998）という定理があり、この現場の実測（隔たり�
 2. **2 巡目の窓は 1 巡目より良いか** — 姿勢率・窓の数・落ちた窓が消えたか
 3. **除去率は巡ごとに下がるか** — 収束の有無
 4. **次数 0 の 155 枚をどう扱うか** — 1 と 2 の結果で決める
+5. **内部指標は成否を予言するか** — §3.11 の順位付けの根拠（§9-9）
+
+**1〜5 はどれも `scripts/trial-clustering.sh` を実データで一度通せば答えが出る**
+（1 は梯子の `core` 行、2〜3 は巡ごとの集計、4 は姿勢の付かない写真の一覧、
+5 は `ledger.tsv` の指標と結果の並び）。
 
 ### 次に実データで走らせる手順
 
+**1 本のコマンドで最後まで回る**（§3.11）。上の 1〜4 を人が手で繰り返す必要は
+もう無い。
+
 ```bash
-# 0. 壊れた ML キャッシュを消す（§6.2.4。measure-poses が場所を毎回表示する）
-rm -rf ~/Library/Caches/measure-poses/com.apple.e5rt.e5bundlecache
+# 下見（投げずに、窓の数・大きさ・内部指標の順位だけ見る。数分）
+scripts/trial-clustering.sh <写真フォルダ> --state ~/Desktop/trial --plan-only
 
-# 1. 窓を作り直す（連結列・core/ つき。1〜2 分）
-./measure-ordering <写真フォルダ> --windows 200 --window-dir ./windows-r2 \
-    --feedback ./poses-out --compare-windows ./windows | tee windows-r2.txt
+# 本番（1 巡＝窓 1 個ぶんの再構成。止めてよく、同じ --state で続きから）
+scripts/trial-clustering.sh <写真フォルダ> --state ~/Desktop/trial \
+    --capacity 200 --rounds 20 --budget-hours 8 | tee -a ~/Desktop/trial/run.txt
 
-# 2. 全窓の姿勢を取る（数時間）
-./measure-poses <写真フォルダ> --purge-model-cache --window-dir ./windows-r2 \
-    --poses-out ./poses-r2 --ordering sequential --sensitivity high \
-    --drop-blurriest 10 --timeout 900 | tee -a poses-r2.txt
-
-# 3. 落ちた窓だけ、はぐれ抜きの芯で再試行
-./measure-poses <写真フォルダ> --window-file ./windows-r2/core/window-NN.txt \
-    --poses-out ./poses-r2 --ordering sequential --sensitivity high \
-    --drop-blurriest 10 --timeout 900 | tee -a poses-r2.txt
-
-# 4. 3 巡目（1 に戻る。--feedback ./poses-r2 --compare-windows ./windows-r2）
+# 途中経過・結果だけ見る
+scripts/trial-clustering.sh --state ~/Desktop/trial --summary
 ```
+
+**見るもの**（どれも写真を含まない数値なので、そのまま共有して判断に使える）。
+
+| 見るもの | 何が決まるか |
+| --- | --- |
+| `ledger.tsv` の**指標と結果の並び** | §3.11 の順位付けに根拠があるか（§9-9） |
+| 巡ごとの**除去 ÷ 見比べられた辺** | 収束しているか（§3.10） |
+| **そのまま残った窓**の数 | 修正がその近傍まで届いたか（§6.2.5） |
+| `core` の行と `window` の行の対比 | 落ちた原因がはぐれか中身か（§6.2.3・未解決 1） |
+| **姿勢の付いた写真 / 全体** | 「撮り直し」と名指しできる写真がどれだけあるか |
+
+手で 1 巡ずつ回したいときの元の手順（`measure-ordering` → `measure-poses` →
+`--feedback` で 1 に戻る）は §6.5 の表のとおりで、`trial-clustering.sh` が
+やっているのもそれと同じことである。
 
 ### 本実装へ進む条件
 

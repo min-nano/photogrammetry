@@ -560,7 +560,7 @@ do
 	print=$(fingerprint "$list")
 
 	say ""
-	say "  → $choice を投げます（${label}・$(wc -l < "$list" | tr -d ' ') 枚・順位 ${choice_rank}）"
+	say "  → $choice を投げます（${label}・$(awk 'END { print NR }' "$list") 枚・順位 ${choice_rank}）"
 	outcome=$(run_object_capture "$label" "$list" "$round_dir/poses-$label.log" \
 		"$([ "$round" = 1 ] && [ ! -f "$state/.purged" ] && echo 1 || echo 0)")
 	touch "$state/.purged"
@@ -602,7 +602,7 @@ do
 		cp "$windows/core/$choice" "$core_list"
 		sort "$core_list" > "$state/attempts/$core_label.sorted"
 		core_print=$(fingerprint "$core_list")
-		say "  → 落ちたので、はぐれを外した芯で試し直します（$(wc -l < "$core_list" | tr -d ' ') 枚）"
+		say "  → 落ちたので、はぐれを外した芯で試し直します（$(awk 'END { print NR }' "$core_list") 枚）"
 		outcome=$(run_object_capture "$core_label" "$core_list" \
 			"$round_dir/poses-$core_label.log" 0)
 		core_result=$(printf '%s' "$outcome" | cut -f1)
@@ -610,7 +610,7 @@ do
 		core_elapsed=$(printf '%s' "$outcome" | cut -f3)
 		say "  芯の結果: ${core_result}（姿勢 $core_posed 枚・${core_elapsed}s）"
 		printf '%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n' \
-			"$round" "$core_label" "core" "$choice" "$(wc -l < "$core_list" | tr -d ' ')" \
+			"$round" "$core_label" "core" "$choice" "$(awk 'END { print NR }' "$core_list")" \
 			"$connected" "$kcorecomp" "$medsupport" "$conductance" "$choice_rank" \
 			"$core_result" "$core_posed" "$core_elapsed" "$core_print" >> "$LEDGER"
 		gained=$(( gained + core_posed ))
