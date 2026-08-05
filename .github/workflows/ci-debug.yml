@@ -74,7 +74,7 @@ permissions:
 
 jobs:
   debug:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
 
     env:
@@ -86,10 +86,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Select Xcode 16.2
+      - name: Select Xcode 26.6
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
-          xcode-version: "16.2"
+          xcode-version: "26.6"
 
       - name: Show context
         run: |
