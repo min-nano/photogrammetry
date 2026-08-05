@@ -830,9 +830,9 @@ struct Measurement
 	var points = -1
 }
 
-/// 直前に書き出した窓のカメラ位置。**点群と同じ座標系かどうか**を突き合わせる
-/// ためだけに持つ（要求の完了順は決まっていないので、両方揃ってから比べる）。
-var lastCameraPositions: [SIMD3<Float>] = []
+/// 直前に書き出した窓のカメラの位置と向き。**点群と同じ座標系かどうか**を
+/// 突き合わせるために持つ（要求の完了順は決まっていないので、揃ってから比べる）。
+var lastCameraPlacements: [(position: SIMD3<Float>, rotation: simd_quatf)] = []
 
 /// 姿勢を「元の写真のパス」に紐づけて書き出す。
 ///
@@ -876,7 +876,7 @@ func writePoses(_ poses: PhotogrammetrySession.Poses, label: String)
 		placements[currentWindowPaths[index]] = (pose.translation, pose.rotation)
 	}
 	// 座標系の突き合わせ（点群と同じ系かどうか）に使う。
-	lastCameraPositions = placements.values.map(\.position)
+	lastCameraPlacements = Array(placements.values)
 
 	let positions = placements.mapValues(\.position)
 	var lines = ["# path\tposed\tx\ty\tz\tqx\tqy\tqz\tqw"]
@@ -936,7 +936,7 @@ func writePoints(_ cloud: PhotogrammetrySession.PointCloud, label: String) -> In
 		log("    !! 点群を書き出せませんでした: \(error.localizedDescription)")
 		return -1
 	}
-	if lastCameraPositions.isEmpty
+	if lastCameraPlacements.isEmpty
 	{
 		log("  （姿勢より先に点群が返ったので、座標系の突き合わせはこの窓では出せません）")
 	}
@@ -950,6 +950,11 @@ func writePoints(_ cloud: PhotogrammetrySession.PointCloud, label: String) -> In
 ///
 /// これが成り立たないと「実際に重なっているか」の計算が丸ごと無意味になるので、
 /// 数字を出さずに前提だけ置くわけにはいかない（#12 で踏んだ形そのもの）。
+///
+/// **「カメラが点群の範囲の中にあるか」は判定にならない**（実データで踏んだ）。
+/// 被写体を外から撮れば、カメラが外にあるのが当たり前だから。**回転を使って
+/// 「点群がカメラの前方に写る位置にあるか」を見る**のが正しい問いで、座標系が
+/// 無関係なら前後は半々・角度は散らばる。
 func describeGeometry(_ points: [SIMD3<Float>])
 {
 	guard !points.isEmpty
@@ -979,45 +984,64 @@ func describeGeometry(_ points: [SIMD3<Float>])
 	let diagonal = simd_length(cloud.max - cloud.min)
 	log("  点群の範囲 \(text(cloud.min)) 〜 \(text(cloud.max))"
 		+ "  対角 \(String(format: "%.2f", diagonal))")
-	guard !lastCameraPositions.isEmpty
+	guard !lastCameraPlacements.isEmpty
 	else
 	{
 		return
 	}
-	let cameras = bounds(lastCameraPositions)
-	let inside = lastCameraPositions.filter
-	{ position in
-		position.x >= cloud.min.x && position.x <= cloud.max.x
-			&& position.y >= cloud.min.y && position.y <= cloud.max.y
-			&& position.z >= cloud.min.z && position.z <= cloud.max.z
-	}
+	let positions = lastCameraPlacements.map(\.position)
+	let cameras = bounds(positions)
 	log("  カメラの範囲 \(text(cameras.min)) 〜 \(text(cameras.max))"
 		+ "  対角 \(String(format: "%.2f", simd_length(cameras.max - cameras.min)))")
-	log("  → カメラ \(lastCameraPositions.count) 個のうち \(inside.count) 個が点群の範囲の中"
-		+ "（**同じ座標系なら大半が中に入る**）")
 
-	// カメラから最も近い点までの距離。点群が疎すぎないか・尺度が合っているかの目安。
-	// 全点との突き合わせは重いので、点群を間引いて測る。
-	let step = max(1, points.count / 20_000)
+	// 尺度が同じ桁に乗っているか。桁が違えばモデル側が正規化されている。
+	let center = (cloud.min + cloud.max) / 2
+	var distances = positions.map { simd_length($0 - center) }
+	distances.sort()
+	let median = distances[distances.count / 2]
+	log("  カメラから点群の中心までの距離: 中央値 \(String(format: "%.2f", median))"
+		+ "（点群の対角の \(String(format: "%.0f", Double(median / max(diagonal, 1e-6)) * 100))%"
+		+ "・**撮影距離として無理のない比なら尺度は合っている**）")
+
+	// **本命の検算。** 点をカメラ座標系へ移し、前方（RealityKit は -Z 方向を見る）
+	// にどれだけ入るかと、光軸からの角度を見る。座標系が無関係なら前後は半々。
+	let step = max(1, points.count / 5_000)
 	let sample = stride(from: 0, to: points.count, by: step).map { points[$0] }
-	var nearest: [Float] = []
-	for camera in lastCameraPositions.prefix(64)
+	var front = 0
+	var back = 0
+	var angles: [Double] = []
+	for placement in lastCameraPlacements.prefix(64)
 	{
-		var best = Float.greatestFiniteMagnitude
+		let inverse = placement.rotation.inverse
 		for point in sample
 		{
-			best = min(best, simd_length_squared(point - camera))
+			let local = inverse.act(point - placement.position)
+			if local.z < 0
+			{
+				front += 1
+				let axial = Double(-local.z)
+				let lateral = Double((local.x * local.x + local.y * local.y).squareRoot())
+				angles.append(atan2(lateral, axial) * 180 / .pi)
+			}
+			else
+			{
+				back += 1
+			}
 		}
-		nearest.append(best.squareRoot())
 	}
-	nearest.sort()
-	if !nearest.isEmpty
+	let total = max(1, front + back)
+	log("  カメラ座標系での点の位置: 前方（-Z）\(front * 100 / total)%"
+		+ "・後方 \(back * 100 / total)%")
+	angles.sort()
+	if !angles.isEmpty
 	{
-		let median = nearest[nearest.count / 2]
-		log("  カメラから最も近い点までの距離: 中央値 \(String(format: "%.3f", median))"
-			+ "（対角の \(String(format: "%.1f", Double(median / max(diagonal, 1e-6)) * 100))%）")
+		let middle = angles[angles.count / 2]
+		let quarter = angles[angles.count / 4]
+		log("  前方の点の光軸からの角度: 中央値 \(String(format: "%.0f", middle))°"
+			+ "・下位 25% \(String(format: "%.0f", quarter))°")
 	}
-}
+	log("  → **前方が大半で角度が視野角の内側なら、点群と姿勢は同じ座標系**。"
+		+ "前後が半々なら無関係")
 
 func stageName(_ stage: PhotogrammetrySession.Output.ProcessingStage) -> String
 {

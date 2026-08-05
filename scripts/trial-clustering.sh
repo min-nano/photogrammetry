@@ -419,7 +419,10 @@ run_object_capture()
 		return 0
 	fi
 	local line result posed elapsed model cloud
-	line=$(grep -m1 '^window ' "$log" || true)
+	# **行頭で当てない。** CorePhotogrammetry は警告を改行なしで吐くことがあり、
+	# 実際に "E5RT …ANECCompile() FAILED.window name=… result=ok" と連結された。
+	# 行頭アンカーで探すと、**通った窓を落ちた扱いにする**（実データで踏んだ）。
+	line=$(grep -m1 'window name=' "$log" | sed 's/^.*\(window name=\)/\1/' || true)
 	if [ -z "$line" ]
 	then
 		printf 'no-output\t0\t0\t-\t-1'
@@ -625,7 +628,15 @@ do
 		exit 3
 	fi
 
-	# ML モデルキャッシュの故障なら、消して 1 度だけやり直す。
+	# **印が出たら成否にかかわらず言う。** 出たあとの結果は測定として信用できない
+	# （設計 §6.2.4）。ただし実データでは**印が出ても完走した**ので、やり直すのは
+	# 失敗したときだけにする — 通った窓を投げ直すのは数十分の丸損。
+	if is_model_cache_failure "$round_dir/poses-$label.log"
+	then
+		say "  !! ANE モデルキャッシュの故障の印が出ています（設計 §6.2.4）。"
+		say "     完走していれば結果は使えますが、**以降で落ち始めたらここを疑う**"
+	fi
+	# ML モデルキャッシュの故障で**落ちた**なら、消して 1 度だけやり直す。
 	if [ "$result" != "ok" ] && is_model_cache_failure "$round_dir/poses-$label.log"
 	then
 		say "  !! ML モデルキャッシュの故障の印が出ました。消してやり直します（設計 §6.2.4）"
