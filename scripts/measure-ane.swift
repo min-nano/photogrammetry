@@ -603,17 +603,27 @@ func resultLine(
 		String(flattened.prefix(120)))
 }
 
-/// ANE キャッシュの中にバンドルがいくつ出来たか。
+/// ANE キャッシュの中に**モデル**がいくつ出来たか。
+///
+/// 階層は `<cache>/<OS のビルド番号>/<モデルのハッシュ>/…`（実機で確認）。
+/// **最上位を数えてはいけない** — そこは OS のビルド番号で、中身が空でも
+/// 1 個に見えるので「コンパイルが走った」を誤検出する（実機のアプリ側
+/// キャッシュがまさにこの状態だった）。数えるのは 2 段目。
 func cacheBundleCount() -> Int
 {
 	guard let modelCacheDirectory,
-		let entries = try? FileManager.default.contentsOfDirectory(
-			atPath: modelCacheDirectory.path)
+		let builds = try? FileManager.default.contentsOfDirectory(
+			at: modelCacheDirectory, includingPropertiesForKeys: nil)
 	else
 	{
 		return 0
 	}
-	return entries.count
+	return builds.reduce(0)
+	{ total, build in
+		let models = (try? FileManager.default.contentsOfDirectory(
+			at: build, includingPropertiesForKeys: nil)) ?? []
+		return total + models.count
+	}
 }
 
 Task

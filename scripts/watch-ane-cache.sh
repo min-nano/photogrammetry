@@ -100,43 +100,60 @@ if [ "$DUMP" = 1 ]; then
 fi
 
 if [ ! -f "$OUT" ]; then
-	printf 'time\tcache\tbundles\tincomplete\tsize_kb\tcompiler\taned_cpu\tanalysis_cpu\toc_procs\tfree_disk_mb\tfree_mem_mb\tswap_mb\tpressure\n' > "$OUT"
+	printf 'time\tcache\tbuilds\tmodels\tbundles\tincomplete\tsize_kb\tcompiler\taned_cpu\tanalysis_cpu\toc_procs\tfree_disk_mb\tfree_mem_mb\tswap_mb\tpressure\n' > "$OUT"
 fi
 
 # ---------------------------------------------------------------------------
 # 1 つのキャッシュの状態
 # ---------------------------------------------------------------------------
 #
-# 不完全なバンドル = 直下のディレクトリのうち、その下に manifest.plist が
-# 見つからないもの。**これが 1 個でも現れた瞬間が「壊れた瞬間」**で、以降その
-# 実行体は毎回同じところで落ちる（ModelCache のコメント参照）。
+# **実際の階層**（macOS 26.5.2 / ci-debug の --dump で確認）:
+#
+#   <cache>/25F84/                                  ← OS のビルド番号
+#     <モデルのハッシュ>/model.milhash               ← 印だけ（ANE 化されていない）
+#     <モデルのハッシュ>/<ハッシュ>.bundle/universal.bundle  ← コンパイル済みの実体
+#
+# ここから 2 つ言える。
+#
+#   1. **最上位は OS のビルド番号で切られている。** つまり OS を更新すれば
+#      別のディレクトリになり、古いバンドルが再利用されることはない
+#      （§4-C「OS 更新で古いバンドルが無効になった」はこれでほぼ潰れる）。
+#      逆にビルド番号のディレクトリが 2 つ以上あれば、それは更新の置き土産。
+#   2. **健全なキャッシュにも manifest.plist は無い。** 実機の OS 側キャッシュ
+#      （Spotlight・duetexpertd）を端から端まで探して 1 つも無かった。
+#      「manifest.plist が無い＝壊れている」は誤りで、最初の版はこれで全部の
+#      キャッシュを不完全と誤判定していた。
+#
+# したがって不完全の見分けは **`.bundle` があるのに中身が空のもの**で行う。
+# 書きかけで死ねばこの形になるはずで、これがいちばん「壊れた瞬間」に近い。
 
 inspect_cache() {
-	local dir="$1" bundles=0 incomplete=0 size=0 sub sub_size
+	local dir="$1" builds=0 models=0 bundles=0 incomplete=0 size=0 build model bundle
 	if [ ! -d "$dir" ]; then
-		echo "0	0	0"
+		echo "0	0	0	0	0"
 		return
 	fi
-	for sub in "$dir"/*; do
-		[ -d "$sub" ] || continue
+	for build in "$dir"/*; do
+		[ -d "$build" ] || continue
+		builds=$(( builds + 1 ))
+		for model in "$build"/*; do
+			[ -d "$model" ] || continue
+			models=$(( models + 1 ))
+		done
+	done
+	# `.bundle` は深さが決め打ちできない（モデルによって階層が違う）。
+	for bundle in $(find "$dir" -type d -name '*.bundle' 2>/dev/null); do
+		case "$bundle" in
+			*/universal.bundle) continue ;;
+		esac
 		bundles=$(( bundles + 1 ))
-		# **中身のあるバンドルだけを「不完全かどうか」の対象にする。**
-		# 最初の実測で、OS 側のキャッシュ（Spotlight・remindd・duetexpertd …）が
-		# 軒並み incomplete=1 と出た。空のディレクトリだけが置かれている状態を
-		# 「壊れている」と数えていたためで、これでは本物の故障が埋もれる。
-		# サイズ 0 は「まだ何も入っていない」のであって、壊れてはいない。
-		sub_size="$( { du -sk "$sub" 2>/dev/null || true; } | awk '{print $1}')"
-		[ -n "$sub_size" ] || sub_size=0
-		[ "$sub_size" -gt 0 ] || continue
-		# 深さを決め打ちしない（バンドルの階層は E5RT の都合で決まる。
-		# maxdepth 3 では届かない置かれ方が実際にありうる）。
-		if [ -z "$(find "$sub" -name manifest.plist -print -quit 2>/dev/null)" ]; then
+		if [ -z "$(find "$bundle" -mindepth 1 -print -quit 2>/dev/null)" ]; then
 			incomplete=$(( incomplete + 1 ))
 		fi
 	done
 	size="$( { du -sk "$dir" 2>/dev/null || true; } | awk '{print $1}')"
 	[ -n "$size" ] || size=0
-	echo "$bundles	$incomplete	$size"
+	echo "$builds	$models	$bundles	$incomplete	$size"
 }
 
 # ---------------------------------------------------------------------------
@@ -211,36 +228,43 @@ while :; do
 	current=""
 	for cache in $CACHES; do
 		state="$(inspect_cache "$cache")"
-		bundles="$(echo "$state" | cut -f1)"
-		incomplete="$(echo "$state" | cut -f2)"
-		size="$(echo "$state" | cut -f3)"
+		builds="$(echo "$state" | cut -f1)"
+		models="$(echo "$state" | cut -f2)"
+		bundles="$(echo "$state" | cut -f3)"
+		incomplete="$(echo "$state" | cut -f4)"
+		size="$(echo "$state" | cut -f5)"
 
-		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-			"$stamp" "$cache" "$bundles" "$incomplete" "$size" \
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+			"$stamp" "$cache" "$builds" "$models" "$bundles" "$incomplete" "$size" \
 			"$processes" "$free_disk" "$free_mem" "$swap" "$pressure" >> "$OUT"
 
 		before="$(previous_state_of "$cache")"
-		now="$bundles/$incomplete"
+		now="$models/$bundles/$incomplete"
 		if [ "$first_pass" = 1 ]; then
-			say_event "初期状態 $(basename "$(dirname "$cache")"): バンドル $bundles 個・不完全 $incomplete 個"
+			say_event "初期状態 $(basename "$(dirname "$cache")"): モデル $models 個・バンドル $bundles 個・不完全 $incomplete 個"
+			if [ "$builds" -gt 1 ]; then
+				say_event "  （OS ビルドのディレクトリが $builds 個あります＝更新の置き土産）"
+			fi
 		elif [ "$before" != "$now" ]; then
-			say_event "変化 $(basename "$(dirname "$cache")"): バンドル $bundles 個・不完全 $incomplete 個"
+			say_event "変化 $(basename "$(dirname "$cache")"): モデル $models 個・バンドル $bundles 個・不完全 $incomplete 個"
 			# **ここが目撃の瞬間。** 周りの状況を一緒に出す（後から TSV を
 			# 突き合わせなくても、画面を見ていれば分かるように）。
 			if [ "$incomplete" -gt 0 ]; then
 				case "$before" in
-					*"/0") say_event "  !! 不完全なバンドルが現れました。ここが壊れた瞬間です" ;;
+					*"/0") say_event "  !! 中身の無い .bundle が現れました。ここが壊れた瞬間です" ;;
 				esac
 				say_event "  コンパイラ=$compiler 空きメモリ=${free_mem}MB スワップ=${swap}MB "\
 "圧=$pressure 空きディスク=${free_disk}MB"
 				say_event "  同時に動いている生成/測定プロセス=$(echo "$processes" | cut -f4) "\
 "写真解析の CPU=$(echo "$processes" | cut -f3)%"
-				find "$cache" -maxdepth 3 -type d 2>/dev/null \
-					| while read -r sub
+				find "$cache" -type d -name '*.bundle' 2>/dev/null \
+					| while read -r bundle
 					do
-						[ "$sub" = "$cache" ] && continue
-						if [ -z "$(find "$sub" -maxdepth 2 -name manifest.plist -print -quit 2>/dev/null)" ]; then
-							say_event "  不完全: ${sub#"$cache"/}"
+						case "$bundle" in
+							*/universal.bundle) continue ;;
+						esac
+						if [ -z "$(find "$bundle" -mindepth 1 -print -quit 2>/dev/null)" ]; then
+							say_event "  空の .bundle: ${bundle#"$cache"/}"
 						fi
 					done
 			fi
