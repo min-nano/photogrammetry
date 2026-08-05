@@ -239,7 +239,10 @@ summarize()
 	fi
 	coverage=$(awk -v a="$posed_photos" -v b="$total" 'BEGIN { printf "%.3f", (b > 0 ? a / b : 0) }')
 	echo ""
-	echo "■ 姿勢の付いた写真: $posed_photos / ${total}（${coverage}）"
+	# 分母は「窓に入った写真」。視覚特徴の次元が多数派と違う写真は窓に入らない
+	# ので、全枚数とは限らない。**分母を書かない報告が誤読を生む**のは §6.2.2 で
+	# 一度踏んでいる。
+	echo "■ 姿勢の付いた写真: $posed_photos / ${total}（窓に入った写真のうち・${coverage}）"
 
 	local attempts ok_count
 	attempts=$(awk -F'\t' 'NR>1' "$LEDGER" | wc -l | tr -d ' ')
