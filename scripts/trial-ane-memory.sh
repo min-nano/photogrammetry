@@ -85,7 +85,7 @@ PHOTOS=""
 OUT=""
 COUNTS="40,80,160,320"
 REPEATS=3
-START=0
+STARTS=0
 MODE="poses"
 BALLASTS="0"
 TIMEOUT=1800
@@ -101,7 +101,7 @@ while [ $# -gt 0 ]; do
 		--out) OUT="${2:-}"; shift 2 ;;
 		--counts) COUNTS="${2:-}"; shift 2 ;;
 		--repeats) REPEATS="${2:-}"; shift 2 ;;
-		--start) START="${2:-}"; shift 2 ;;
+		--start|--starts) STARTS="${2:-}"; shift 2 ;;
 		--mode) MODE="${2:-}"; shift 2 ;;
 		--ballast) BALLASTS="${2:-}"; shift 2 ;;
 		--timeout) TIMEOUT="${2:-}"; shift 2 ;;
@@ -182,6 +182,7 @@ say ""
 # ままになるので、置換で素直にほどく）。
 COUNT_LIST="$(echo "$COUNTS" | tr ',' ' ')"
 BALLAST_LIST="$(echo "$BALLASTS" | tr ',' ' ')"
+START_LIST="$(echo "$STARTS" | tr ',' ' ')"
 
 # 重しは搭載メモリの半分で頭打ちにする（それ以上は測定ではなく事故）。
 MAX_BALLAST=$(( MEM_GIB / 2 ))
@@ -197,16 +198,18 @@ BALLAST_LIST="$CHECKED_BALLASTS"
 
 TOTAL=0
 for _r in $(seq 1 "$REPEATS"); do
-	for _c in $COUNT_LIST; do
-		for _b in $BALLAST_LIST; do
-			TOTAL=$(( TOTAL + 1 ))
+	for _s in $START_LIST; do
+		for _c in $COUNT_LIST; do
+			for _b in $BALLAST_LIST; do
+				TOTAL=$(( TOTAL + 1 ))
+			done
 		done
 	done
 done
 
 say "== 予定 =="
-say "枚数: $COUNT_LIST / 重し(GiB): $BALLAST_LIST / 巡: $REPEATS → 全 $TOTAL 試行"
-say "mode=$MODE start=$START timeout=${TIMEOUT}s キャッシュ削除=$([ "$KEEP_CACHE" = 1 ] && echo しない || echo 毎回)"
+say "枚数: $COUNT_LIST / 開始位置: $START_LIST / 重し(GiB): $BALLAST_LIST / 巡: $REPEATS → 全 $TOTAL 試行"
+say "mode=$MODE timeout=${TIMEOUT}s キャッシュ削除=$([ "$KEEP_CACHE" = 1 ] && echo しない || echo 毎回)"
 say "結果: $OUT"
 say ""
 
@@ -282,19 +285,22 @@ sample_system() {
 # ---------------------------------------------------------------------------
 
 if [ ! -f "$TSV" ]; then
-	printf 'round\tcount\tballast_gib\toutcome\tane_marker\texit\telapsed_s\tpeak_footprint_mb\tpeak_stage\tposed\tane_at_stage\tane_at_footprint_mb\tane_at_t\tfree_min_mb\tswap_max_mb\tpressure_max\tcache_before\tcache_after_kb\tlog\n' > "$TSV"
+	printf 'round\tcount\tballast_gib\toutcome\tane_marker\tane_compiled\texit\telapsed_s\tpeak_footprint_mb\tpeak_stage\tposed\tinvalid\tskipped\tunreadable\tane_at_stage\tane_at_footprint_mb\tane_at_t\tfree_min_mb\tswap_max_mb\tpressure_max\tcache_before\tcache_after_kb\tlog\n' > "$TSV"
 fi
 
 DONE=0
 FAILURES=0
+# **ANE コンパイルが実際に走った試行の数。** これが 0 なら測定は無効。
+COMPILED=0
 
 run_trial() {
-	local round count ballast label log samples cache_before waited
+	local round count ballast start label log samples cache_before waited
 	local result_line elapsed peak_bytes peak_stage posed outcome exit_code last_sample
-	local ane_marker ane_at_stage ane_at_footprint ane_at_t
+	local ane_marker ane_at_stage ane_at_footprint ane_at_t ane_compiled
+	local invalid skipped unreadable cache_bundles
 	local free_min swap_max pressure_max cache_after_kb
-	round="$1"; count="$2"; ballast="$3"
-	label="r${round}-c${count}-b${ballast}"
+	round="$1"; count="$2"; ballast="$3"; start="$4"
+	label="r${round}-s${start}-c${count}-b${ballast}"
 	log="$OUT/logs/$label.log"
 	samples="$OUT/logs/$label.samples"
 
@@ -339,7 +345,7 @@ run_trial() {
 
 	# --- 本番。**落ちても続ける**（abort はこの測定で見たいものの 1 つ）
 	set +e
-	"$BIN" "$PHOTOS" --count "$count" --start "$START" --mode "$MODE" \
+	"$BIN" "$PHOTOS" --count "$count" --start "$start" --mode "$MODE" \
 		--timeout "$TIMEOUT" > "$log" 2>&1
 	exit_code=$?
 	set -e
@@ -361,6 +367,10 @@ run_trial() {
 	# outcome は空白を含まない（実行体が `_` に潰して出す）。`.*$` で取ると、
 	# 後ろに繋がった E5RT の行まで飲み込んでしまう。
 	outcome="$(echo "$result_line" | sed -n 's/.*outcome=\([^ ]*\).*/\1/p')"
+	invalid="$(echo "$result_line" | sed -n 's/.*invalid=\([0-9]*\).*/\1/p')"
+	skipped="$(echo "$result_line" | sed -n 's/.*skipped=\([0-9]*\).*/\1/p')"
+	unreadable="$(echo "$result_line" | sed -n 's/.*unreadable=\([0-9]*\).*/\1/p')"
+	cache_bundles="$(echo "$result_line" | sed -n 's/.*cache_bundles=\([0-9]*\).*/\1/p')"
 
 	# RESULT が無い＝プロセスが死んだ。**シグナル死をここで見分ける**
 	# （CorePhotogrammetry の abort() は try/catch では捕まらない）。
@@ -424,16 +434,30 @@ run_trial() {
 	cache_after_kb="$( { du -sk "$CACHE_DIR" 2>/dev/null || true; } | awk '{print $1}')"
 	[ -n "$cache_after_kb" ] || cache_after_kb=0
 
+	# **その試行が ANE コンパイルを走らせたか。** キャッシュに何も出来ていない
+	# なら、その試行は ANE の問いに 1 ミリも触れていない（＝無効な試行）。
+	# 実測でこれを見落とし、error 6 で終わった 12 試行を「再現しなかった」と
+	# 読みかけた。以後は必ず列に持ち、無効な試行は集計から外す。
+	ane_compiled="no"
+	if [ "${cache_bundles:-0}" -gt 0 ] 2>/dev/null || [ "${cache_after_kb:-0}" -gt 0 ]; then
+		ane_compiled="yes"
+		COMPILED=$(( COMPILED + 1 ))
+	fi
+
 	mb() { [ -n "$1" ] && [ "$1" != "0" ] && echo $(( $1 / 1048576 )) || echo "-"; }
 
-	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-		"$round" "$count" "$ballast" "${outcome:--}" "$ane_marker" "$exit_code" \
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		"$round" "$count" "$ballast" "${outcome:--}" "$ane_marker" "$ane_compiled" "$exit_code" \
 		"${elapsed:--}" "$(mb "${peak_bytes:-}")" "${peak_stage:--}" "${posed:--}" \
+		"${invalid:--}" "${skipped:--}" "${unreadable:--}" \
 		"$ane_at_stage" "$(mb "${ane_at_footprint:-}")" "$ane_at_t" \
 		"$free_min" "$swap_max" "$pressure_max" \
 		"$cache_before" "$cache_after_kb" "logs/$label.log" >> "$TSV"
 
-	say "  → outcome=${outcome:--} ane=$ane_marker peak=$(mb "${peak_bytes:-}")MB stage=${peak_stage:--} 空きの最小=${free_min}MB"
+	say "  → outcome=${outcome:--} ane=$ane_marker compiled=$ane_compiled posed=${posed:--}/${count} peak=$(mb "${peak_bytes:-}")MB stage=${peak_stage:--}"
+	if [ "$ane_compiled" = "no" ]; then
+		say "     （ANE コンパイルは走っていません。この試行は ANE の問いには無効です）"
+	fi
 
 	if [ "$ane_marker" = "yes" ]; then
 		say "  !! ANE コンパイル失敗の印が出ました（$ane_at_stage / t=${ane_at_t}s / footprint=$(mb "${ane_at_footprint:-}")MB）"
@@ -454,26 +478,29 @@ run_trial() {
 summarize() {
 	say ""
 	say "== 集計（枚数 × 重し ごと）=="
+	# compiled 列は「その条件で ANE コンパイルが実際に走った試行の数」。
+	# **これが 0 の行は、ANE の問いに対して何も言っていない。**
 	awk -F'\t' '
 		NR == 1 { next }
 		{
 			key = $2 "\t" $3
 			n[key]++
 			if ($5 == "yes") ane[key]++
+			if ($6 == "yes") compiled[key]++
 			if ($4 ~ /^signal-/) crash[key]++
-			if ($8 != "-") { peak[key] += $8; peakn[key]++ ; if ($8 + 0 > peakmax[key]) peakmax[key] = $8 }
-			if ($14 != "-") { if (!(key in freemin) || $14 + 0 < freemin[key]) freemin[key] = $14 }
+			if ($9 != "-") { peak[key] += $9; peakn[key]++ ; if ($9 + 0 > peakmax[key]) peakmax[key] = $9 }
+			if ($18 != "-") { if (!(key in freemin) || $18 + 0 < freemin[key]) freemin[key] = $18 }
 		}
 		END {
 			# 見出しは TSV の列名と同じ ASCII にする（日本語だと桁が揃わず、
 			# 一晩ぶんの表が読めなくなる）。
-			printf "%7s %8s %7s %9s %6s %12s %12s %12s\n",
-				"count", "ballast", "trials", "ane_fail", "abort",
+			printf "%7s %8s %7s %9s %9s %6s %12s %12s %12s\n",
+				"count", "ballast", "trials", "compiled", "ane_fail", "abort",
 				"peak_avg_MB", "peak_max_MB", "free_min_MB"
 			for (key in n) {
 				split(key, k, "\t")
-				printf "%7s %8s %7d %9d %6d %12s %12s %12s\n",
-					k[1], k[2], n[key], ane[key] + 0, crash[key] + 0,
+				printf "%7s %8s %7d %9d %9d %6d %12s %12s %12s\n",
+					k[1], k[2], n[key], compiled[key] + 0, ane[key] + 0, crash[key] + 0,
 					(peakn[key] ? sprintf("%.0f", peak[key] / peakn[key]) : "-"),
 					(peakmax[key] ? peakmax[key] : "-"),
 					(key in freemin ? freemin[key] : "-")
@@ -481,7 +508,25 @@ summarize() {
 		}' "$TSV" | (read -r header; echo "$header"; sort -n)
 
 	say ""
+	if [ "$COMPILED" = 0 ] && [ "$DONE" -gt 0 ]; then
+		say "############################################################"
+		say "## この測定は ANE の問いに答えていません。"
+		say "##"
+		say "## 全 $DONE 試行で ANE キャッシュに何も出来ませんでした＝ ANE モデルの"
+		say "## コンパイルが 1 度も走っていません。窓が imageAlignment で終わって"
+		say "## いる（error 6）なら、そこから先の段階でしか要らないモデルは"
+		say "## 一度も要求されないので、当然コンパイルも失敗しようがありません。"
+		say "##"
+		say "## 「再現しなかった」ではなく「試せていない」です。次にやること:"
+		say "##   1. outcome 列を見る。error 6 ばかりなら窓が繋がっていない"
+		say "##   2. invalid / unreadable 列を見る。写真が読めていないなら窓以前の問題"
+		say "##   3. --starts で開始位置を振り、通る窓を探す"
+		say "##   4. 通る窓が分かっているなら measure-ane --window-file で直接投げる"
+		say "############################################################"
+		say ""
+	fi
 	say "== 読み方 =="
+	say "・**compiled=0 の行は無効**（ANE コンパイルが走っていない）。まずそこを直す"
 	say "・ANE失敗が**多い枚数にだけ**出る → メモリ説が生きている。枚数の上限が対策になる"
 	say "・ANE失敗が**枚数によらず散らばる** → メモリではない。OS / モデルキャッシュ側を疑う"
 	say "・ANE失敗が**1 度も出ない** → この条件では再現しない。--ballast で空きを潰して"
@@ -499,9 +544,11 @@ summarize() {
 # ---------------------------------------------------------------------------
 
 for round in $(seq 1 "$REPEATS"); do
-	for count in $COUNT_LIST; do
-		for ballast in $BALLAST_LIST; do
-			run_trial "$round" "$count" "$ballast"
+	for start in $START_LIST; do
+		for count in $COUNT_LIST; do
+			for ballast in $BALLAST_LIST; do
+				run_trial "$round" "$count" "$ballast" "$start"
+			done
 		done
 	done
 done
@@ -514,4 +561,8 @@ if [ "$FAILURES" -gt 0 ]; then
 	exit 1
 fi
 say ""
-say "ANE コンパイル失敗は観測されませんでした（全 $DONE 試行）。"
+if [ "$COMPILED" = 0 ]; then
+	say "ANE コンパイルが 1 度も走らなかったので、失敗の有無は分かりません（全 $DONE 試行）。"
+	exit 3
+fi
+say "ANE コンパイル失敗は観測されませんでした（ANE コンパイルが走った試行 $COMPILED / 全 $DONE）。"

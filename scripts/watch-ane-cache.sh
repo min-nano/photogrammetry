@@ -27,6 +27,9 @@
 #   --out FILE      TSV の書き出し先（既定 ~/ane-watch-<日時>.tsv）
 #   --cache DIR     見るキャッシュ（複数指定可。既定は下記 2 つ + 見つけたもの）
 #   --once          1 回だけ見て終わる（いまの状態を確かめたいとき）
+#   --dump          キャッシュの中の階層をそのまま出して終わる。**判定を疑う
+#                   ときはこれ**（不完全の見分けは manifest.plist の在処に
+#                   依存していて、置かれ方が違えば判定ごと嘘になる）
 #
 # 既定で見る場所:
 #   ~/Library/Caches/com.minnano.photogrammetry/com.apple.e5rt.e5bundlecache  ← アプリ
@@ -42,6 +45,7 @@ set -u
 INTERVAL=3
 OUT=""
 ONCE=0
+DUMP=0
 CACHES=""
 
 while [ $# -gt 0 ]; do
@@ -50,6 +54,7 @@ while [ $# -gt 0 ]; do
 		--out) OUT="${2:-}"; shift 2 ;;
 		--cache) CACHES="$CACHES ${2:-}"; shift 2 ;;
 		--once) ONCE=1; shift ;;
+		--dump) DUMP=1; shift ;;
 		-h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*) echo "不明な引数: $1" >&2; exit 2 ;;
 	esac
@@ -82,6 +87,18 @@ echo ""
 echo "状態が変わったときだけ画面に出ます（Ctrl-C で終了）。"
 echo ""
 
+if [ "$DUMP" = 1 ]; then
+	for cache in $CACHES; do
+		[ -d "$cache" ] || continue
+		echo "=== $cache"
+		find "$cache" -maxdepth 4 2>/dev/null | head -60 | sed "s|^$cache|  .|"
+		echo "  manifest.plist の在処:"
+		find "$cache" -name manifest.plist 2>/dev/null | head -10 | sed "s|^$cache|    .|"
+		echo ""
+	done
+	exit 0
+fi
+
 if [ ! -f "$OUT" ]; then
 	printf 'time\tcache\tbundles\tincomplete\tsize_kb\tcompiler\taned_cpu\tanalysis_cpu\toc_procs\tfree_disk_mb\tfree_mem_mb\tswap_mb\tpressure\n' > "$OUT"
 fi
@@ -95,7 +112,7 @@ fi
 # 実行体は毎回同じところで落ちる（ModelCache のコメント参照）。
 
 inspect_cache() {
-	local dir="$1" bundles=0 incomplete=0 size=0 sub
+	local dir="$1" bundles=0 incomplete=0 size=0 sub sub_size
 	if [ ! -d "$dir" ]; then
 		echo "0	0	0"
 		return
@@ -103,7 +120,17 @@ inspect_cache() {
 	for sub in "$dir"/*; do
 		[ -d "$sub" ] || continue
 		bundles=$(( bundles + 1 ))
-		if [ -z "$(find "$sub" -maxdepth 3 -name manifest.plist -print -quit 2>/dev/null)" ]; then
+		# **中身のあるバンドルだけを「不完全かどうか」の対象にする。**
+		# 最初の実測で、OS 側のキャッシュ（Spotlight・remindd・duetexpertd …）が
+		# 軒並み incomplete=1 と出た。空のディレクトリだけが置かれている状態を
+		# 「壊れている」と数えていたためで、これでは本物の故障が埋もれる。
+		# サイズ 0 は「まだ何も入っていない」のであって、壊れてはいない。
+		sub_size="$( { du -sk "$sub" 2>/dev/null || true; } | awk '{print $1}')"
+		[ -n "$sub_size" ] || sub_size=0
+		[ "$sub_size" -gt 0 ] || continue
+		# 深さを決め打ちしない（バンドルの階層は E5RT の都合で決まる。
+		# maxdepth 3 では届かない置かれ方が実際にありうる）。
+		if [ -z "$(find "$sub" -name manifest.plist -print -quit 2>/dev/null)" ]; then
 			incomplete=$(( incomplete + 1 ))
 		fi
 	done
@@ -127,7 +154,11 @@ inspect_cache() {
 probe_processes() {
 	local snapshot compiler aned analysis oc
 	snapshot="$(ps -Ao pcpu,comm 2>/dev/null || true)"
-	compiler="$(echo "$snapshot" | grep -c 'ANECompilerService' || true)"
+	# **存在では見ない。** 最初の実測で ANECompilerService は常駐していて、
+	# 何もコンパイルしていない間もずっと 1 のままだった。動いているかどうかは
+	# CPU で見るしかない。
+	compiler="$(echo "$snapshot" \
+		| awk '/ANECompilerService/ {sum += $1} END {printf "%.1f", sum + 0}')"
 	aned="$(echo "$snapshot" | awk '/aned$/ {sum += $1} END {printf "%.1f", sum + 0}')"
 	analysis="$(echo "$snapshot" \
 		| awk '/mediaanalysisd|photoanalysisd|photolibraryd/ {sum += $1} END {printf "%.1f", sum + 0}')"
@@ -165,7 +196,7 @@ previous_state_of() {
 }
 
 first_pass=1
-compiler_was=0
+compiler_was="0.0"
 
 while :; do
 	stamp="$(date '+%Y-%m-%dT%H:%M:%S')"
@@ -221,8 +252,8 @@ while :; do
 
 	# コンパイラの起動・終了も出す（どの操作のときにコンパイルが走るのかが
 	# 分かると、「枚数」ではなく「設定の組み合わせ」が引き金かどうかを言える）。
-	if [ "$compiler" != "$compiler_was" ]; then
-		if [ "$compiler" -gt 0 ]; then
+	if [ "${compiler%%.*}" != "${compiler_was%%.*}" ]; then
+		if [ "${compiler%%.*}" -gt 0 ]; then
 			say_event "ANECompilerService が動き出しました（コンパイル中）"
 		else
 			say_event "ANECompilerService が終わりました"

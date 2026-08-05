@@ -64,7 +64,9 @@
 //  シグナル死（abort）は driver 側が 128+N で見分ける。
 //
 
+import CoreGraphics
 import Foundation
+import ImageIO
 import RealityKit
 
 // ---------------------------------------------------------------------
@@ -83,8 +85,19 @@ var start = 0
 var modeName = "poses"
 var detailName = "reduced"
 var orderingName = "unordered"
-var sensitivityName = "normal"
+// **既定を high にしてある。** この道具の目的は位置合わせの品質を測ることでは
+// なく、**ANE モデルのコンパイルが走るところまで到達すること**。normal で
+// error 6 になる窓は imageAlignment で終わるので、ANE の問いに一切触れずに
+// 終わる（実測で 12 試行すべてがこれだった）。high は特徴の少ない面から特徴を
+// 拾うので、死んでいた区間が生き返る（design-loose-clustering §6.2）。
+var sensitivityName = "high"
 var subjectName = "scene"
+/// 窓の一覧ファイル（`--window-file`）。1 行 1 パスで、**その順序がそのまま
+/// Object Capture へ渡す並び**になる。measure-ordering が書き出した「通る窓」を
+/// そのまま投げれば、ANE の段階まで確実に届く。
+var windowFile = ""
+/// iCloud の未ダウンロードをまとめて落としてから進む（`--download`）。
+var downloadFirst = false
 var timeoutSeconds: TimeInterval = 1800
 var ballastGigabytes = 0
 var selftestOnly = false
@@ -125,6 +138,10 @@ while !arguments.isEmpty
 			ballastGigabytes = Int(value()) ?? 0
 		case "--purge-cache":
 			purgeCache = true
+		case "--window-file":
+			windowFile = value()
+		case "--download":
+			downloadFirst = true
 		case "--selftest":
 			selftestOnly = true
 		case "-h", "--help":
@@ -132,7 +149,7 @@ while !arguments.isEmpty
 				+ "[--mode poses|model] [--detail reduced] "
 				+ "[--ordering unordered|sequential] [--sensitivity normal|high] "
 				+ "[--subject scene|object] [--timeout 1800] [--purge-cache] "
-				+ "[--ballast GiB] [--selftest]")
+				+ "[--window-file FILE] [--download] [--ballast GiB] [--selftest]")
 			exit(0)
 		default:
 			if argument.hasPrefix("-") || inputPath != nil
@@ -252,7 +269,7 @@ else
 	// **ここで止める。** 対応していないマシンで測っても、出るのは常に同じ
 	// 「非対応」で、ANE の話は 1 ミリも進まない。
 	emit("RESULT count=0 elapsed=0 peak_bytes=0 peak_stage=- posed=0 total=0 "
-		+ "outcome=unsupported")
+		+ "invalid=0 skipped=0 unreadable=0 cache_bundles=0 outcome=unsupported")
 	log("このマシンでは Object Capture が使えません（PhotogrammetrySession.isSupported == false）")
 	exit(3)
 }
@@ -277,26 +294,148 @@ if purgeCache, let modelCacheDirectory
 let root = URL(fileURLWithPath: inputPath, isDirectory: true).standardizedFileURL
 let photoExtensions: Set<String> = ["jpg", "jpeg", "heic", "heif", "png", "tif", "tiff", "dng"]
 
-/// 写真の一覧。**ファイル名順**に並べる。EXIF を読まないのは、ここで要るのが
-/// 「毎回同じ部分集合が取れること」だけだから（カメラのファイル名は撮影順に
-/// 増えるので、撮影順の近似としても十分）。並びの是非は measure-poses の側の話。
-let allPhotos: [URL] =
+/// EXIF の撮影時刻。**ファイル名順ではなく撮影順で切る。** 名前順で切った窓は
+/// 12 試行すべてが error 6 になり、ANE の段階へ 1 度も到達しなかった
+/// （複数の機材・改名が混ざると名前順は撮影順にならない）。窓が空間的に
+/// 連続していないと位置合わせは繋がらないので、ここは撮影時刻で並べる。
+func captureDate(of url: URL) -> Date?
+{
+	guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+		let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+		let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any],
+		let text = exif[kCGImagePropertyExifDateTimeOriginal] as? String
+	else
+	{
+		return nil
+	}
+	let formatter = DateFormatter()
+	formatter.locale = Locale(identifier: "en_US_POSIX")
+	formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+	formatter.timeZone = TimeZone.current
+	return formatter.date(from: text)
+}
+
+/// 画像として開けるか。**開けない写真は error 6 の最有力容疑**なので、
+/// 投げる前に数えておく（iCloud のプレースホルダ・壊れたファイル）。
+func isReadableImage(_ url: URL) -> Bool
+{
+	guard let source = CGImageSourceCreateWithURL(url as CFURL, nil)
+	else
+	{
+		return false
+	}
+	return CGImageSourceGetCount(source) > 0
+}
+
+/// iCloud にまだ実体が無いもの。読むと 1 枚ずつダウンロードが走って
+/// 「止まったように見える」ので、先に数えて言う（measure-poses と同じ方針）。
+func isMaterialized(_ url: URL) -> Bool
+{
+	guard let values = try? url.resourceValues(
+		forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]),
+		values.isUbiquitousItem == true
+	else
+	{
+		return true
+	}
+	switch values.ubiquitousItemDownloadingStatus
+	{
+		case .some(.current), .some(.downloaded): return true
+		default: return false
+	}
+}
+
+let window: [URL]
+if !windowFile.isEmpty
+{
+	// 窓の一覧をそのまま使う（並びも一覧の順序のまま）。**通ることが分かって
+	// いる窓を投げるのがいちばん確実に ANE の段階まで届く道。**
+	let text = (try? String(contentsOfFile: windowFile, encoding: .utf8)) ?? ""
+	let paths = text.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+	guard !paths.isEmpty
+	else
+	{
+		fail("窓の一覧が空です: \(windowFile)")
+	}
+	window = paths.map { URL(fileURLWithPath: $0) }
+	count = window.count
+}
+else
 {
 	let keys: [URLResourceKey] = [.isRegularFileKey]
 	let enumerated = (try? FileManager.default.contentsOfDirectory(
 		at: root, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
-	return enumerated
-		.filter { photoExtensions.contains($0.pathExtension.lowercased()) }
-		.sorted { $0.lastPathComponent < $1.lastPathComponent }
-}()
+	let candidates = enumerated.filter { photoExtensions.contains($0.pathExtension.lowercased()) }
 
-guard allPhotos.count >= start + count
-else
-{
-	fail("写真が足りません（見つかった \(allPhotos.count) 枚、要求 start=\(start) count=\(count)）")
+	let pending = candidates.filter { !isMaterialized($0) }
+	if !pending.isEmpty
+	{
+		guard downloadFirst
+		else
+		{
+			log("iCloud にまだ実体の無い写真が \(pending.count)/\(candidates.count) 枚あります。"
+				+ "このまま読むと 1 枚ずつダウンロードが走って止まったように見えます。"
+				+ "--download を付けるか、Finder で「今すぐダウンロード」してください。")
+			emit("RESULT count=0 elapsed=0 peak_bytes=0 peak_stage=- posed=0 total=0 "
+				+ "invalid=0 skipped=0 unreadable=\(pending.count) cache_bundles=0 "
+				+ "outcome=icloud-not-downloaded")
+			exit(3)
+		}
+		log("iCloud からのダウンロードを開始します（\(pending.count) 枚）")
+		for url in pending
+		{
+			try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+		}
+		var remaining = pending
+		while !remaining.isEmpty
+		{
+			Thread.sleep(forTimeInterval: 2)
+			remaining = remaining.filter { !isMaterialized($0) }
+		}
+		log("ダウンロード完了")
+	}
+
+	// 撮影順に並べる。EXIF の無いものは名前順で後ろへ回す（混ぜて並びを
+	// 壊すより、順序の分かるものだけで窓を作るほうが安全）。
+	let dated = candidates.map { (url: $0, date: captureDate(of: $0)) }
+	let ordered = dated.sorted
+	{ left, right in
+		switch (left.date, right.date)
+		{
+			case (.some(let a), .some(let b)): return a == b
+				? left.url.lastPathComponent < right.url.lastPathComponent : a < b
+			case (.some, .none): return true
+			case (.none, .some): return false
+			case (.none, .none): return left.url.lastPathComponent < right.url.lastPathComponent
+		}
+	}.map(\.url)
+	let withoutDate = dated.filter { $0.date == nil }.count
+	if withoutDate > 0
+	{
+		log("EXIF の撮影時刻が読めない写真が \(withoutDate)/\(candidates.count) 枚あります"
+			+ "（名前順で後ろへ回しました）")
+	}
+
+	guard ordered.count >= start + count
+	else
+	{
+		fail("写真が足りません（見つかった \(ordered.count) 枚、要求 start=\(start) count=\(count)）")
+	}
+	window = Array(ordered.dropFirst(start).prefix(count))
 }
 
-let window = Array(allPhotos.dropFirst(start).prefix(count))
+// **開けない写真を先に数える。** error 6 が「窓が繋がらない」なのか
+// 「そもそも画像が読めていない」なのかは、これが無いと区別できない。
+let unreadable = window.filter { !isReadableImage($0) }.count
+if unreadable > 0
+{
+	log("画像として開けない写真が \(unreadable)/\(window.count) 枚あります")
+}
+
+/// セッションが「使えない」と言った枚数（`.invalidSample`）と、位置合わせから
+/// 外した枚数（`.skippedSample`）。error 6 の中身を説明できる唯一の材料。
+var invalidSamples = 0
+var skippedSamples = 0
 
 /// 投げるフォルダ。ハードリンク（同一ボリューム外ならコピー）で作る
 /// — **写真を二重に持たない**ため（数百枚のコピーはそれ自体がディスクを食う）。
@@ -453,9 +592,28 @@ func resultLine(
 		.replacingOccurrences(of: " ", with: "_")
 		.replacingOccurrences(of: "\t", with: "_")
 		.replacingOccurrences(of: "\n", with: "_")
+	// **ANE キャッシュに何か出来たかを必ず一緒に出す。** これが 0 のままなら、
+	// その試行は ANE コンパイルを 1 度も走らせていない＝ ANE の問いに対して
+	// 無効な試行である。実測で 12 試行すべてがこれだったのに、RESULT 行だけを
+	// 見ていては気付けなかった。
 	return String(format: "RESULT count=%d elapsed=%.1f peak_bytes=%llu peak_stage=%@ "
-		+ "posed=%d total=%d outcome=%@",
-		count, elapsed, peak, peakStage, posed, count, String(flattened.prefix(120)))
+		+ "posed=%d total=%d invalid=%d skipped=%d unreadable=%d cache_bundles=%d outcome=%@",
+		count, elapsed, peak, peakStage, posed, count,
+		invalidSamples, skippedSamples, unreadable, cacheBundleCount(),
+		String(flattened.prefix(120)))
+}
+
+/// ANE キャッシュの中にバンドルがいくつ出来たか。
+func cacheBundleCount() -> Int
+{
+	guard let modelCacheDirectory,
+		let entries = try? FileManager.default.contentsOfDirectory(
+			atPath: modelCacheDirectory.path)
+	else
+	{
+		return 0
+	}
+	return entries.count
 }
 
 Task
@@ -474,6 +632,9 @@ Task
 	var posed = 0
 	var outcome = "ok"
 
+	// 投げた写真をセッションがどう見たか。**error 6 の切り分けに要る**
+	// （繋がらなかったのか、そもそも使える写真が無かったのか）。
+
 	do
 	{
 		let session = try PhotogrammetrySession(input: windowFolder, configuration: configuration)
@@ -484,8 +645,8 @@ Task
 			// 一晩で 1 件も測れないので、猶予を置いて自分で降りる。
 			// driver は終了コード 4 を「時間切れ」として記録する。
 			Thread.sleep(forTimeInterval: 30)
-			emit("RESULT count=\(count) elapsed=\(Int(Date().timeIntervalSince(began))) "
-				+ "peak_bytes=0 peak_stage=- posed=0 total=\(count) outcome=timeout")
+			emit(resultLine(elapsed: Date().timeIntervalSince(began),
+				peak: 0, peakStage: "-", posed: 0, outcome: "timeout"))
 			exit(4)
 		}
 
@@ -521,6 +682,10 @@ Task
 					{
 						monitor.update(stage: stageName(stage))
 					}
+				case .skippedSample:
+					skippedSamples += 1
+				case .invalidSample:
+					invalidSamples += 1
 				case .requestComplete(_, let result):
 					if #available(macOS 14.0, *), case .poses(let poses) = result
 					{
