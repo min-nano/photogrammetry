@@ -34,32 +34,10 @@ public enum SortLayout
 	}
 }
 
-/// 仕分けの中断フラグ。数千枚のデコードは数分かかることがあるので、フォルダを
-/// 選び間違えたときに待たされないための逃げ道を用意する。
-///
-/// 生成（`PhotogrammetryEngine.cancel`）と違ってセッションを持たないため、
-/// 「各段の切れ目で見る真偽値」で足りる。スレッドを跨ぐのでロックで守る。
-public final class SortCancellation: @unchecked Sendable
-{
-	private let lock = NSLock()
-	private var cancelled = false
-
-	public init() {}
-
-	public func cancel()
-	{
-		lock.lock()
-		cancelled = true
-		lock.unlock()
-	}
-
-	public var isCancelled: Bool
-	{
-		lock.lock()
-		defer { lock.unlock() }
-		return cancelled
-	}
-}
+// 仕分けの中断フラグ（`SortCancellation`）は CancellationFlag.swift にある。
+// 数千枚のデコードは数分かかることがあるので、フォルダを選び間違えたときに
+// 待たされないための逃げ道を用意してある。ローカルへのコピー（InputStaging）も
+// 同じ仕組みを使う。
 
 public struct PhotoSorter: Sendable
 {

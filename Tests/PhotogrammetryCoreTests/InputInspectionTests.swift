@@ -60,7 +60,16 @@ final class InputInspectionTests: XCTestCase
 	func testIsCloudStoragePath()
 	{
 		XCTAssertTrue(InputInspection.isCloudStoragePath(
-			"/Users/me/Library/Mobile Documents/com~apple~CloudDocs/Downloads/photos"))
+			"/Users/me/Library/Mobile Documents/com~apple~CloudDocs/現場"))
+		// File Provider 方式のクラウド（Google ドライブ・Dropbox・OneDrive）は
+		// ~/Library/CloudStorage/ の下に置かれる。旧 Google ドライブは仮想ボリューム。
+		XCTAssertTrue(InputInspection.isCloudStoragePath(
+			"/Users/me/Library/CloudStorage/GoogleDrive-me@example.com/マイドライブ/現場"))
+		XCTAssertTrue(InputInspection.isCloudStoragePath(
+			"/Users/me/Library/CloudStorage/Dropbox/現場"))
+		XCTAssertTrue(InputInspection.isCloudStoragePath("/Volumes/GoogleDrive/マイドライブ/現場"))
+		// 名前で推測しない（自分で付けたフォルダ名を誤判定しないため）。
+		XCTAssertFalse(InputInspection.isCloudStoragePath("/Users/me/Dropbox/現場"))
 		XCTAssertFalse(InputInspection.isCloudStoragePath("/Users/me/Pictures/photos"))
 	}
 

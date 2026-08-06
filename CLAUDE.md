@@ -30,7 +30,9 @@ Sources/
     HelperProcessEngine    生成を別プロセス（photogrammetry-cli）で実行する
     HelperProtocol         ヘルパーの stdout 行の書式（CLI ↔ GUI の対）
     InputInspection        入力フォルダの事前チェック（純ロジック）
+    InputStaging           写真をアプリのキャッシュへ複製 → 処理後に破棄
     ModelCache             ML モデルのキャッシュ破損の見分け・場所・削除
+    CancellationFlag       中断フラグ（仕分け・複製で共用。別名 SortCancellation）
     Preprocess/            大量の写真の仕分け（sort。docs/design-preprocess-merge.md）
       PhotoMetadata        写真 1 枚分の事実（値型・Sendable）
       PhotoInspector       ImageIO / CoreGraphics を叩く唯一の層  ← ラッパー
@@ -69,6 +71,18 @@ Sources/
   使わない（ImageIO / CoreGraphics のみ）。GUI からは同一プロセスで実行する。
   ただし数千枚のデコードは数分かかるので、中断（`SortCancellation`）は用意する
   — GUI に「キャンセル」を出す以上、効かないボタンにはしない。
+- **入力写真の複製（`InputStaging`）は「実際に写真を読むプロセス」で行う。**
+  生成の入力はクラウド同期領域（iCloud Drive など）に置かれていることがあり、
+  実体が未ダウンロードだったり処理中に退避されたりして読めなくなる。既定
+  （`stageInputLocally = true`）ではキャッシュへ複製してから処理し、終わったら
+  捨てる。**入力がクラウド同期領域にあるときは複製が必須**で、`stageInputLocally
+  = false` は無視する（`InputStaging.isRequired` / `InputInspection.
+  cloudStorageMarkers`）。GUI はこの判断を映してチェックを ON 固定にするだけで、
+  判断そのものを持たない。複製を行うのは GUI ではなくヘルパー（`photogrammetry-cli`）側で、
+  GUI からの指示は `APICommand` の `--no-stage-input` に乗って伝わる。同一
+  プロセス実行のときだけ `ReconstructionService` が同じ複製を行う（実行方式で
+  振る舞いを変えないため）。`abort()` で後始末が飛んだときのために、次回の
+  複製開始時に古い残骸を掃除する。
 - **Core に機能を足したら GUI の入口も同時に足す。** ライブラリ / CLI / URL
   スキームが GUI と同じ機能に届くことを保証する設計なので、逆に GUI だけ届かない
   機能があってもいけない（`sort` は GUI 上部のモード切り替えから実行できる）。

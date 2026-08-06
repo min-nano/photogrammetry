@@ -12,6 +12,10 @@
 import Foundation
 import RealityKit
 
+/// 生成エンジンの差し替え口（定義は ReconstructionService.swift）。実体はこの
+/// クラスで、テストの偽物と同じ形に揃えておく。
+extension PhotogrammetryEngine: ReconstructionEngine {}
+
 public final class PhotogrammetryEngine
 {
 	/// 処理中にフロントエンドへ流す進捗イベント。別プロセス実行
