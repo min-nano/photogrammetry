@@ -203,17 +203,28 @@ struct ContentView: View
 			.padding(4)
 		}
 
-		// クラウド（iCloud Drive など）に置いたままの写真は、実体が未ダウンロード
-		// だったり処理中に退避されたりして読めなくなる。既定で ON にしてあるので、
-		// ここは「切りたい人のための逃げ道」として置いている。
+		// クラウド（iCloud Drive・Google ドライブなど）に置いたままの写真は、処理中に
+		// 実体が退避されると読めなくなる。ローカルの入力では「切りたい人のための
+		// 逃げ道」として選べるが、クラウド上の入力では ON 固定にする（判断は Core の
+		// InputStaging.isRequired が持ち、ここは映すだけ）。
 		GroupBox("写真の扱い")
 		{
 			VStack(alignment: .leading, spacing: 4)
 			{
 				Toggle(
 					"写真をローカル（アプリのキャッシュ）へコピーしてから処理する",
-					isOn: $model.stageInputLocally)
-				Text("iCloud Drive などクラウド上の写真でも確実に読めます。"
+					isOn: Binding(
+						get: { model.stageInputLocallyEffective },
+						set: { model.stageInputLocally = $0 }))
+					.disabled(model.mustStageInput)
+				if model.mustStageInput
+				{
+					Text("入力フォルダはクラウド上（iCloud Drive・Google ドライブなど）に"
+						+ "あるため、コピーは必須です。")
+						.font(.caption)
+						.foregroundColor(.secondary)
+				}
+				Text("クラウド上の写真でも確実に読めます。"
 					+ "コピーは処理が終わると自動的に削除されます。")
 					.font(.caption)
 					.foregroundColor(.secondary)

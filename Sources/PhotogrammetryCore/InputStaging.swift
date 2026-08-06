@@ -348,8 +348,27 @@ public enum InputStaging
 		return removed
 	}
 
+	/// この入力では複製が**必須**か。
+	///
+	/// クラウド同期領域（iCloud Drive・Google ドライブなど）に置かれた写真は、
+	/// 処理中に実体を退避されると読めなくなる。生成は数時間かかるので、その間
+	/// 実体が残っている保証は無い。したがって**利用者の指定に関わらず**ローカルへ
+	/// 写してから処理する（「コピーしない」を選べるのはローカルの入力だけ）。
+	public static func isRequired(for inputFolder: URL) -> Bool
+	{
+		InputInspection.isCloudStoragePath(inputFolder.standardizedFileURL.path)
+	}
+
+	/// 複製を必須にした理由。指定を覆す以上、黙って振る舞いを変えない。
+	public static let requiredNote =
+		"入力フォルダはクラウド同期領域にあります。処理中に写真の実体が退避されると"
+		+ "読み取りに失敗するため、「コピーしない」指定を無視してローカルへ複製します。"
+
 	/// リクエストが複製を望んでいれば複製する（望んでいなければ nil）。クロージャを
 	/// 使えない呼び出し側（`ReconstructionService` の同一プロセス経路）の入口。
+	///
+	/// クラウド上の入力だけは指定を覆して必ず複製する（`isRequired`）。判断を
+	/// ここに置くのは、GUI・CLI・URL スキームのどこから来ても同じ結論にするため。
 	public static func stageIfRequested(
 		_ request: ReconstructionRequest,
 		root: URL,
@@ -357,10 +376,15 @@ public enum InputStaging
 		cancellation: CancellationFlag? = nil,
 		onEvent: (ReconstructionEvent) -> Void = { _ in }) throws -> Staged?
 	{
-		guard request.stageInputLocally
+		let required = isRequired(for: request.inputFolder)
+		guard request.stageInputLocally || required
 		else
 		{
 			return nil
+		}
+		if !request.stageInputLocally
+		{
+			onEvent(.note(requiredNote))
 		}
 		return try stage(
 			request,

@@ -334,6 +334,78 @@ final class InputStagingTests: XCTestCase
 		InputStaging.discard(staged)
 	}
 
+	// -----------------------------------------------------------------
+	// クラウド上の入力では複製が必須
+	//
+	// 処理中に実体を退避されると読めなくなるので、「コピーしない」指定は通さない。
+	// ローカルの入力でだけ選べる、という非対称がこの機能の要点。
+	// -----------------------------------------------------------------
+
+	func testIsRequiredOnlyForCloudFolders()
+	{
+		XCTAssertTrue(InputStaging.isRequired(for: URL(
+			fileURLWithPath: "/Users/me/Library/CloudStorage/GoogleDrive-me/現場",
+			isDirectory: true)))
+		XCTAssertTrue(InputStaging.isRequired(for: URL(
+			fileURLWithPath: "/Users/me/Library/Mobile Documents/com~apple~CloudDocs/現場",
+			isDirectory: true)))
+		XCTAssertFalse(InputStaging.isRequired(for: URL(
+			fileURLWithPath: "/Users/me/Pictures/現場", isDirectory: true)))
+	}
+
+	func testStageIfRequestedOverridesOptOutForCloudFolders() throws
+	{
+		// クラウドのパスを再現する（判定はパスだけを見る純ロジック）。
+		let cloudFolder = workDir
+			.appendingPathComponent("Library/CloudStorage/GoogleDrive-me/現場", isDirectory: true)
+		try FileManager.default.createDirectory(at: cloudFolder, withIntermediateDirectories: true)
+		try Data(repeating: 0x41, count: 8)
+			.write(to: cloudFolder.appendingPathComponent("a.HEIC"))
+
+		var request = self.request()
+		request.inputFolder = cloudFolder
+		request.stageInputLocally = false
+
+		var notes: [String] = []
+		let staged = try XCTUnwrap(InputStaging.stageIfRequested(
+			request,
+			root: cacheRoot,
+			onEvent:
+			{ event in
+				if case .note(let message) = event
+				{
+					notes.append(message)
+				}
+			}))
+
+		// 指定を覆した以上、理由を必ず知らせる。
+		XCTAssertTrue(notes.contains(InputStaging.requiredNote), "\(notes)")
+		XCTAssertEqual(
+			try FileManager.default.contentsOfDirectory(atPath: staged.directory.path),
+			["a.HEIC"])
+		InputStaging.discard(staged)
+	}
+
+	func testWithStagedInputAlsoOverridesOptOutForCloudFolders() async throws
+	{
+		// CLI（--no-stage-input）から来ても結論は同じであること。
+		let cloudFolder = workDir
+			.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs/現場",
+				isDirectory: true)
+		try FileManager.default.createDirectory(at: cloudFolder, withIntermediateDirectories: true)
+		try Data(repeating: 0x41, count: 8)
+			.write(to: cloudFolder.appendingPathComponent("a.HEIC"))
+
+		var request = self.request()
+		request.inputFolder = cloudFolder
+		request.stageInputLocally = false
+
+		try await InputStaging.withStagedInput(request, root: cacheRoot, body:
+		{ staged in
+			XCTAssertNotEqual(staged.inputFolder, cloudFolder)
+		})
+	}
+
 	func testDiscardIgnoresNothingToDo()
 	{
 		// 複製を作らなかった（写すものが無かった）ときも呼ばれる経路。

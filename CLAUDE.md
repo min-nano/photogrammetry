@@ -75,7 +75,10 @@ Sources/
   生成の入力はクラウド同期領域（iCloud Drive など）に置かれていることがあり、
   実体が未ダウンロードだったり処理中に退避されたりして読めなくなる。既定
   （`stageInputLocally = true`）ではキャッシュへ複製してから処理し、終わったら
-  捨てる。複製を行うのは GUI ではなくヘルパー（`photogrammetry-cli`）側で、
+  捨てる。**入力がクラウド同期領域にあるときは複製が必須**で、`stageInputLocally
+  = false` は無視する（`InputStaging.isRequired` / `InputInspection.
+  cloudStorageMarkers`）。GUI はこの判断を映してチェックを ON 固定にするだけで、
+  判断そのものを持たない。複製を行うのは GUI ではなくヘルパー（`photogrammetry-cli`）側で、
   GUI からの指示は `APICommand` の `--no-stage-input` に乗って伝わる。同一
   プロセス実行のときだけ `ReconstructionService` が同じ複製を行う（実行方式で
   振る舞いを変えないため）。`abort()` で後始末が飛んだときのために、次回の

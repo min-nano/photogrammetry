@@ -46,7 +46,8 @@ final class ReconstructionViewModel: ObservableObject
 	@Published var featureSensitivity: ReconstructionRequest.FeatureSensitivity = .normal
 	@Published var subject: ReconstructionRequest.SubjectKind = .object
 	/// 写真をアプリのキャッシュへコピーしてから処理するか。既定は ON
-	/// （既定値は ReconstructionRequest と揃える）。
+	/// （既定値は ReconstructionRequest と揃える）。クラウド上の入力では
+	/// この指定に関わらず複製される（mustStageInput 参照）。
 	@Published var stageInputLocally = true
 
 	// 仕分け（sort）のフォーム。既定値は SortRequest と揃える（食い違うと
@@ -89,6 +90,24 @@ final class ReconstructionViewModel: ObservableObject
 	var progressDetailText: String?
 	{
 		ProcessingStage.progressText(stage: processingStage, remaining: estimatedRemainingTime)
+	}
+
+	/// 選んだ入力では複製が必須か（クラウド同期領域にある）。判断は Core が持ち、
+	/// 画面はチェックを ON 固定にして触れなくするだけ。
+	var mustStageInput: Bool
+	{
+		guard let inputFolder
+		else
+		{
+			return false
+		}
+		return InputStaging.isRequired(for: inputFolder)
+	}
+
+	/// 実際に使う指定。必須なら利用者の指定に関わらず true。
+	var stageInputLocallyEffective: Bool
+	{
+		mustStageInput || stageInputLocally
 	}
 
 	var canStart: Bool
@@ -179,7 +198,7 @@ final class ReconstructionViewModel: ObservableObject
 			sampleOrdering: sampleOrdering,
 			featureSensitivity: featureSensitivity,
 			subject: subject,
-			stageInputLocally: stageInputLocally))
+			stageInputLocally: stageInputLocallyEffective))
 	}
 
 	/// フォームの内容で仕分けを実行する。組み立てるのは SortRequest 1 つだけで、
