@@ -44,11 +44,27 @@ public enum InputInspection
 	/// いない写真がある」ことが分かる。
 	public static let placeholderExtension = "icloud"
 
-	/// パスがクラウド同期領域（iCloud Drive）かどうか。iCloud Drive の実体は
-	/// `~/Library/Mobile Documents/com~apple~CloudDocs/…` に置かれる。
+	/// クラウド同期領域を示すパスの断片。macOS ではクラウドの実体の置き場所が
+	/// 決まっているので、名前の推測（"Dropbox" というフォルダ名など）ではなく
+	/// この場所で判定する（利用者が自分で付けたフォルダ名を誤判定しないため）。
+	///
+	///   - `~/Library/Mobile Documents/…`     iCloud Drive
+	///   - `~/Library/CloudStorage/…`         File Provider 方式のクラウド
+	///                                        （Google ドライブ・Dropbox・
+	///                                        OneDrive・Box など）
+	///   - `/Volumes/GoogleDrive/…`           旧 Google ドライブ（仮想ボリューム）
+	public static let cloudStorageMarkers = [
+		"/Library/Mobile Documents/",
+		"/Library/CloudStorage/",
+		"/Volumes/GoogleDrive/",
+	]
+
+	/// パスがクラウド同期領域かどうか。ここが true の入力は、処理中に実体が
+	/// 退避されて読めなくなりうるので、写真のローカルへの複製（InputStaging）を
+	/// **必須**にする。
 	public static func isCloudStoragePath(_ path: String) -> Bool
 	{
-		path.contains("/Library/Mobile Documents/")
+		cloudStorageMarkers.contains { path.contains($0) }
 	}
 
 	/// 入力フォルダを走査して Summary を作る（ファイルシステムを見るのはここだけ）。
@@ -120,9 +136,9 @@ public enum InputInspection
 		else if summary.isCloudStorage
 		{
 			notes.append(
-				"注意: 入力フォルダは iCloud Drive 上にあります。処理中にファイルの実体が"
-					+ "退避されると読み取りに失敗するため、ローカル（例: ~/Pictures）へ"
-					+ "コピーしてから実行するのが確実です。")
+				"注意: 入力フォルダはクラウド同期領域（iCloud Drive・Google ドライブなど）に"
+					+ "あります。処理中にファイルの実体が退避されると読み取りに失敗するため、"
+					+ "写真はローカルへ複製してから処理します。")
 		}
 
 		return notes
