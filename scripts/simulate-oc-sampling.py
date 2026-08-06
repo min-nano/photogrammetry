@@ -15,7 +15,8 @@ docs/design-oc-only-sampling.md の数表はすべてこのスクリプトが生
     最大の連結断片 L について
       - |L| < minPhotos なら失敗
       - absolute 判定: |L| >= q * |S| なら L を返す。さもなくば失敗（= error 6）
-      - relative 判定: |L| >= 2 * |2 番目| なら L を返す（q 仮説の対抗馬）
+      - relative 判定: |L| >= 2 * |2 番目| なら L を返す（対抗馬 1）
+      - count    判定: minPhotos を超えていれば返す（対抗馬 2・比率を問わない）
     返すのは常に **1 つだけ**（OC は複数モデルを同時に出せない）。
 
 使い方:
@@ -93,7 +94,10 @@ def oracle(S, valid, k, q, min_photos, mode):
 	if len(best) < min_photos:
 		return None
 
-	if mode == "absolute":
+	if mode == "count":
+		# 絶対枚数だけ。最大断片が minPhotos に届けば通る（比率を問わない）
+		ok = True
+	elif mode == "absolute":
 		ok = len(best) >= q * len(S)
 	else:
 		second = len(fragments[1][1]) if len(fragments) > 1 else 0
@@ -364,7 +368,9 @@ def main(argv=None):
 		p.add_argument("--components", default=None,
 		               help="成分サイズ '600,400' または成分数 '4'")
 		p.add_argument("--min-photos", type=int, default=20, help="再構成に要る最小枚数")
-		p.add_argument("--oracle", choices=["absolute", "relative"], default="absolute")
+		p.add_argument("--oracle", choices=["absolute", "relative", "count"],
+		               default="absolute",
+		               help="神託の判定。absolute=入力比 q / relative=2 位の 2 倍 / count=絶対枚数のみ")
 		p.add_argument("--trials", type=int, default=200)
 		p.add_argument("--seed", type=int, default=1)
 
