@@ -6,7 +6,7 @@
 //  見ないので、拡張子だけ揃えたダミーで十分）。
 //
 //  ここで固定したいのは 3 つ。
-//    1. 何を写すか（直下の画像だけ。未ダウンロードは実体の名前へ直す）
+//    1. 何を写すか（直下の画像だけ。コピーできない .icloud は数えて警告する）
 //    2. 処理が終わったら必ず捨てること（残ると数 GB を放置することになる）
 //    3. 異常終了で取り残された複製を次回に掃除すること
 //
@@ -53,40 +53,29 @@ final class InputStagingTests: XCTestCase
 	// 何を写すか（純ロジック）
 	// -----------------------------------------------------------------
 
-	func testSelectPicksImagesOnly()
+	func testImageNamesPicksImagesOnly()
 	{
-		let selection = InputStaging.select(names: [
-			"a.HEIC", "b.jpg", "c.PNG", "notes.txt", "manifest.json", ".DS_Store",
-		])
-		XCTAssertEqual(selection.names, ["a.HEIC", "b.jpg", "c.PNG"])
-		XCTAssertTrue(selection.pending.isEmpty)
+		// 「オンラインのみ」のファイルも実名で見えていれば普通の写真として選ぶ
+		// （コピーの読み取りが取り寄せを起こすので、特別扱いは要らない）。
+		XCTAssertEqual(
+			InputStaging.imageNames(in: [
+				"b.jpg", "a.HEIC", "c.PNG", "notes.txt", "manifest.json", ".DS_Store",
+			]),
+			["a.HEIC", "b.jpg", "c.PNG"])
 	}
 
-	func testSelectResolvesICloudPlaceholders()
+	func testPlaceholderCount()
 	{
-		// 実体が未ダウンロードの写真は `.名前.拡張子.icloud` としてしか見えない。
-		// 実体の名前へ直したうえで「ダウンロード待ちが要るもの」として数える。
-		let selection = InputStaging.select(names: [".IMG_0002.HEIC.icloud", "IMG_0001.HEIC"])
-		XCTAssertEqual(selection.names, ["IMG_0001.HEIC", "IMG_0002.HEIC"])
-		XCTAssertEqual(selection.pending, ["IMG_0002.HEIC"])
-	}
-
-	func testSelectIgnoresPlaceholderWhenRealFileIsVisible()
-	{
-		// プレースホルダが消え残っている場合、待つ必要は無い。
-		let selection = InputStaging.select(names: [".IMG_0001.HEIC.icloud", "IMG_0001.HEIC"])
-		XCTAssertEqual(selection.names, ["IMG_0001.HEIC"])
-		XCTAssertTrue(selection.pending.isEmpty)
-	}
-
-	func testPlaceholderRealName()
-	{
-		XCTAssertEqual(InputStaging.placeholderRealName(".a.HEIC.icloud"), "a.HEIC")
-		// 画像でないもの・先頭がドットでないものはプレースホルダとして扱わない。
-		XCTAssertNil(InputStaging.placeholderRealName(".notes.txt.icloud"))
-		XCTAssertNil(InputStaging.placeholderRealName("a.HEIC.icloud"))
-		XCTAssertNil(InputStaging.placeholderRealName(".icloud"))
-		XCTAssertNil(InputStaging.placeholderRealName("a.HEIC"))
+		// 実体が無い旧表現（`.名前.拡張子.icloud`）は実名のパスが存在しないので
+		// コピーできない。数えて警告するためだけに見分ける。
+		XCTAssertEqual(
+			InputStaging.placeholderCount(in: [
+				".IMG_0002.HEIC.icloud", ".IMG_0003.HEIC.icloud", "IMG_0001.HEIC", "notes.txt",
+			]),
+			2)
+		XCTAssertEqual(InputStaging.placeholderCount(in: ["IMG_0001.HEIC"]), 0)
+		// プレースホルダはコピー対象にもならない。
+		XCTAssertEqual(InputStaging.imageNames(in: [".IMG_0002.HEIC.icloud"]), [])
 	}
 
 	func testStagedDirectoryNameKeepsSourceName()
@@ -148,16 +137,15 @@ final class InputStagingTests: XCTestCase
 	func testNotesMentionWhatIsHappening()
 	{
 		let note = InputStaging.startNote(
-			fileCount: 120, pendingCount: 3, destination: URL(fileURLWithPath: "/tmp/staged"))
+			fileCount: 120, destination: URL(fileURLWithPath: "/tmp/staged"))
 		XCTAssertTrue(note.contains("120 枚"))
 		XCTAssertTrue(note.contains("/tmp/staged"))
-		XCTAssertTrue(note.contains("3 枚"))
-		XCTAssertFalse(
-			InputStaging.startNote(
-				fileCount: 5, pendingCount: 0, destination: URL(fileURLWithPath: "/tmp/staged"))
-				.contains("未ダウンロード"))
 		XCTAssertTrue(InputStaging.finishNote(fileCount: 7, byteCount: 2048).contains("7 枚"))
 		XCTAssertTrue(InputStaging.finishNote(fileCount: 7, byteCount: 2048).contains("2.0 KB"))
+		// 外した枚数と直し方（Finder でダウンロード）を必ず出す。
+		let warning = InputStaging.placeholderNote(count: 4)
+		XCTAssertTrue(warning.contains("4 個"))
+		XCTAssertTrue(warning.contains("今すぐダウンロード"))
 	}
 
 	func testIsStale()
@@ -386,57 +374,56 @@ final class InputStagingTests: XCTestCase
 	}
 
 	// -----------------------------------------------------------------
-	// 未ダウンロードの写真（クラウド）
+	// 未ダウンロードの写真（iCloud の旧表現）
 	//
-	// 実体が無い写真は `.名前.拡張子.icloud` としてしか見えない。ダウンロードを
-	// 要求して実体が届くのを待つが、同期が止まっている環境で永久に返らないよう
-	// 上限を設けてある。ここではその上限を短くして両方の結末を確かめる。
+	// `.名前.拡張子.icloud` しか見えない状態では実名のパスが存在せず、コピーも
+	// 取り寄せもできない。黙って枚数を減らすと原因が分からなくなるので、外した
+	// ことを必ず知らせる。
 	// -----------------------------------------------------------------
 
-	func testStageWaitsUntilPlaceholderMaterializes() throws
+	func testStageWarnsAboutPlaceholdersAndCopiesTheRest() throws
 	{
-		try makeFile(".IMG_0001.HEIC.icloud", bytes: 1)
-		// 実体は少し遅れて現れる（ダウンロードが完了した状態を再現する）。
-		DispatchQueue.global().asyncAfter(deadline: .now() + 0.2)
-		{
-			try? Data(repeating: 0x41, count: 8)
-				.write(to: self.inputFolder.appendingPathComponent("IMG_0001.HEIC"))
-		}
+		try makeFile("IMG_0001.HEIC")
+		try makeFile(".IMG_0002.HEIC.icloud", bytes: 1)
 
+		var notes: [String] = []
 		let staged = try XCTUnwrap(InputStaging.stage(
-			request(), root: cacheRoot, downloadTimeout: 10))
-		XCTAssertEqual(staged.fileCount, 1)
-		XCTAssertTrue(FileManager.default.fileExists(
-			atPath: staged.directory.appendingPathComponent("IMG_0001.HEIC").path))
+			request(),
+			root: cacheRoot,
+			onEvent:
+			{ event in
+				if case .note(let message) = event
+				{
+					notes.append(message)
+				}
+			}))
+
+		// 読める写真はコピーされ、プレースホルダは入らない。
+		XCTAssertEqual(
+			try FileManager.default.contentsOfDirectory(atPath: staged.directory.path),
+			["IMG_0001.HEIC"])
+		XCTAssertTrue(notes.contains(InputStaging.placeholderNote(count: 1)), "\(notes)")
 		InputStaging.discard(staged)
 	}
 
-	func testStageGivesUpWhenTheDownloadNeverArrives() throws
+	func testStageWarnsWhenEveryPhotoIsAPlaceholder() throws
 	{
 		try makeFile(".IMG_0001.HEIC.icloud", bytes: 1)
-		XCTAssertThrowsError(
-			try InputStaging.stage(request(), root: cacheRoot, downloadTimeout: 0.3))
-		{ error in
-			XCTAssertEqual(
-				error as? InputStagingError, .downloadTimedOut(name: "IMG_0001.HEIC"))
-		}
-		// 待ちきれずに終わった複製も残さない。
-		XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: cacheRoot.path), [])
-	}
 
-	func testStageStopsWaitingWhenCancelled() throws
-	{
-		try makeFile(".IMG_0001.HEIC.icloud", bytes: 1)
-		let cancellation = CancellationFlag()
-		DispatchQueue.global().asyncAfter(deadline: .now() + 0.2)
-		{
-			cancellation.cancel()
-		}
-		XCTAssertThrowsError(try InputStaging.stage(
-			request(), root: cacheRoot, cancellation: cancellation, downloadTimeout: 30))
-		{ error in
-			XCTAssertEqual(error as? InputStagingError, .cancelled)
-		}
+		var notes: [String] = []
+		// 写せるものが 1 枚も無いので複製は作らない（元のフォルダのまま進み、
+		// 枚数 0 の警告は InputInspection が出す）。
+		XCTAssertNil(try InputStaging.stage(
+			request(),
+			root: cacheRoot,
+			onEvent:
+			{ event in
+				if case .note(let message) = event
+				{
+					notes.append(message)
+				}
+			}))
+		XCTAssertTrue(notes.contains(InputStaging.placeholderNote(count: 1)), "\(notes)")
 	}
 
 	// -----------------------------------------------------------------
@@ -509,9 +496,6 @@ final class InputStagingTests: XCTestCase
 		XCTAssertTrue(
 			InputStagingError.copyFailed(name: "a.HEIC", reason: "空き容量がありません")
 				.errorDescription?.contains("a.HEIC") ?? false)
-		XCTAssertTrue(
-			InputStagingError.downloadTimedOut(name: "a.HEIC")
-				.errorDescription?.contains("ダウンロード") ?? false)
 	}
 }
 

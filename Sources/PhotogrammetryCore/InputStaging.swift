@@ -6,12 +6,19 @@
 //
 //  なぜ要るか:
 //  写真を iCloud Drive・Dropbox・Google ドライブなどのクラウド同期領域に置いた
-//  まま生成すると、(1) 実体が未ダウンロード（`.icloud` プレースホルダ）の写真は
-//  そもそも読めず、(2) 実体があっても処理中に OS やクライアントが退避（evict）
-//  すると読み取りに失敗する。生成は建築規模なら数時間かかるので、その間ずっと
+//  まま生成すると、実体が処理中に OS やクライアントへ退避（evict）されて読み
+//  取りに失敗することがある。生成は建築規模なら数時間かかるので、その間ずっと
 //  実体が残っている保証は無い。**先に全部ローカルへ写してしまえばこの手の失敗は
 //  起きない**（従来は「~/Pictures へコピーしてから実行してください」と警告する
 //  だけで、コピーは人手だった）。
+//
+//  「オンラインのみ」（実体がまだ無い）ファイルの取り寄せは、コピーそのものが
+//  起こす — File Provider（iCloud Drive・Google ドライブ・Dropbox）は**読んだ
+//  瞬間に実体を取り寄せる**ので、copyItem がその引き金になる。したがって
+//  ダウンロードを明示的に要求する必要は無い。例外は iCloud の**旧表現**
+//  （`.名前.jpg.icloud` という別名のスタブしか見えない形）で、これは実名の
+//  パスが存在せずコピーできないため、対象から外して警告する（この表現が
+//  出るのは File Provider へ移行する前の macOS）。
 //
 //  置き場所はモデルキャッシュ（ModelCache）と同じ `~/Library/Caches/<バンドル
 //  ID>/` の下。キャッシュは OS が「消えてもよい場所」として扱う領域で、複製の
@@ -42,13 +49,6 @@ public enum InputStaging
 	/// 生成 1 回が数時間かかるので、実行中のものを巻き込まない余裕を取る。
 	public static let staleAge: TimeInterval = 24 * 60 * 60
 
-	/// 未ダウンロードの写真 1 枚を待つ上限。ここを無制限にすると、同期が
-	/// 止まっている環境で永久に返らない。
-	public static let downloadTimeout: TimeInterval = 300
-
-	/// 未ダウンロードの写真の実体が現れたかを見に行く間隔。
-	static let downloadPollInterval: TimeInterval = 0.2
-
 	/// 進捗のログを出す間隔（枚）。1 枚ごとに出すと数千行になる。
 	static let noteInterval = 200
 
@@ -74,21 +74,6 @@ public enum InputStaging
 			self.directory = directory
 			self.fileCount = fileCount
 			self.byteCount = byteCount
-		}
-	}
-
-	/// 入力フォルダ直下の名前一覧から「写すもの」を選んだ結果。
-	public struct Selection: Equatable, Sendable
-	{
-		/// 写すファイル名（プレースホルダは実体の名前へ直したもの）。
-		public var names: [String]
-		/// そのうち、まだ実体が無い（ダウンロードが要る）ファイル名。
-		public var pending: [String]
-
-		public init(names: [String], pending: [String])
-		{
-			self.names = names
-			self.pending = pending
 		}
 	}
 
@@ -122,53 +107,30 @@ public enum InputStaging
 			.appendingPathComponent(directoryName, isDirectory: true)
 	}
 
-	/// 未ダウンロードの iCloud ファイルのプレースホルダ名（`.名前.jpg.icloud`）を
-	/// 実体の名前（`名前.jpg`）へ直す。画像でないものは nil。
-	public static func placeholderRealName(_ name: String) -> String?
-	{
-		guard name.hasPrefix("."),
-			(name as NSString).pathExtension.lowercased() == InputInspection.placeholderExtension
-		else
-		{
-			return nil
-		}
-		let real = (String(name.dropFirst()) as NSString).deletingPathExtension
-		guard !real.isEmpty,
-			ReconstructionRequest.imageExtensions.contains((real as NSString).pathExtension.lowercased())
-		else
-		{
-			return nil
-		}
-		return real
-	}
-
-	/// フォルダ直下の名前一覧から写す対象を選ぶ。
+	/// フォルダ直下の名前一覧から写す対象（画像）を選ぶ。
 	///
 	/// PhotogrammetrySession は入力フォルダの**直下だけ**を見るので、ここも
-	/// 直下だけを対象にする（サブフォルダは元々使われない）。未ダウンロードの
-	/// 写真はプレースホルダしか見えないため、実体の名前へ直したうえで
-	/// 「ダウンロード待ちが要るもの」として別に数える。
-	public static func select(names: [String]) -> Selection
+	/// 直下だけを対象にする（サブフォルダは元々使われない）。「オンラインのみ」の
+	/// ファイルも実名で見えていれば普通に選ぶ — コピーの読み取りが取り寄せを
+	/// 起こすため、ここで特別扱いする必要は無い。
+	public static func imageNames(in names: [String]) -> [String]
 	{
-		var images: Set<String> = []
-		var pending: Set<String> = []
-		for name in names
-		{
-			if ReconstructionRequest.imageExtensions.contains(
+		names.filter
+		{ name in
+			ReconstructionRequest.imageExtensions.contains(
 				(name as NSString).pathExtension.lowercased())
-			{
-				images.insert(name)
-			}
-			else if let real = placeholderRealName(name)
-			{
-				pending.insert(real)
-			}
-		}
-		// 実体が見えている写真はダウンロード待ちに数えない（プレースホルダが
-		// 消え残っている場合がある）。
-		pending.subtract(images)
-		images.formUnion(pending)
-		return Selection(names: images.sorted(), pending: pending.sorted())
+		}.sorted()
+	}
+
+	/// 実体が無い iCloud の旧表現（`.名前.jpg.icloud`）の数。実名のパスが存在
+	/// しないのでコピーできず、黙って減らすと「なぜか写真が足りない」状態に
+	/// なるため、数えて警告するためだけに使う。
+	public static func placeholderCount(in names: [String]) -> Int
+	{
+		names.filter
+		{ name in
+			(name as NSString).pathExtension.lowercased() == InputInspection.placeholderExtension
+		}.count
 	}
 
 	/// 複製先フォルダの名前。どの入力フォルダの複製かを人が見て分かるように
@@ -210,14 +172,18 @@ public enum InputStaging
 	}
 
 	/// コピー開始のログ 1 行。
-	public static func startNote(fileCount: Int, pendingCount: Int, destination: URL) -> String
+	public static func startNote(fileCount: Int, destination: URL) -> String
 	{
-		var text = "写真 \(fileCount) 枚をローカルへコピーします（\(destination.path)）。"
-		if pendingCount > 0
-		{
-			text += "うち \(pendingCount) 枚は未ダウンロードなので、実体が届くのを待ちます。"
-		}
-		return text
+		"写真 \(fileCount) 枚をローカルへコピーします（\(destination.path)）。"
+	}
+
+	/// コピーできない未ダウンロードファイルがあったときの警告 1 行。
+	/// 黙って対象から外すと枚数が減った理由が分からなくなる。
+	public static func placeholderNote(count: Int) -> String
+	{
+		"警告: 未ダウンロードの写真（.\(InputInspection.placeholderExtension)）が \(count) 個"
+			+ "あるためコピーできません。Finder でフォルダを「今すぐダウンロード」してから"
+			+ "実行してください。"
 	}
 
 	/// コピー完了のログ 1 行。
@@ -241,7 +207,6 @@ public enum InputStaging
 		root: URL,
 		fileManager: FileManager = .default,
 		cancellation: CancellationFlag? = nil,
-		downloadTimeout: TimeInterval = InputStaging.downloadTimeout,
 		onEvent: (ReconstructionEvent) -> Void = { _ in }) throws -> Staged?
 	{
 		// 異常終了で取り残された複製をここで掃除する（数 GB を放置しない）。
@@ -258,8 +223,15 @@ public enum InputStaging
 		{
 			return nil
 		}
-		let selection = select(names: names)
-		guard !selection.names.isEmpty
+		let selected = imageNames(in: names)
+		// 実体が無い旧表現（.icloud）はコピーできない。枚数が減った理由が分かる
+		// よう、外したことを必ず知らせる。
+		let placeholders = placeholderCount(in: names)
+		if placeholders > 0
+		{
+			onEvent(.note(placeholderNote(count: placeholders)))
+		}
+		guard !selected.isEmpty
 		else
 		{
 			return nil
@@ -278,36 +250,19 @@ public enum InputStaging
 				path: directory.path, reason: error.localizedDescription)
 		}
 
-		onEvent(.note(startNote(
-			fileCount: selection.names.count,
-			pendingCount: selection.pending.count,
-			destination: directory)))
-
-		// 未ダウンロードのぶんは先にまとめて要求しておく。1 枚ずつ要求して待つと
-		// ダウンロードが直列になり、数百枚で現実的な時間に収まらない。
-		let pending = Set(selection.pending)
-		for name in selection.pending
-		{
-			try? fileManager.startDownloadingUbiquitousItem(
-				at: request.inputFolder.appendingPathComponent(name))
-		}
+		onEvent(.note(startNote(fileCount: selected.count, destination: directory)))
 
 		var copied = 0
 		var bytes: Int64 = 0
 		do
 		{
-			for name in selection.names
+			for name in selected
 			{
 				try checkCancellation(cancellation)
+				// 「オンラインのみ」のファイルはこのコピー（＝読み取り）が実体の
+				// 取り寄せを起こす。完了までブロックするので、待ちを自前で
+				// 用意する必要は無い。
 				let source = request.inputFolder.appendingPathComponent(name)
-				if pending.contains(name)
-				{
-					try waitForDownload(
-						of: source,
-						timeout: downloadTimeout,
-						fileManager: fileManager,
-						cancellation: cancellation)
-				}
 				let destination = directory.appendingPathComponent(name)
 				do
 				{
@@ -322,7 +277,7 @@ public enum InputStaging
 				bytes += fileSize(of: destination, fileManager: fileManager)
 				if copied % noteInterval == 0
 				{
-					onEvent(.note("コピー中… \(copied)/\(selection.names.count) 枚"))
+					onEvent(.note("コピー中… \(copied)/\(selected.count) 枚"))
 				}
 			}
 		}
@@ -455,27 +410,6 @@ public enum InputStaging
 		}
 	}
 
-	/// 未ダウンロードの写真の実体が届くまで待つ。届かないまま上限を過ぎたら
-	/// 諦める（同期が止まっている環境で永久に返らないことを防ぐ）。
-	private static func waitForDownload(
-		of url: URL,
-		timeout: TimeInterval,
-		fileManager: FileManager,
-		cancellation: CancellationFlag?) throws
-	{
-		let deadline = Date().addingTimeInterval(timeout)
-		while !fileManager.fileExists(atPath: url.path)
-		{
-			try checkCancellation(cancellation)
-			guard Date() < deadline
-			else
-			{
-				throw InputStagingError.downloadTimedOut(name: url.lastPathComponent)
-			}
-			Thread.sleep(forTimeInterval: downloadPollInterval)
-		}
-	}
-
 	/// ファイルの大きさ（読めなければ 0）。合計の表示にしか使わないので、
 	/// 読めないこと自体はエラーにしない。
 	static func fileSize(of url: URL, fileManager: FileManager) -> Int64
@@ -498,8 +432,6 @@ public enum InputStagingError: Error, LocalizedError, Equatable
 	case destinationUnavailable(path: String, reason: String)
 	/// 1 枚のコピーに失敗した。
 	case copyFailed(name: String, reason: String)
-	/// 未ダウンロードの写真の実体が届かなかった。
-	case downloadTimedOut(name: String)
 
 	public var errorDescription: String?
 	{
@@ -511,10 +443,8 @@ public enum InputStagingError: Error, LocalizedError, Equatable
 				return "写真のコピー先を作れません（\(path)）: \(reason)\n" + Self.optOutAdvice
 			case .copyFailed(let name, let reason):
 				return "写真をローカルへコピーできません（\(name)）: \(reason)\n"
-					+ "ディスクの空き容量を確認してください。\n" + Self.optOutAdvice
-			case .downloadTimedOut(let name):
-				return "クラウドから写真をダウンロードできません（\(name)）。"
-					+ "同期が進んでいるか確認してから、もう一度実行してください。"
+					+ "ディスクの空き容量とクラウドの同期状況を確認してください。\n"
+					+ Self.optOutAdvice
 		}
 	}
 
