@@ -41,6 +41,10 @@ struct PhotogrammetryCLI
 		      --subject <値>              object | scene（既定: object）
 		                                  建物・部屋などシーン全体の写真は scene を指定
 		                                  （オブジェクトマスキングを無効化）
+		      --no-stage-input            写真をローカルへコピーしてから処理する動作を止める
+		                                  （既定は有効。クラウド上（iCloud Drive など）の
+		                                  写真でも確実に読めるよう、アプリのキャッシュへ
+		                                  複製してから処理し、終わったら複製を削除する）
 
 		sort — 大量の写真をグループへ仕分ける:
 		  建物 1 棟ぶんの写真は 1 回のセッションでは解けない（枚数の上限を超え、
@@ -135,6 +139,10 @@ struct PhotogrammetryCLI
 	}
 
 	/// 3D モデルの生成。
+	///
+	/// 写真のローカルへの複製（既定で有効）はここで行う。GUI から呼ばれるときも
+	/// **実際に写真を読むのはこのプロセス**なので、複製と後始末をヘルパー側に
+	/// 置いておけば、GUI・CLI・URL スキームのどの入口からでも同じように働く。
 	static func process(_ request: ReconstructionRequest) async
 	{
 		guard PhotogrammetryEngine.isSupported
@@ -143,24 +151,40 @@ struct PhotogrammetryCLI
 			fail("この Mac は Object Capture に対応していません（GPU 要件を満たしていません）。", code: 1)
 		}
 
+		let engine = PhotogrammetryEngine()
+		// 中断はコピー中にも効かせる（数千枚の複製は数分かかるため、セッションが
+		// 始まる前の SIGINT を取りこぼさない）。
+		let cancelRequested = Flag()
+		installCancelHandler(engine: engine, cancelRequested: cancelRequested)
+
 		do
 		{
-			let engine = PhotogrammetryEngine()
-			installCancelHandler(engine: engine)
 			let cancelled = Flag()
-			try await engine.process(request)
-			{ event in
-				if case .cancelled = event
-				{
-					cancelled.set()
+			try await InputStaging.withStagedInput(
+				request,
+				isCancelled: { cancelRequested.isSet },
+				onEvent: { emit(HelperProtocol.encode($0)) })
+			{ staged in
+				try await engine.process(staged)
+				{ event in
+					if case .cancelled = event
+					{
+						cancelled.set()
+					}
+					emit(HelperProtocol.encode(event))
 				}
-				emit(HelperProtocol.encode(event))
 			}
 			// 中断で終わったときに ok を出すと、呼び出し側が成功と誤読する。
 			if !cancelled.isSet
 			{
 				emit(HelperProtocol.finishedLine)
 			}
+		}
+		catch InputStagingError.cancelled
+		{
+			// 複製の途中で中断された。生成の中断と同じ約束（cancelled +
+			// 終了コード 0）で返す。
+			emit(HelperProtocol.encode(.cancelled))
 		}
 		catch
 		{
@@ -173,9 +197,16 @@ struct PhotogrammetryCLI
 	/// SIGINT / SIGTERM をセッションの cancel に振り替える。既定動作（即座に
 	/// プロセス終了）だとセッションが後始末されず一時ファイルが残るうえ、
 	/// 親プロセス（GUI）からは「異常終了」と区別が付かないため。
-	static func installCancelHandler(engine: PhotogrammetryEngine)
+	///
+	/// セッションがまだ無い段階（写真の複製中）に届くこともあるので、フラグにも
+	/// 立てる。複製はそのフラグを各ファイルの切れ目で見て抜ける。
+	static func installCancelHandler(engine: PhotogrammetryEngine, cancelRequested: Flag)
 	{
-		installSignalHandler { engine.cancel() }
+		installSignalHandler
+		{
+			cancelRequested.set()
+			engine.cancel()
+		}
 	}
 
 	/// SIGINT / SIGTERM を任意の後始末へ振り替える（生成と仕分けで共用）。

@@ -203,6 +203,25 @@ struct ContentView: View
 			.padding(4)
 		}
 
+		// クラウド（iCloud Drive など）に置いたままの写真は、実体が未ダウンロード
+		// だったり処理中に退避されたりして読めなくなる。既定で ON にしてあるので、
+		// ここは「切りたい人のための逃げ道」として置いている。
+		GroupBox("写真の扱い")
+		{
+			VStack(alignment: .leading, spacing: 4)
+			{
+				Toggle(
+					"写真をローカル（アプリのキャッシュ）へコピーしてから処理する",
+					isOn: $model.stageInputLocally)
+				Text("iCloud Drive などクラウド上の写真でも確実に読めます。"
+					+ "コピーは処理が終わると自動的に削除されます。")
+					.font(.caption)
+					.foregroundColor(.secondary)
+			}
+			.padding(4)
+			.disabled(model.isProcessing)
+		}
+
 		GroupBox("品質")
 		{
 			VStack(alignment: .leading, spacing: 8)

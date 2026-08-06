@@ -44,7 +44,7 @@ public enum APICommand: Equatable, Sendable
 	// URL スキーム
 	//   photogrammetry://process?input=<パス>&output=<パス>
 	//                   [&detail=medium][&ordering=sequential][&sensitivity=high]
-	//                   [&subject=scene]
+	//                   [&subject=scene][&stageInput=false]
 	//   photogrammetry://sort?input=<パス>&output=<パス>
 	//                   [&overlap=15][&maxPerGroup=150][&minPerGroup=20]
 	//                   [&timeGap=300][&groupThreshold=0.4][&minSharpness=12]
@@ -109,6 +109,10 @@ public enum APICommand: Equatable, Sendable
 				{
 					request.subject = try enumValue(raw, parameter: "subject")
 				}
+				if let raw = parameters["stageInput"]
+				{
+					request.stageInputLocally = try boolValue(raw, parameter: "stageInput")
+				}
 				return .process(request)
 
 			case sortCommand:
@@ -166,6 +170,7 @@ public enum APICommand: Equatable, Sendable
 	// CLI 引数
 	//   <input-folder> <output-file> [--detail d] [--sample-ordering o]
 	//                                [--feature-sensitivity s] [--subject k]
+	//                                [--no-stage-input]
 	//   sort <input-folder> <output-folder> [--overlap n] [--max-per-group n] …
 	//
 	// 生成の語彙は Apple の HelloPhotogrammetry と同じにしてある（移行しやすさ
@@ -196,6 +201,9 @@ public enum APICommand: Equatable, Sendable
 		var orderingRaw: String?
 		var sensitivityRaw: String?
 		var subjectRaw: String?
+		// 既定が「複製する」なので、フラグは切るほうに置く（sort の
+		// --no-recursive と同じ形）。
+		var stageInputLocally = true
 
 		var index = 0
 		while index < arguments.count
@@ -215,6 +223,9 @@ public enum APICommand: Equatable, Sendable
 				case "--subject":
 					subjectRaw = try optionValue(arguments, at: index, name: argument)
 					index += 2
+				case "--no-stage-input":
+					stageInputLocally = false
+					index += 1
 				default:
 					if argument.hasPrefix("-")
 					{
@@ -233,7 +244,8 @@ public enum APICommand: Equatable, Sendable
 
 		var request = ReconstructionRequest(
 			inputFolder: URL(fileURLWithPath: positionals[0], isDirectory: true),
-			outputFile: URL(fileURLWithPath: positionals[1]))
+			outputFile: URL(fileURLWithPath: positionals[1]),
+			stageInputLocally: stageInputLocally)
 		if let raw = detailRaw
 		{
 			request.detail = try enumValue(raw, parameter: "--detail")
@@ -329,7 +341,7 @@ public enum APICommand: Equatable, Sendable
 	/// 1 か所に保つため、組み立てもここに置く（往復はテストで固定している）。
 	public static func arguments(for request: ReconstructionRequest) -> [String]
 	{
-		[
+		var result = [
 			request.inputFolder.path,
 			request.outputFile.path,
 			"--detail", request.detail.rawValue,
@@ -337,6 +349,13 @@ public enum APICommand: Equatable, Sendable
 			"--feature-sensitivity", request.featureSensitivity.rawValue,
 			"--subject", request.subject.rawValue,
 		]
+		// 複製はヘルパー（＝実際に写真を読むプロセス）側で行う。既定が有効なので
+		// 切るときだけフラグを渡す。
+		if !request.stageInputLocally
+		{
+			result.append("--no-stage-input")
+		}
+		return result
 	}
 
 	/// SortRequest を CLI の引数列へ戻す。自動決定に任せる項目（閾値）は

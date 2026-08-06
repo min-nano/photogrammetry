@@ -26,18 +26,45 @@ final class APICommandTests: XCTestCase
 		XCTAssertEqual(request.sampleOrdering, .unordered)
 		XCTAssertEqual(request.featureSensitivity, .normal)
 		XCTAssertEqual(request.subject, .object)
+		// 写真のローカルへのコピーは既定で ON。
+		XCTAssertTrue(request.stageInputLocally)
 	}
 
 	func testParseURLAllParameters() throws
 	{
 		let url = URL(
 			string: "photogrammetry://process?input=/a&output=/b.usdz"
-				+ "&detail=full&ordering=sequential&sensitivity=high&subject=scene")!
+				+ "&detail=full&ordering=sequential&sensitivity=high&subject=scene"
+				+ "&stageInput=false")!
 		let request = try parseProcess(url: url)
 		XCTAssertEqual(request.detail, .full)
 		XCTAssertEqual(request.sampleOrdering, .sequential)
 		XCTAssertEqual(request.featureSensitivity, .high)
 		XCTAssertEqual(request.subject, .scene)
+		XCTAssertFalse(request.stageInputLocally)
+	}
+
+	func testParseURLStageInputBooleanForms() throws
+	{
+		// 真偽値の書き方は sort の dryRun と同じ規則（語彙を 1 か所に保つ）。
+		for (text, expected) in [("true", true), ("1", true), ("yes", true),
+			("false", false), ("0", false), ("no", false)]
+		{
+			let url = URL(
+				string: "photogrammetry://process?input=/a&output=/b.usdz&stageInput=\(text)")!
+			XCTAssertEqual(try parseProcess(url: url).stageInputLocally, expected)
+		}
+	}
+
+	func testParseURLInvalidStageInput()
+	{
+		let url = URL(
+			string: "photogrammetry://process?input=/a&output=/b.usdz&stageInput=maybe")!
+		XCTAssertThrowsError(try parseProcess(url: url))
+		{ error in
+			XCTAssertEqual(
+				error as? APICommandError, .invalidValue(parameter: "stageInput", value: "maybe"))
+		}
 	}
 
 	func testParseURLInvalidSubject()
@@ -166,11 +193,19 @@ final class APICommandTests: XCTestCase
 			"--sample-ordering", "sequential",
 			"--feature-sensitivity", "high",
 			"--subject", "scene",
+			"--no-stage-input",
 		])
 		XCTAssertEqual(request.detail, .raw)
 		XCTAssertEqual(request.sampleOrdering, .sequential)
 		XCTAssertEqual(request.featureSensitivity, .high)
 		XCTAssertEqual(request.subject, .scene)
+		XCTAssertFalse(request.stageInputLocally)
+	}
+
+	func testParseArgumentsStageInputDefaultsToOn()
+	{
+		// フラグが無ければコピーする（既定 ON）。
+		XCTAssertTrue(try parseProcess(arguments: ["/a", "/b.usdz"]).stageInputLocally)
 	}
 
 	func testParseArgumentsInvalidSubject()
@@ -250,6 +285,17 @@ final class APICommandTests: XCTestCase
 			"--feature-sensitivity", "high",
 			"--subject", "scene",
 		])
+	}
+
+	func testArgumentsForRequestWithoutStaging()
+	{
+		// 既定（コピーする）ではフラグを出さない。切るときだけ出す。
+		var request = ReconstructionRequest(
+			inputFolder: URL(fileURLWithPath: "/tmp/photos", isDirectory: true),
+			outputFile: URL(fileURLWithPath: "/tmp/model.usdz"))
+		XCTAssertFalse(APICommand.arguments(for: request).contains("--no-stage-input"))
+		request.stageInputLocally = false
+		XCTAssertTrue(APICommand.arguments(for: request).contains("--no-stage-input"))
 	}
 
 	// -----------------------------------------------------------------
@@ -412,8 +458,15 @@ final class APICommandTests: XCTestCase
 			detail: .reduced,
 			sampleOrdering: .sequential,
 			featureSensitivity: .high,
-			subject: .scene)
+			subject: .scene,
+			stageInputLocally: false)
 		let parsed = try parseProcess(arguments: APICommand.arguments(for: request))
 		XCTAssertEqual(parsed, request)
+
+		// コピーする側（既定）も往復すること。
+		var staging = request
+		staging.stageInputLocally = true
+		XCTAssertEqual(
+			try parseProcess(arguments: APICommand.arguments(for: staging)), staging)
 	}
 }

@@ -70,6 +70,9 @@ public final class ReconstructionService
 
 	private let helperEngine: HelperProcessEngine?
 	private let engine: PhotogrammetryEngine?
+	/// 同一プロセス実行での中断フラグ。セッションが始まる前（写真の複製中）に
+	/// 届いたキャンセルを取りこぼさないために持つ。
+	private let cancellation = CancellationFlag()
 
 	public init(mode: Mode = ReconstructionService.resolveMode())
 	{
@@ -94,15 +97,31 @@ public final class ReconstructionService
 		onEvent(.note(Self.note(for: mode)))
 		if let helperEngine
 		{
+			// 別プロセス実行では、写真の複製もヘルパー（＝写真を読む側）が行う。
+			// 指示は APICommand の引数に乗って伝わるので、ここでは何もしない。
 			try await helperEngine.process(request, onEvent: onEvent)
 			return
 		}
-		try await engine?.process(request, onEvent: onEvent)
+		guard let engine
+		else
+		{
+			return
+		}
+		// 同一プロセス実行のときは、ヘルパーが担っている複製をここで行う
+		// （どちらの実行方式でも request の指示どおりに振る舞わせるため）。
+		try await InputStaging.withStagedInput(
+			request,
+			isCancelled: { [cancellation] in cancellation.isCancelled },
+			onEvent: onEvent)
+		{ staged in
+			try await engine.process(staged, onEvent: onEvent)
+		}
 	}
 
 	/// 実行中の処理を中断する。
 	public func cancel()
 	{
+		cancellation.cancel()
 		helperEngine?.cancel()
 		engine?.cancel()
 	}

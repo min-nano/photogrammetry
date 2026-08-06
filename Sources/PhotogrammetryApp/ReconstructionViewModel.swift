@@ -45,6 +45,9 @@ final class ReconstructionViewModel: ObservableObject
 	@Published var sampleOrdering: ReconstructionRequest.SampleOrdering = .unordered
 	@Published var featureSensitivity: ReconstructionRequest.FeatureSensitivity = .normal
 	@Published var subject: ReconstructionRequest.SubjectKind = .object
+	/// 写真をアプリのキャッシュへコピーしてから処理するか。既定は ON
+	/// （既定値は ReconstructionRequest と揃える）。
+	@Published var stageInputLocally = true
 
 	// 仕分け（sort）のフォーム。既定値は SortRequest と揃える（食い違うと
 	// GUI と CLI で結果が変わってしまう）。閾値は既定の「分布から自動決定」の
@@ -175,7 +178,8 @@ final class ReconstructionViewModel: ObservableObject
 			detail: detail,
 			sampleOrdering: sampleOrdering,
 			featureSensitivity: featureSensitivity,
-			subject: subject))
+			subject: subject,
+			stageInputLocally: stageInputLocally))
 	}
 
 	/// フォームの内容で仕分けを実行する。組み立てるのは SortRequest 1 つだけで、
@@ -217,6 +221,7 @@ final class ReconstructionViewModel: ObservableObject
 					sampleOrdering = request.sampleOrdering
 					featureSensitivity = request.featureSensitivity
 					subject = request.subject
+					stageInputLocally = request.stageInputLocally
 					run(request)
 				case .sort(let request):
 					// フォームにも反映する（何が実行されたのか画面で分かるように）。
