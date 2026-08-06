@@ -120,9 +120,14 @@ public final class ReconstructionService
 				cancellation: cancellation,
 				onEvent: onEvent)
 			: nil
+		var effective = request
+		if let staged
+		{
+			effective = staged.request
+		}
 		do
 		{
-			try await engine.process(staged?.request ?? request, onEvent: onEvent)
+			try await engine.process(effective, onEvent: onEvent)
 		}
 		catch
 		{

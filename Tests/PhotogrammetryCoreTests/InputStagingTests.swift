@@ -196,6 +196,15 @@ final class InputStagingTests: XCTestCase
 		XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: cacheRoot.path), [])
 	}
 
+	func testStageSkipsUnreadableInputFolder() throws
+	{
+		// 入力フォルダが無い（validate がまだ通っていない・消された）場合は、
+		// 複製せずに元のフォルダのまま進める。ここで別のエラーに化けさせない。
+		var request = self.request()
+		request.inputFolder = workDir.appendingPathComponent("missing", isDirectory: true)
+		XCTAssertNil(try InputStaging.stage(request, root: cacheRoot))
+	}
+
 	func testStageStopsWhenCancelled() throws
 	{
 		try makeFile("a.HEIC")
@@ -390,6 +399,16 @@ final class InputStagingTests: XCTestCase
 		}
 		// 生成が失敗しても複製は残さない。
 		XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(used).path))
+	}
+
+	func testWithStagedInputUsesOriginalFolderWhenNothingWasCopied() async throws
+	{
+		// 写すものが無ければ複製は作られない。body には元のフォルダが渡る。
+		try makeFile("notes.txt")
+		try await InputStaging.withStagedInput(request(), root: cacheRoot, body:
+		{ staged in
+			XCTAssertEqual(staged.inputFolder, self.inputFolder)
+		})
 	}
 
 	func testWithStagedInputSkipsWhenDisabled() async throws

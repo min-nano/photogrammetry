@@ -103,8 +103,17 @@ public enum InputStaging
 		bundleIdentifier: String? = Bundle.main.bundleIdentifier,
 		fileManager: FileManager = .default) -> URL
 	{
-		let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
-			?? fileManager.temporaryDirectory
+		// `??` を使わないのは、右辺が自動クロージャ（= 1 つの関数）になり、
+		// 踏めないぶんがカバレッジの分母に残るため。以降も同じ理由で if/guard を使う。
+		let caches: URL
+		if let userCaches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
+		{
+			caches = userCaches
+		}
+		else
+		{
+			caches = fileManager.temporaryDirectory
+		}
 		let identifier = (bundleIdentifier?.isEmpty == false)
 			? bundleIdentifier!
 			: fallbackBundleDirectoryName
@@ -242,7 +251,13 @@ public enum InputStaging
 			onEvent(.note("前回までの取り残しを削除しました（\(purged) 件）。"))
 		}
 
-		let names = (try? fileManager.contentsOfDirectory(atPath: request.inputFolder.path)) ?? []
+		// 読めないフォルダは複製せずそのまま渡す（存在チェックは validate の仕事で、
+		// ここで別のエラーに化けさせない）。
+		guard let names = try? fileManager.contentsOfDirectory(atPath: request.inputFolder.path)
+		else
+		{
+			return nil
+		}
 		let selection = select(names: names)
 		guard !selection.names.isEmpty
 		else
@@ -403,7 +418,12 @@ public enum InputStaging
 		{
 			discard(staged, fileManager: fileManager)
 		}
-		return try await body(staged?.request ?? request)
+		var effective = request
+		if let staged
+		{
+			effective = staged.request
+		}
+		return try await body(effective)
 	}
 
 	// -----------------------------------------------------------------
@@ -441,8 +461,13 @@ public enum InputStaging
 
 	private static func fileSize(of url: URL, fileManager: FileManager) -> Int64
 	{
-		let attributes = try? fileManager.attributesOfItem(atPath: url.path)
-		return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+		guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+			let size = attributes[.size] as? NSNumber
+		else
+		{
+			return 0
+		}
+		return size.int64Value
 	}
 }
 
