@@ -111,6 +111,9 @@ final class InputStagingTests: XCTestCase
 			InputStaging.root(bundleIdentifier: nil).deletingLastPathComponent()
 				.lastPathComponent,
 			InputStaging.fallbackBundleDirectoryName)
+		// 引数なし（実行中のバンドル）でも場所が決まること。パスを組み立てるだけで
+		// ファイルは作らない。
+		XCTAssertEqual(InputStaging.root().lastPathComponent, InputStaging.directoryName)
 	}
 
 	func testSizeTextIsStable()
@@ -198,8 +201,10 @@ final class InputStagingTests: XCTestCase
 		try makeFile("a.HEIC")
 		try makeFile("b.HEIC")
 
+		let cancellation = CancellationFlag()
+		cancellation.cancel()
 		XCTAssertThrowsError(
-			try InputStaging.stage(request(), root: cacheRoot, isCancelled: { true }))
+			try InputStaging.stage(request(), root: cacheRoot, cancellation: cancellation))
 		{ error in
 			XCTAssertEqual(error as? InputStagingError, .cancelled)
 		}
@@ -225,6 +230,39 @@ final class InputStagingTests: XCTestCase
 			XCTAssertTrue(
 				error.localizedDescription.contains("--no-stage-input"))
 		}
+	}
+
+	func testStageFailsWhenAPhotoCannotBeRead() throws
+	{
+		try makeFile("a.HEIC")
+		// 読めない写真が 1 枚あれば止める。半分だけ写した複製で生成を始めると、
+		// 「なぜか写真が減っている」状態で失敗するので原因が分からなくなる。
+		try FileManager.default.setAttributes(
+			[.posixPermissions: 0o000],
+			ofItemAtPath: inputFolder.appendingPathComponent("a.HEIC").path)
+		defer
+		{
+			try? FileManager.default.setAttributes(
+				[.posixPermissions: 0o644],
+				ofItemAtPath: inputFolder.appendingPathComponent("a.HEIC").path)
+		}
+
+		XCTAssertThrowsError(try InputStaging.stage(request(), root: cacheRoot))
+		{ error in
+			guard case .copyFailed(let name, _)? = error as? InputStagingError
+			else
+			{
+				return XCTFail("コピーの失敗として返りません: \(error)")
+			}
+			XCTAssertEqual(name, "a.HEIC")
+		}
+		XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: cacheRoot.path), [])
+	}
+
+	func testDiscardIgnoresNothingToDo()
+	{
+		// 複製を作らなかった（写すものが無かった）ときも呼ばれる経路。
+		InputStaging.discard(nil)
 	}
 
 	func testPurgeStaleRemovesOnlyOldLeftovers() throws
@@ -258,6 +296,60 @@ final class InputStagingTests: XCTestCase
 		let staged = try XCTUnwrap(InputStaging.stage(request(), root: cacheRoot))
 		XCTAssertFalse(FileManager.default.fileExists(atPath: leftover.path))
 		InputStaging.discard(staged)
+	}
+
+	// -----------------------------------------------------------------
+	// 未ダウンロードの写真（クラウド）
+	//
+	// 実体が無い写真は `.名前.拡張子.icloud` としてしか見えない。ダウンロードを
+	// 要求して実体が届くのを待つが、同期が止まっている環境で永久に返らないよう
+	// 上限を設けてある。ここではその上限を短くして両方の結末を確かめる。
+	// -----------------------------------------------------------------
+
+	func testStageWaitsUntilPlaceholderMaterializes() throws
+	{
+		try makeFile(".IMG_0001.HEIC.icloud", bytes: 1)
+		// 実体は少し遅れて現れる（ダウンロードが完了した状態を再現する）。
+		DispatchQueue.global().asyncAfter(deadline: .now() + 0.2)
+		{
+			try? Data(repeating: 0x41, count: 8)
+				.write(to: self.inputFolder.appendingPathComponent("IMG_0001.HEIC"))
+		}
+
+		let staged = try XCTUnwrap(InputStaging.stage(
+			request(), root: cacheRoot, downloadTimeout: 10))
+		XCTAssertEqual(staged.fileCount, 1)
+		XCTAssertTrue(FileManager.default.fileExists(
+			atPath: staged.directory.appendingPathComponent("IMG_0001.HEIC").path))
+		InputStaging.discard(staged)
+	}
+
+	func testStageGivesUpWhenTheDownloadNeverArrives() throws
+	{
+		try makeFile(".IMG_0001.HEIC.icloud", bytes: 1)
+		XCTAssertThrowsError(
+			try InputStaging.stage(request(), root: cacheRoot, downloadTimeout: 0.3))
+		{ error in
+			XCTAssertEqual(
+				error as? InputStagingError, .downloadTimedOut(name: "IMG_0001.HEIC"))
+		}
+		// 待ちきれずに終わった複製も残さない。
+		XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: cacheRoot.path), [])
+	}
+
+	func testStageStopsWaitingWhenCancelled() throws
+	{
+		try makeFile(".IMG_0001.HEIC.icloud", bytes: 1)
+		let cancellation = CancellationFlag()
+		DispatchQueue.global().asyncAfter(deadline: .now() + 0.2)
+		{
+			cancellation.cancel()
+		}
+		XCTAssertThrowsError(try InputStaging.stage(
+			request(), root: cacheRoot, cancellation: cancellation, downloadTimeout: 30))
+		{ error in
+			XCTAssertEqual(error as? InputStagingError, .cancelled)
+		}
 	}
 
 	// -----------------------------------------------------------------

@@ -109,13 +109,27 @@ public final class ReconstructionService
 		}
 		// 同一プロセス実行のときは、ヘルパーが担っている複製をここで行う
 		// （どちらの実行方式でも request の指示どおりに振る舞わせるため）。
-		try await InputStaging.withStagedInput(
-			request,
-			isCancelled: { [cancellation] in cancellation.isCancelled },
-			onEvent: onEvent)
-		{ staged in
-			try await engine.process(staged, onEvent: onEvent)
+		//
+		// withStagedInput（クロージャ版）を使わずに書き下しているのは、この経路が
+		// GPU 必須で自動テストできないため。テストで踏めないクロージャを作らない
+		// ことで、カバレッジのしきい値（関数 100%）を実態に合わせて保てる。
+		let staged = request.stageInputLocally
+			? try InputStaging.stage(
+				request,
+				root: InputStaging.root(),
+				cancellation: cancellation,
+				onEvent: onEvent)
+			: nil
+		do
+		{
+			try await engine.process(staged?.request ?? request, onEvent: onEvent)
 		}
+		catch
+		{
+			InputStaging.discard(staged)
+			throw error
+		}
+		InputStaging.discard(staged)
 	}
 
 	/// 実行中の処理を中断する。

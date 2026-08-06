@@ -85,7 +85,7 @@ public enum InputStaging
 		/// そのうち、まだ実体が無い（ダウンロードが要る）ファイル名。
 		public var pending: [String]
 
-		public init(names: [String] = [], pending: [String] = [])
+		public init(names: [String], pending: [String])
 		{
 			self.names = names
 			self.pending = pending
@@ -96,8 +96,8 @@ public enum InputStaging
 	// 純ロジック
 	// -----------------------------------------------------------------
 
-	/// 複製を置く親フォルダ。ModelCache と同じ `~/Library/Caches/<バンドル ID>/`
-	/// の下に作る。バンドル ID が無い実行形態でも動かせるよう、こちらは nil を
+	/// 複製を置く親フォルダ（`stage` / `withStagedInput` へ明示的に渡す）。
+	/// ModelCache と同じ `~/Library/Caches/<バンドル ID>/` の下に作る。バンドル ID が無い実行形態でも動かせるよう、こちらは nil を
 	/// 返さない（コピーできる場所さえあれば目的は果たせるため）。
 	public static func root(
 		bundleIdentifier: String? = Bundle.main.bundleIdentifier,
@@ -229,9 +229,10 @@ public enum InputStaging
 	/// 途中で失敗・中断したら、作りかけの複製は消してから throw する。
 	public static func stage(
 		_ request: ReconstructionRequest,
-		root: URL = InputStaging.root(),
+		root: URL,
 		fileManager: FileManager = .default,
-		isCancelled: () -> Bool = { false },
+		cancellation: CancellationFlag? = nil,
+		downloadTimeout: TimeInterval = InputStaging.downloadTimeout,
 		onEvent: (ReconstructionEvent) -> Void = { _ in }) throws -> Staged?
 	{
 		// 異常終了で取り残された複製をここで掃除する（数 GB を放置しない）。
@@ -282,11 +283,15 @@ public enum InputStaging
 		{
 			for name in selection.names
 			{
-				try checkCancellation(isCancelled)
+				try checkCancellation(cancellation)
 				let source = request.inputFolder.appendingPathComponent(name)
 				if pending.contains(name)
 				{
-					try waitForDownload(of: source, fileManager: fileManager, isCancelled: isCancelled)
+					try waitForDownload(
+						of: source,
+						timeout: downloadTimeout,
+						fileManager: fileManager,
+						cancellation: cancellation)
 				}
 				let destination = directory.appendingPathComponent(name)
 				do
@@ -377,9 +382,9 @@ public enum InputStaging
 	/// リクエストが複製を望んでいなければ、何もせず body をそのまま呼ぶ。
 	public static func withStagedInput<T>(
 		_ request: ReconstructionRequest,
-		root: URL = InputStaging.root(),
+		root: URL,
 		fileManager: FileManager = .default,
-		isCancelled: () -> Bool = { false },
+		cancellation: CancellationFlag? = nil,
 		onEvent: (ReconstructionEvent) -> Void = { _ in },
 		body: (ReconstructionRequest) async throws -> T) async throws -> T
 	{
@@ -392,7 +397,7 @@ public enum InputStaging
 			request,
 			root: root,
 			fileManager: fileManager,
-			isCancelled: isCancelled,
+			cancellation: cancellation,
 			onEvent: onEvent)
 		defer
 		{
@@ -405,9 +410,9 @@ public enum InputStaging
 	// 内部
 	// -----------------------------------------------------------------
 
-	private static func checkCancellation(_ isCancelled: () -> Bool) throws
+	private static func checkCancellation(_ cancellation: CancellationFlag?) throws
 	{
-		if isCancelled()
+		if cancellation?.isCancelled == true
 		{
 			throw InputStagingError.cancelled
 		}
@@ -417,13 +422,14 @@ public enum InputStaging
 	/// 諦める（同期が止まっている環境で永久に返らないことを防ぐ）。
 	private static func waitForDownload(
 		of url: URL,
+		timeout: TimeInterval,
 		fileManager: FileManager,
-		isCancelled: () -> Bool) throws
+		cancellation: CancellationFlag?) throws
 	{
-		let deadline = Date().addingTimeInterval(downloadTimeout)
+		let deadline = Date().addingTimeInterval(timeout)
 		while !fileManager.fileExists(atPath: url.path)
 		{
-			try checkCancellation(isCancelled)
+			try checkCancellation(cancellation)
 			guard Date() < deadline
 			else
 			{

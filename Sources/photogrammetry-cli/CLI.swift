@@ -154,7 +154,7 @@ struct PhotogrammetryCLI
 		let engine = PhotogrammetryEngine()
 		// 中断はコピー中にも効かせる（数千枚の複製は数分かかるため、セッションが
 		// 始まる前の SIGINT を取りこぼさない）。
-		let cancelRequested = Flag()
+		let cancelRequested = CancellationFlag()
 		installCancelHandler(engine: engine, cancelRequested: cancelRequested)
 
 		do
@@ -162,7 +162,8 @@ struct PhotogrammetryCLI
 			let cancelled = Flag()
 			try await InputStaging.withStagedInput(
 				request,
-				isCancelled: { cancelRequested.isSet },
+				root: InputStaging.root(),
+				cancellation: cancelRequested,
 				onEvent: { emit(HelperProtocol.encode($0)) })
 			{ staged in
 				try await engine.process(staged)
@@ -200,11 +201,13 @@ struct PhotogrammetryCLI
 	///
 	/// セッションがまだ無い段階（写真の複製中）に届くこともあるので、フラグにも
 	/// 立てる。複製はそのフラグを各ファイルの切れ目で見て抜ける。
-	static func installCancelHandler(engine: PhotogrammetryEngine, cancelRequested: Flag)
+	static func installCancelHandler(
+		engine: PhotogrammetryEngine,
+		cancelRequested: CancellationFlag)
 	{
 		installSignalHandler
 		{
-			cancelRequested.set()
+			cancelRequested.cancel()
 			engine.cancel()
 		}
 	}
