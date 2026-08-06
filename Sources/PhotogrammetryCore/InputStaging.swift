@@ -393,6 +393,28 @@ public enum InputStaging
 		return removed
 	}
 
+	/// リクエストが複製を望んでいれば複製する（望んでいなければ nil）。クロージャを
+	/// 使えない呼び出し側（`ReconstructionService` の同一プロセス経路）の入口。
+	public static func stageIfRequested(
+		_ request: ReconstructionRequest,
+		root: URL,
+		fileManager: FileManager = .default,
+		cancellation: CancellationFlag? = nil,
+		onEvent: (ReconstructionEvent) -> Void = { _ in }) throws -> Staged?
+	{
+		guard request.stageInputLocally
+		else
+		{
+			return nil
+		}
+		return try stage(
+			request,
+			root: root,
+			fileManager: fileManager,
+			cancellation: cancellation,
+			onEvent: onEvent)
+	}
+
 	/// 複製を作って body を実行し、終わったら（成功・失敗・中断のいずれでも）捨てる。
 	/// リクエストが複製を望んでいなければ、何もせず body をそのまま呼ぶ。
 	public static func withStagedInput<T>(
@@ -403,12 +425,7 @@ public enum InputStaging
 		onEvent: (ReconstructionEvent) -> Void = { _ in },
 		body: (ReconstructionRequest) async throws -> T) async throws -> T
 	{
-		guard request.stageInputLocally
-		else
-		{
-			return try await body(request)
-		}
-		let staged = try stage(
+		let staged = try stageIfRequested(
 			request,
 			root: root,
 			fileManager: fileManager,
@@ -459,7 +476,9 @@ public enum InputStaging
 		}
 	}
 
-	private static func fileSize(of url: URL, fileManager: FileManager) -> Int64
+	/// ファイルの大きさ（読めなければ 0）。合計の表示にしか使わないので、
+	/// 読めないこと自体はエラーにしない。
+	static func fileSize(of url: URL, fileManager: FileManager) -> Int64
 	{
 		guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
 			let size = attributes[.size] as? NSNumber

@@ -15,6 +15,19 @@
 
 import Foundation
 
+/// 生成エンジンの差し替え口。実体は `PhotogrammetryEngine`（RealityKit）だが、
+/// 同一プロセス経路の**前後**（写真の複製・後始末・中断の受け渡し）は GPU 無しで
+/// 確かめたいので、テストから偽物を挿せるようにしてある（`PhotoMetadataReading` や
+/// `HelperProcessEngine.helperURL` と同じ考え方。再構成そのものは相変わらず
+/// 自動テストしない）。
+public protocol ReconstructionEngine: AnyObject
+{
+	func process(
+		_ request: ReconstructionRequest,
+		onEvent: @escaping @Sendable (ReconstructionEvent) -> Void) async throws
+	func cancel()
+}
+
 public final class ReconstructionService
 {
 	/// 実行方式。
@@ -69,14 +82,17 @@ public final class ReconstructionService
 	public let mode: Mode
 
 	private let helperEngine: HelperProcessEngine?
-	private let engine: PhotogrammetryEngine?
+	private let engine: ReconstructionEngine?
 	/// 同一プロセス実行での中断フラグ。セッションが始まる前（写真の複製中）に
 	/// 届いたキャンセルを取りこぼさないために持つ。
 	private let cancellation = CancellationFlag()
+	/// 写真の複製先（同一プロセス実行のとき）。テストで差し替える。
+	let stagingRoot: URL
 
 	public init(mode: Mode = ReconstructionService.resolveMode())
 	{
 		self.mode = mode
+		stagingRoot = InputStaging.root()
 		switch mode
 		{
 			case .helperProcess(let url):
@@ -86,6 +102,15 @@ public final class ReconstructionService
 				helperEngine = nil
 				engine = PhotogrammetryEngine()
 		}
+	}
+
+	/// エンジンと複製先を差し替えて同一プロセス経路を組み立てる（テスト用）。
+	init(engine: ReconstructionEngine, stagingRoot: URL)
+	{
+		mode = .inProcess
+		helperEngine = nil
+		self.engine = engine
+		self.stagingRoot = stagingRoot
 	}
 
 	/// 写真フォルダから 3D モデルを生成する。完了（またはキャンセル・エラー）まで
@@ -110,16 +135,13 @@ public final class ReconstructionService
 		// 同一プロセス実行のときは、ヘルパーが担っている複製をここで行う
 		// （どちらの実行方式でも request の指示どおりに振る舞わせるため）。
 		//
-		// withStagedInput（クロージャ版）を使わずに書き下しているのは、この経路が
-		// GPU 必須で自動テストできないため。テストで踏めないクロージャを作らない
-		// ことで、カバレッジのしきい値（関数 100%）を実態に合わせて保てる。
-		let staged = request.stageInputLocally
-			? try InputStaging.stage(
-				request,
-				root: InputStaging.root(),
-				cancellation: cancellation,
-				onEvent: onEvent)
-			: nil
+		// withStagedInput（クロージャ版）を使わずに書き下しているのは、テストで
+		// 踏めないクロージャを作らないため（関数カバレッジのしきい値は 100%）。
+		let staged = try InputStaging.stageIfRequested(
+			request,
+			root: stagingRoot,
+			cancellation: cancellation,
+			onEvent: onEvent)
 		var effective = request
 		if let staged
 		{

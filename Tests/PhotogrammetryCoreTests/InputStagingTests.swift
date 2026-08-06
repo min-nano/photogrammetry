@@ -116,6 +116,26 @@ final class InputStagingTests: XCTestCase
 		XCTAssertEqual(InputStaging.root().lastPathComponent, InputStaging.directoryName)
 	}
 
+	func testRootFallsBackWhenThereIsNoCachesDirectory()
+	{
+		// キャッシュの場所が取れない環境でも複製先は決まる（決まらないと、
+		// 「コピーしてから処理する」という既定の約束が果たせない）。
+		let root = InputStaging.root(
+			bundleIdentifier: "com.example.app", fileManager: NoCachesFileManager())
+		XCTAssertTrue(
+			root.path.hasPrefix(FileManager.default.temporaryDirectory.path), root.path)
+		XCTAssertEqual(root.lastPathComponent, InputStaging.directoryName)
+	}
+
+	func testFileSizeIsZeroWhenUnreadable()
+	{
+		// 大きさは合計の表示にしか使わないので、読めないこと自体はエラーにしない。
+		XCTAssertEqual(
+			InputStaging.fileSize(
+				of: workDir.appendingPathComponent("missing.HEIC"), fileManager: .default),
+			0)
+	}
+
 	func testSizeTextIsStable()
 	{
 		// ログの文言はロケールで揺れない（ByteCountFormatter を使わない理由）。
@@ -266,6 +286,64 @@ final class InputStagingTests: XCTestCase
 			XCTAssertEqual(name, "a.HEIC")
 		}
 		XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: cacheRoot.path), [])
+	}
+
+	func testStageReportsProgressForLargeFolders() throws
+	{
+		// 数千枚のコピーは数分かかる。途中経過が出ないと「止まった」ように見える
+		// ので、一定枚数ごとにログを出す。
+		let total = InputStaging.noteInterval + 1
+		for index in 0 ..< total
+		{
+			try makeFile(String(format: "IMG_%04d.HEIC", index), bytes: 1)
+		}
+		var notes: [String] = []
+		let staged = try XCTUnwrap(InputStaging.stage(
+			request(),
+			root: cacheRoot,
+			onEvent:
+			{ event in
+				if case .note(let message) = event
+				{
+					notes.append(message)
+				}
+			}))
+		XCTAssertEqual(staged.fileCount, total)
+		XCTAssertTrue(
+			notes.contains("コピー中… \(InputStaging.noteInterval)/\(total) 枚"), "\(notes)")
+		InputStaging.discard(staged)
+	}
+
+	func testPurgeStaleKeepsGoingWhenSomethingCannotBeRemoved() throws
+	{
+		let old = cacheRoot.appendingPathComponent("old-1", isDirectory: true)
+		try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
+		let now = Date()
+		try FileManager.default.setAttributes(
+			[.modificationDate: now.addingTimeInterval(-InputStaging.staleAge - 60)],
+			ofItemAtPath: old.path)
+		// 親フォルダを書き込み不可にすると削除できない。掃除は best effort なので、
+		// ここで throw せず「消せた件数」を返すこと。
+		try FileManager.default.setAttributes(
+			[.posixPermissions: 0o500], ofItemAtPath: cacheRoot.path)
+		defer
+		{
+			try? FileManager.default.setAttributes(
+				[.posixPermissions: 0o755], ofItemAtPath: cacheRoot.path)
+		}
+
+		XCTAssertEqual(InputStaging.purgeStale(root: cacheRoot, now: now), 0)
+	}
+
+	func testStageIfRequestedSkipsWhenDisabled() throws
+	{
+		try makeFile("a.HEIC")
+		var request = self.request()
+		request.stageInputLocally = false
+		XCTAssertNil(try InputStaging.stageIfRequested(request, root: cacheRoot))
+		request.stageInputLocally = true
+		let staged = try XCTUnwrap(InputStaging.stageIfRequested(request, root: cacheRoot))
+		InputStaging.discard(staged)
 	}
 
 	func testDiscardIgnoresNothingToDo()
@@ -434,5 +512,16 @@ final class InputStagingTests: XCTestCase
 		XCTAssertTrue(
 			InputStagingError.downloadTimedOut(name: "a.HEIC")
 				.errorDescription?.contains("ダウンロード") ?? false)
+	}
+}
+
+/// キャッシュの場所が取れない環境を再現する FileManager。
+final class NoCachesFileManager: FileManager
+{
+	override func urls(
+		for directory: FileManager.SearchPathDirectory,
+		in domainMask: FileManager.SearchPathDomainMask) -> [URL]
+	{
+		[]
 	}
 }

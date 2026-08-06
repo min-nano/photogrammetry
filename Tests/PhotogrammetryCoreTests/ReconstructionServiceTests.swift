@@ -15,6 +15,8 @@ final class ReconstructionServiceTests: XCTestCase
 {
 	private var workDir: URL!
 	private var request: ReconstructionRequest!
+	/// 同一プロセス経路の複製先（本物のキャッシュを汚さない）。
+	private var stagingRoot: URL!
 
 	override func setUpWithError() throws
 	{
@@ -22,9 +24,18 @@ final class ReconstructionServiceTests: XCTestCase
 			.appendingPathComponent("ReconstructionServiceTests-\(UUID().uuidString)")
 		let input = workDir.appendingPathComponent("photos", isDirectory: true)
 		try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
+		stagingRoot = workDir.appendingPathComponent("Caches", isDirectory: true)
+		try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
 		request = ReconstructionRequest(
 			inputFolder: input,
 			outputFile: workDir.appendingPathComponent("model.usdz"))
+	}
+
+	/// 複製の対象になる写真（中身は見ないので拡張子だけ合わせる）。
+	private func makePhoto(_ name: String) throws
+	{
+		try Data(repeating: 0x41, count: 8)
+			.write(to: request.inputFolder.appendingPathComponent(name))
 	}
 
 	override func tearDownWithError() throws
@@ -143,6 +154,110 @@ final class ReconstructionServiceTests: XCTestCase
 		// キャンセルが何も壊さないこと。
 		let service = ReconstructionService(mode: .inProcess)
 		XCTAssertEqual(service.mode, .inProcess)
+		XCTAssertEqual(service.stagingRoot.lastPathComponent, InputStaging.directoryName)
 		service.cancel()
+	}
+
+	// 同一プロセス経路の**前後**（複製・後始末・中断）は、エンジンを偽物へ
+	// 差し替えれば GPU 無しで確かめられる。再構成そのものは相変わらず回さない。
+
+	func testInProcessRunStagesPhotosAndCleansUp() async throws
+	{
+		try makePhoto("a.HEIC")
+		let engine = FakeEngine()
+		let service = ReconstructionService(engine: engine, stagingRoot: stagingRoot)
+
+		try await service.process(request) { _ in }
+
+		let seen = try XCTUnwrap(engine.seenInput)
+		// エンジンが見たのは複製先（ローカル）で、元のフォルダではない。
+		XCTAssertNotEqual(seen, request.inputFolder)
+		XCTAssertEqual(seen.deletingLastPathComponent().path, stagingRoot.path)
+		// 終わったら複製は残らない。
+		XCTAssertFalse(FileManager.default.fileExists(atPath: seen.path))
+	}
+
+	func testInProcessRunDiscardsCopyWhenGenerationFails() async throws
+	{
+		try makePhoto("a.HEIC")
+		let engine = FakeEngine()
+		engine.failure = HelperProcessError.failed(exitCode: 1, message: "boom")
+		let service = ReconstructionService(engine: engine, stagingRoot: stagingRoot)
+
+		do
+		{
+			try await service.process(request) { _ in }
+			XCTFail("エラーが伝わりません")
+		}
+		catch
+		{
+			XCTAssertEqual(error as? HelperProcessError, .failed(exitCode: 1, message: "boom"))
+		}
+		XCTAssertFalse(
+			FileManager.default.fileExists(atPath: try XCTUnwrap(engine.seenInput).path))
+	}
+
+	func testInProcessRunUsesOriginalFolderWhenStagingIsOff() async throws
+	{
+		try makePhoto("a.HEIC")
+		var request = self.request!
+		request.stageInputLocally = false
+		let engine = FakeEngine()
+		let service = ReconstructionService(engine: engine, stagingRoot: stagingRoot)
+
+		try await service.process(request) { _ in }
+
+		XCTAssertEqual(engine.seenInput, request.inputFolder)
+		XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: stagingRoot.path), [])
+	}
+
+	func testInProcessCancelStopsBeforeGeneration() async throws
+	{
+		try makePhoto("a.HEIC")
+		let engine = FakeEngine()
+		let service = ReconstructionService(engine: engine, stagingRoot: stagingRoot)
+		// 複製が始まる前にキャンセルされた場合、生成へは進まない。
+		service.cancel()
+
+		do
+		{
+			try await service.process(request) { _ in }
+			XCTFail("中断が伝わりません")
+		}
+		catch
+		{
+			XCTAssertEqual(error as? InputStagingError, .cancelled)
+		}
+		XCTAssertNil(engine.seenInput)
+		XCTAssertTrue(engine.cancelled)
+	}
+}
+
+/// 生成エンジンの偽物。GPU も RealityKit も要らずに、同一プロセス経路の
+/// 前後（複製・後始末・中断）だけを確かめるために使う。
+final class FakeEngine: ReconstructionEngine, @unchecked Sendable
+{
+	/// エンジンが受け取った入力フォルダ（複製先に差し替わっているか見る）。
+	var seenInput: URL?
+	/// 生成の失敗を再現する。
+	var failure: Error?
+	/// cancel が届いたか。
+	var cancelled = false
+
+	func process(
+		_ request: ReconstructionRequest,
+		onEvent: @escaping @Sendable (ReconstructionEvent) -> Void) async throws
+	{
+		seenInput = request.inputFolder
+		onEvent(.progress(0.5))
+		if let failure
+		{
+			throw failure
+		}
+	}
+
+	func cancel()
+	{
+		cancelled = true
 	}
 }
