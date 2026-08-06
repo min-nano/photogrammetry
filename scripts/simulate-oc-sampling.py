@@ -297,6 +297,45 @@ def run_policy(component_sizes, p, M, k, q, min_photos, mode, rng,
 	}
 
 
+# ---------------------------------------------------------------- 提案者の質
+
+def proposed_chunks(photos, M, noise, rng):
+	"""局所性を保つ提案（潜在順にまとめて M 枚ずつ切る）を noise だけ壊したもの.
+
+	noise=0 なら完璧な提案、noise=1 なら一様無作為（＝手がかりゼロ＝本書の主題）。
+	間の値が「当てにならない手がかりでもどこまで使えるか」に対応する。
+	"""
+	ordered = sorted(photos)                      # (成分, 潜在位置) の順 = 理想の提案
+	chunks = [ordered[i:i + M] for i in range(0, len(ordered), M)]
+	if noise <= 0:
+		return chunks
+	# noise の割合の写真を選び、それらだけを チャンク間でシャッフルする
+	slots = [(ci, pi) for ci, ch in enumerate(chunks) for pi in range(len(ch))]
+	picked = [sl for sl in slots if rng.random() < noise]
+	values = [chunks[ci][pi] for ci, pi in picked]
+	rng.shuffle(values)
+	for (ci, pi), v in zip(picked, values):
+		chunks[ci][pi] = v
+	return chunks
+
+
+def proposal_coverage(component_sizes, p, M, k, q, min_photos, mode, noise, trials, rng):
+	"""提案どおりに切って 1 回ずつ投げたとき、有効写真の何割に姿勢が付くか."""
+	cov, runs_ok = 0.0, 0.0
+	for _ in range(trials):
+		photos, valid = build_site(component_sizes, p, rng)
+		valid_count = sum(1 for ph in photos if valid[ph]) or 1
+		posed = set()
+		chunks = proposed_chunks(photos, M, noise, rng)
+		for ch in chunks:
+			res = oracle(ch, valid, k, q, min_photos, mode)
+			if res:
+				posed |= res
+				runs_ok += 1
+		cov += len(posed) / valid_count
+	return cov / trials, runs_ok / trials
+
+
 # ---------------------------------------------------------------- 解析式
 
 def f_star(n, k, q):
@@ -340,6 +379,18 @@ def cmd_policy(args, rng):
 	print(f"  得たモデル数 = {mean('models', got):.2f}  （真の成分数 {len(sizes)}）")
 	print(f"  有効写真の被覆率 = {mean('coverage', got):.3f}  "
 	      f"（未回収 {mean('residue', got):.0f} 枚）")
+
+
+def cmd_proposal(args, rng):
+	sizes = parse_components(args.components, args.N)
+	print(f"N={args.N} M={args.M} k={args.k} q={args.q} p={args.p} "
+	      f"成分={sizes} 判定={args.oracle} 試行={args.trials}")
+	print(f"{'雑さ':>6} {'被覆率':>8} {'通った走行':>10} / {math.ceil(args.N / args.M)}")
+	for noise in args.noise:
+		cov, ok = proposal_coverage(sizes, args.p, args.M, args.k, args.q,
+		                            args.min_photos, args.oracle, noise,
+		                            args.trials, rng)
+		print(f"{noise:>6.2f} {cov:>8.3f} {ok:>10.1f}")
 
 
 def cmd_sweep(args, rng):
@@ -388,6 +439,13 @@ def main(argv=None):
 	               help="アンカーを間引かず丸ごと積む（圧縮の値打ちを測るため）")
 	common(c)
 	c.set_defaults(func=cmd_policy)
+
+	c = sub.add_parser("proposal", help="提案者がどれだけ間違ってよいかを測る")
+	c.add_argument("--N", type=int, required=True)
+	c.add_argument("--noise", type=float, nargs="+",
+	               default=[0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0])
+	common(c)
+	c.set_defaults(func=cmd_proposal)
 
 	c = sub.add_parser("sweep", help="N を掃引して使える境界を出す")
 	c.add_argument("--points", type=int, nargs="+",
