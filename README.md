@@ -55,6 +55,16 @@ xattr -dr com.apple.quarantine /Applications/Photogrammetry.app
 2. 「出力」で保存先（`.usdz`）を選択
 3. 品質（**対象の種類**・詳細度・写真の並び・特徴点検出）を選んで「3D モデルを生成」
 
+**「写真をローカル（アプリのキャッシュ）へコピーしてから処理する」は既定で ON** です。
+クラウド上の写真をそのまま処理すると、処理中に実体が退避されて読み取りに失敗する
+ことがありますが、先にローカルへ写してしまえばこの手の失敗は起きません（コピーは
+処理が終わると自動的に削除されます）。ディスクの空きが足りないなどの事情があるときだけ
+外してください。
+
+**入力フォルダが iCloud Drive・Google ドライブなどクラウド同期領域にある場合、この
+チェックは ON のまま操作できません**（コピーが必須になります）。外せるのはローカルの
+フォルダを選んだときだけです。
+
 **対象の種類**は重要な設定です。単一の物体（家具・小物など）を撮った写真なら
 「物体」、建物・部屋・現場全体のようなシーンを撮った写真なら「シーン・建物」を
 選んでください（下記「うまくいかないとき」参照）。
@@ -80,8 +90,16 @@ photogrammetry-cli <入力フォルダ> <出力ファイル.usdz> \
     [--detail preview|reduced|medium|full|raw] \
     [--sample-ordering unordered|sequential] \
     [--feature-sensitivity normal|high] \
-    [--subject object|scene]
+    [--subject object|scene] \
+    [--no-stage-input]
 ```
+
+`--no-stage-input` は「写真をローカル（アプリのキャッシュ）へコピーしてから処理
+する」動作を止めます。**ただし入力フォルダがクラウド同期領域にある場合は無視され、
+必ずコピーします**（下記「うまくいかないとき」参照）。**既定は有効**で、`~/Library/Caches/com.minnano.photogrammetry/
+StagedInput/` へ複製してから処理し、終わったら複製を削除します（クラウド上の写真を
+そのまま扱わないため）。「オンラインのみ」のファイルはコピーの読み取り自体が実体の
+取り寄せを起こすので、そのまま扱えます。
 
 stdout に機械可読な `key=value` 行を逐次出力します（`progress=0.42` /
 `stage=imageAlignment` / `eta=1830` / `note=…` / `output=/path/model.usdz` /
@@ -185,7 +203,7 @@ open "photogrammetry://sort?input=/Users/me/現場&output=/Users/me/仕分け&ov
 パラメータ:
 
 - `process`: `input`（必須）/ `output`（必須）/ `detail` / `ordering` /
-  `sensitivity` / `subject`
+  `sensitivity` / `subject` / `stageInput`（既定 `true`）
 - `sort`: `input`（必須）/ `output`（必須）/ `overlap` / `maxPerGroup` /
   `minPerGroup` / `timeGap` / `groupThreshold` / `minSharpness` /
   `duplicateDistance` / `link` / `recursive` / `dryRun`
@@ -263,8 +281,7 @@ macOS の Object Capture 本体（`CorePhotogrammetry`）が内部エラーで�
 
 1. 詳細度を下げる（プレビュー / 低）
 2. 写真の枚数を減らす、解像度の大きすぎる写真を外す
-3. 入力フォルダをクラウド（iCloud Drive / Google Drive）ではなく
-   ローカル（例: `~/Pictures`）へコピーする
+3. 写真をローカルへコピーしてから処理する（既定で有効。切っている場合は戻す）
 4. 対象の種類（物体 / シーン・建物）を撮影内容に合わせる
 5. 他の重いアプリを閉じてメモリを空ける
 
@@ -282,9 +299,33 @@ macOS の Object Capture 本体（`CorePhotogrammetry`）が内部エラーで�
 **クラウド上のフォルダが遅い・見つからない**
 iCloud Drive・Google Drive などのストリーミングフォルダは、実体が未ダウンロード
 だと読めない・非常に遅いことがあります。処理の途中で実体が読めなくなると異常
-終了の原因にもなります。未ダウンロードのファイル（`.icloud`）があるとログに警告が
-出るので、Finder で「今すぐダウンロード」するか、写真をローカル（例: `~/Pictures`）
-へコピーしてから実行してください。
+終了の原因にもなります。**これを避けるため、生成の前に写真をアプリのキャッシュへ
+コピーします。** 入力が**クラウド同期領域にあるときはコピーが必須**で、GUI では
+チェックが ON のまま操作できず、CLI で `--no-stage-input` を付けても無視されます
+（ログに理由が出ます）。切れるのはローカルのフォルダを選んだときだけです。判定は
+実体の置き場所（`~/Library/Mobile Documents/` = iCloud Drive、
+`~/Library/CloudStorage/` = Google ドライブ・Dropbox・OneDrive など、
+`/Volumes/GoogleDrive/` = 旧 Google ドライブ）で行い、フォルダ名では推測しません。
+コピー先は
+
+```
+~/Library/Caches/com.minnano.photogrammetry/StagedInput/
+```
+
+で、処理が終わると（失敗・中断でも）削除されます。異常終了で後始末が走らなかった
+ぶんは、次回の実行時に古いもの（24 時間以上前）から掃除します。この機能を切って
+実行する場合は、Finder で「今すぐダウンロード」するか、写真をローカル
+（例: `~/Pictures`）へコピーしてから実行してください。
+
+「オンラインのみ」（実体がまだ無い）ファイルは、コピーの読み取り自体が実体の取り寄せを
+起こすので、そのまま扱えます。ただし iCloud が**旧表現**（`.名前.jpg.icloud` という
+別名のスタブしか見えない形）で退避している場合は実名のパスが存在せずコピーできない
+ため、その写真は対象から外してログに警告を出します。Finder で「今すぐダウンロード」
+してから実行してください。
+
+コピー中に「空き容量がありません」で失敗する場合は、写真の総容量ぶんの空きが
+必要です。空けられないときは `--no-stage-input`（GUI ではチェックを外す）で
+コピーせずに実行できます。
 
 ## 自動アップデート
 

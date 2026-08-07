@@ -27,6 +27,14 @@ public struct ReconstructionRequest: Equatable, Sendable
 	public var featureSensitivity: FeatureSensitivity
 	/// 撮影対象の種類（オブジェクトマスキングの有効/無効）。
 	public var subject: SubjectKind
+	/// 写真をアプリのキャッシュへ複製してから処理するか（既定: true）。
+	///
+	/// クラウド同期領域（iCloud Drive など）に置いたままの写真は、実体が未
+	/// ダウンロードだったり処理中に退避されたりして読めなくなる。生成は数時間
+	/// かかることがあるので、先にローカルへ写してしまうほうが確実。複製は処理が
+	/// 終わると捨てる（詳細は InputStaging）。ディスクの空きが足りないなど、
+	/// 複製したくない事情があるときだけ false にする。
+	public var stageInputLocally: Bool
 
 	public init(
 		inputFolder: URL,
@@ -34,7 +42,8 @@ public struct ReconstructionRequest: Equatable, Sendable
 		detail: Detail = .medium,
 		sampleOrdering: SampleOrdering = .unordered,
 		featureSensitivity: FeatureSensitivity = .normal,
-		subject: SubjectKind = .object)
+		subject: SubjectKind = .object,
+		stageInputLocally: Bool = true)
 	{
 		self.inputFolder = inputFolder
 		self.outputFile = outputFile
@@ -42,6 +51,7 @@ public struct ReconstructionRequest: Equatable, Sendable
 		self.sampleOrdering = sampleOrdering
 		self.featureSensitivity = featureSensitivity
 		self.subject = subject
+		self.stageInputLocally = stageInputLocally
 	}
 
 	/// PhotogrammetrySession.Request.Detail に対応。rawValue が CLI /
