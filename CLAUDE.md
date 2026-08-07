@@ -31,7 +31,7 @@ Sources/
     HelperProtocol         ヘルパーの stdout 行の書式（CLI ↔ GUI の対）
     InputInspection        入力フォルダの事前チェック（純ロジック）
     ModelCache             ML モデルのキャッシュ破損の見分け・場所・削除
-    Preprocess/            大量の写真の仕分け（sort。docs/design-preprocess-merge.md）
+    Preprocess/            大量の写真の仕分け（sort。docs/roadmap.md）
       PhotoMetadata        写真 1 枚分の事実（値型・Sendable）
       PhotoInspector       ImageIO / CoreGraphics を叩く唯一の層  ← ラッパー
       ImageStatistics      画素 → ブレ・露出・知覚ハッシュ        ← 純ロジック

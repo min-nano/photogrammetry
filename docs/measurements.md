@@ -28,6 +28,20 @@ PR #11〜#17 は設計案ごと close したが、**そこで得た実測は設�
 | #16 | 手で作った正解で指標を採点する | `claude/photogrammetry-clustering-manual-bue9eu` |
 | #17 | Object Capture だけで大域姿勢を作れるか | `claude/object-capture-covisibility-graph-12v88x` |
 
+**main から撤去した文書**（内容は git の履歴に残っているので、下のコマンドで
+いつでも読める。main の作業ツリーに置いておく理由が無いだけ）:
+
+| 文書 | 何が書いてあったか | 取り出し方 |
+| --- | --- | --- |
+| `docs/design-preprocess-merge.md` | 建築物向けプリ／ポストプロセス設計。`sort` の設計（PR #2 / #8）、`merge` の設計と USD 連携の検証、進捗表示（フェーズ 0）、撮影ガイド | `git show 44c0ec2:docs/design-preprocess-merge.md`（PR [#2](https://github.com/min-nano/photogrammetry/pull/2) / [#8](https://github.com/min-nano/photogrammetry/pull/8)） |
+| `docs/design-loose-clustering.md` | 共視グラフから窓を育てる設計 | PR [#13](https://github.com/min-nano/photogrammetry/pull/13) / [#14](https://github.com/min-nano/photogrammetry/pull/14)（main には入っていない） |
+| `docs/design-oc-only-covisibility.md` | OC だけで大域姿勢を作る思考実験 | PR [#17](https://github.com/min-nano/photogrammetry/pull/17)（同上） |
+| `docs/design-manual-truth.md` | 手作業の正解づくり | PR [#16](https://github.com/min-nano/photogrammetry/pull/16)（同上） |
+| `docs/investigate-ane-compile-failure.md` | ANE コンパイル失敗の調査 | PR [#15](https://github.com/min-nano/photogrammetry/pull/15)（同上） |
+
+**撤去した文書のうち、いま必要な中身はこの文書と `docs/roadmap.md` へ移してある**
+（`merge` の確定事項は roadmap A-3、USD と `sort` の検証結果は本書 §3.14〜§3.16）。
+
 主な計測スクリプト: `scripts/measure-ordering.swift`（視覚特徴）・
 `scripts/measure-poses.swift`（Object Capture への投入と姿勢）・
 `scripts/measure-truth.swift`（手作業の正解との照合）・
@@ -284,7 +298,7 @@ preProcessing 1 → imageAlignment 9 → pointCloudGeneration 499
 
 ### 3.14 API が返すもの / 返さないもの（実機の SDK で確認）
 
-出所: #14 / `docs/design-preprocess-merge.md` §2
+出所: #14 / PR #2（ci-debug の `swiftc -typecheck` で実在を確認）
 
 - `Pose`（`translation` / `rotation` / `transform`）は macOS 14+ で返る。
 - `PointCloud`（`position` + `color`）は macOS 13+ で返る。
@@ -294,6 +308,72 @@ preProcessing 1 → imageAlignment 9 → pointCloudGeneration 499
   `SCNScene.write(to:)` は書ける。
 - SceneKit 経由の往復で劣化なし（頂点 12,608 / プリミティブ 24,999 /
   マテリアル 1 が入出力で一致。ファイルサイズ 2,023,159 → 2,022,755 バイト）。
+
+### 3.15 USD の書き出しと取り込みの実測
+
+出所: PR #2（`scripts/make-usd-samples.sh` / `scripts/usdz-roundtrip.swift`）。
+run: <https://github.com/min-nano/photogrammetry/actions/runs/30724126241>
+取り込み側は Vectorworks。
+
+| 方法 | usdz 書き出し | テクスチャ |
+| --- | --- | --- |
+| ModelIO `MDLAsset.export(to:)` | **不可**（`canExportFileExtension("usdz")` が false） | — |
+| SceneKit `SCNScene.write(to:)` | **可** | zip 内に同梱される |
+| 自前で `.usda` を書く（外部参照方式） | （usdz ではない） | **落ちる**（無地になる） |
+
+**SceneKit で書いた単一 usdz を Vectorworks で開いた結果**
+
+| 確認項目 | 結果 |
+| --- | --- |
+| テクスチャ（赤／青のチェッカー） | **OK**（表示される） |
+| 単位系（1 USD 単位 = 1 m） | **OK**（赤い立方体が 1 辺 1m） |
+| 相似変換のスケール（0.5 倍） | **OK**（青い立方体が 1 辺 500mm） |
+| 相似変換の回転・並進（Y 軸 45°・X 方向 3.0） | **OK** |
+| 上方向（USD は Y-up / Vectorworks は Z-up） | **OK**（自動変換される） |
+| メッシュの寸法 | **正確**（幅・奥行き・高さとも 1000mm、原点中心で -500〜+500） |
+
+**外部参照方式（`.usda` から usdz を `references`）**: 参照の解決・相似変換・prim
+名の保持はすべて OK だが、**テクスチャだけ NG**。生成時の警告と一致する。
+
+```
+Failed to resolve reference @0/texgen_0.png@ with computed asset path @0/texgen_0.png@
+```
+
+〔解釈〕SceneKit が書く usdz はテクスチャをパッケージ内パス（`0/texgen_0.png`）で
+参照する。単体で開けば解決できるが、外側のレイヤから参照されると解決できない。
+**Object Capture が書いた usdz を参照した場合に同じことが起きるかは未検証。**
+
+**ノード名の伝わり方**
+
+```
+scene_reloaded-3   （グループ。ファイル名由来）
+  └ Geom           （Apple の USD エクスポータが挟む中間層）
+      └ box_a-2    （メッシュ。SceneKit のノード名が届いている）
+```
+
+- ノード名は届く。ただし**重複名回避のサフィックス（`-2`）が付く**ので、
+  名前で機械的に振り分けるなら**前方一致**で判定すること。
+- **中間に `Geom` グループが挟まる**ので、取り込み後にメッシュへ到達するには
+  グループを 2 回解除することになる。
+- テクスチャは表示されるが、Vectorworks の「マテリアルを使用」はオフだった
+  （メッシュのテクスチャとして入っており、マテリアルとしては割り当てられていない）。
+
+### 3.16 `sort` の読み取り経路の確認（合成写真）
+
+出所: PR #8（`scripts/make-sort-samples.swift`）。
+run: <https://github.com/min-nano/photogrammetry/actions/runs/30742799841>
+
+入力は「部屋 A 24 枚 → 12 分の移動 → 部屋 B 24 枚」で、A に濃淡のほとんど無い
+（＝ブレ相当の）写真を 3 枚混ぜたもの。
+
+| 確認項目 | 結果 |
+| --- | --- |
+| EXIF の読み取り（時刻・GPS・高度・方位・露出） | **OK**（coverage すべて 1.0） |
+| ブレの自動判定 | **OK**（中央値 516 に対し閾値 230。濃淡の無い 3 枚だけ落ちた） |
+| 時刻ギャップでの分割 | **OK**（21 枚 + 24 枚の 2 グループ） |
+| 重複付き分割 | **OK**（共有 15 枚が両方のフォルダに実在） |
+| 視点の散らばり | **OK**（`viewpointSpread` = 1.0） |
+| `--dry-run` | **OK**（出力フォルダ自体が作られない） |
 
 ## 4. 棄却された方法の実測
 
