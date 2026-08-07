@@ -2,7 +2,7 @@
 //  make-sort-samples.swift
 //
 //  仕分け（`photogrammetry-cli sort`）の動作確認用に、**EXIF 付きの合成写真**を
-//  生成する。現場の実写真は公開できない（docs/design-preprocess-merge.md §10-10）
+//  生成する。現場の実写真は公開できない（docs/measurements.md 冒頭の規約）
 //  ので、読み取り経路（PhotoInspector = ImageIO / CoreGraphics）を確かめるには
 //  こういう合成データが要る。
 //

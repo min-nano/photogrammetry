@@ -180,7 +180,8 @@ done
 
 複数モデルを 1 つの座標系へ合成する `merge` はフェーズ 3 で実装予定です
 （`manifest.json` の `adjacency` がそのための契約です）。設計は
-[`docs/design-preprocess-merge.md`](docs/design-preprocess-merge.md) を参照。
+[`docs/roadmap.md`](docs/roadmap.md) を参照（設計の現在地）。
+実測は [`docs/measurements.md`](docs/measurements.md)。
 
 **撮影のコツ**（守れなくても `sort` が不足を検出して指摘しますが、守ると精度が
 上がります）: 部屋を出る前に**出口付近から次に入る先の方向を数枚**撮り、その

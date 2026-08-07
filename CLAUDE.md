@@ -33,7 +33,7 @@ Sources/
     InputStaging           写真をアプリのキャッシュへ複製 → 処理後に破棄
     ModelCache             ML モデルのキャッシュ破損の見分け・場所・削除
     CancellationFlag       中断フラグ（仕分け・複製で共用。別名 SortCancellation）
-    Preprocess/            大量の写真の仕分け（sort。docs/design-preprocess-merge.md）
+    Preprocess/            大量の写真の仕分け（sort。docs/roadmap.md）
       PhotoMetadata        写真 1 枚分の事実（値型・Sendable）
       PhotoInspector       ImageIO / CoreGraphics を叩く唯一の層  ← ラッパー
       ImageStatistics      画素 → ブレ・露出・知覚ハッシュ        ← 純ロジック
