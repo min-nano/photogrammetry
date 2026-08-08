@@ -44,7 +44,7 @@ public enum APICommand: Equatable, Sendable
 	// URL スキーム
 	//   photogrammetry://process?input=<パス>&output=<パス>
 	//                   [&detail=medium][&ordering=sequential][&sensitivity=high]
-	//                   [&subject=scene][&stageInput=false]
+	//                   [&subject=scene][&stageInput=false][&pointCloud=<パス.ply>]
 	//   photogrammetry://sort?input=<パス>&output=<パス>
 	//                   [&overlap=15][&maxPerGroup=150][&minPerGroup=20]
 	//                   [&timeGap=300][&groupThreshold=0.4][&minSharpness=12]
@@ -113,6 +113,12 @@ public enum APICommand: Equatable, Sendable
 				{
 					request.stageInputLocally = try boolValue(raw, parameter: "stageInput")
 				}
+				// 点群は「指定があれば出す」任意の出力。空文字は指定なしと同じ
+				// 扱いにする（&pointCloud= だけ付いた URL を弾かない）。
+				if let raw = parameters["pointCloud"], !raw.isEmpty
+				{
+					request.pointCloudFile = URL(fileURLWithPath: raw)
+				}
 				return .process(request)
 
 			case sortCommand:
@@ -170,7 +176,7 @@ public enum APICommand: Equatable, Sendable
 	// CLI 引数
 	//   <input-folder> <output-file> [--detail d] [--sample-ordering o]
 	//                                [--feature-sensitivity s] [--subject k]
-	//                                [--no-stage-input]
+	//                                [--no-stage-input] [--point-cloud file.ply]
 	//   sort <input-folder> <output-folder> [--overlap n] [--max-per-group n] …
 	//
 	// 生成の語彙は Apple の HelloPhotogrammetry と同じにしてある（移行しやすさ
@@ -201,6 +207,7 @@ public enum APICommand: Equatable, Sendable
 		var orderingRaw: String?
 		var sensitivityRaw: String?
 		var subjectRaw: String?
+		var pointCloudRaw: String?
 		// 既定が「複製する」なので、フラグは切るほうに置く（sort の
 		// --no-recursive と同じ形）。
 		var stageInputLocally = true
@@ -222,6 +229,9 @@ public enum APICommand: Equatable, Sendable
 					index += 2
 				case "--subject":
 					subjectRaw = try optionValue(arguments, at: index, name: argument)
+					index += 2
+				case "--point-cloud":
+					pointCloudRaw = try optionValue(arguments, at: index, name: argument)
 					index += 2
 				case "--no-stage-input":
 					stageInputLocally = false
@@ -261,6 +271,10 @@ public enum APICommand: Equatable, Sendable
 		if let raw = subjectRaw
 		{
 			request.subject = try enumValue(raw, parameter: "--subject")
+		}
+		if let raw = pointCloudRaw
+		{
+			request.pointCloudFile = URL(fileURLWithPath: raw)
 		}
 		return request
 	}
@@ -349,6 +363,11 @@ public enum APICommand: Equatable, Sendable
 			"--feature-sensitivity", request.featureSensitivity.rawValue,
 			"--subject", request.subject.rawValue,
 		]
+		// 点群は任意の出力なので、要求されたときだけ渡す。
+		if let pointCloudFile = request.pointCloudFile
+		{
+			result += ["--point-cloud", pointCloudFile.path]
+		}
 		// 複製はヘルパー（＝実際に写真を読むプロセス）側で行う。既定が有効なので
 		// 切るときだけフラグを渡す。
 		if !request.stageInputLocally

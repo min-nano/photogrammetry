@@ -53,7 +53,8 @@ xattr -dr com.apple.quarantine /Applications/Photogrammetry.app
 
 1. 「入力」で写真フォルダを選択
 2. 「出力」で保存先（`.usdz`）を選択
-3. 品質（**対象の種類**・詳細度・写真の並び・特徴点検出）を選んで「3D モデルを生成」
+3. 点群も欲しければ「出力（点群 .ply・任意）」で保存先を選択（下記「点群を取り出す」）
+4. 品質（**対象の種類**・詳細度・写真の並び・特徴点検出）を選んで「3D モデルを生成」
 
 **「写真をローカル（アプリのキャッシュ）へコピーしてから処理する」は既定で ON** です。
 クラウド上の写真をそのまま処理すると、処理中に実体が退避されて読み取りに失敗する
@@ -91,6 +92,7 @@ photogrammetry-cli <入力フォルダ> <出力ファイル.usdz> \
     [--sample-ordering unordered|sequential] \
     [--feature-sensitivity normal|high] \
     [--subject object|scene] \
+    [--point-cloud <出力ファイル.ply>] \
     [--no-stage-input]
 ```
 
@@ -101,15 +103,41 @@ StagedInput/` へ複製してから処理し、終わったら複製を削除し
 そのまま扱わないため）。「オンラインのみ」のファイルはコピーの読み取り自体が実体の
 取り寄せを起こすので、そのまま扱えます。
 
+`--point-cloud` を指定すると、**メッシュとは別に点群を書き出します**（下記
+「点群を取り出す」）。
+
 stdout に機械可読な `key=value` 行を逐次出力します（`progress=0.42` /
 `stage=imageAlignment` / `eta=1830` / `note=…` / `output=/path/model.usdz` /
-最後に `ok`）。エラーは stderr に `error: …`、終了コードは成功 0 / 失敗 1 /
+`pointCloud=/path/points.ply` / 最後に `ok`）。エラーは stderr に `error: …`、終了コードは成功 0 / 失敗 1 /
 使い方誤り 2 です。
 
 `stage=` は処理段階（`preProcessing` / `imageAlignment` / `pointCloudGeneration`
 / `meshGeneration` / `textureMapping` / `optimization`）、`eta=` は残り時間の
 見積もり（秒）です。どちらも OS が返したときだけ出ます（macOS が値を返さない
 区間では出力されません）ので、受け側は欠けても動くようにしてください。
+
+### 点群を取り出す（`--point-cloud`）
+
+Object Capture は写真の位置合わせの過程で**色つきの 3D 点群**を作っており、
+メッシュ（`.usdz`）とは別にこれを取り出せます。メッシュ化・テクスチャ貼りを
+経ていないぶん「実際に撮れた点」に素直なので、寸法の確認や、CAD・点群ソフトへの
+持ち込みに向きます。
+
+```bash
+photogrammetry-cli ~/Pictures/chair ~/Desktop/chair.usdz \
+    --point-cloud ~/Desktop/chair.ply
+```
+
+- 形式は **PLY（`binary_little_endian 1.0`）固定**で、拡張子は `.ply` のみ
+  受け付けます（1 点 = `float x/y/z` + `uchar red/green/blue/alpha` の 16 バイト）。
+  CloudCompare・MeshLab・各種 CAD でそのまま読めます。建築規模では点が数百万に
+  なるため、テキスト形式は採用していません。
+- 座標はモデルと同じローカル座標系・単位はメートルです。
+- 点群は**任意の出力**です。指定しなければ従来どおりモデルだけを生成します
+  （点群を頼むぶんの追加コストはわずかで、写真の読み直しは起きません）。
+- GUI では「出力（点群 .ply・任意）」で保存先を選ぶと書き出されます。「解除」で
+  やめられます。URL スキームでは `pointCloud=` を付けます。
+- 書き出しが終わると `pointCloud=<パス>` の行が出ます（GUI ではログに「点群: …」）。
 
 ### 大量の写真を仕分ける（`sort`）
 
@@ -203,7 +231,8 @@ open "photogrammetry://sort?input=/Users/me/現場&output=/Users/me/仕分け&ov
 パラメータ:
 
 - `process`: `input`（必須）/ `output`（必須）/ `detail` / `ordering` /
-  `sensitivity` / `subject` / `stageInput`（既定 `true`）
+  `sensitivity` / `subject` / `stageInput`（既定 `true`）/ `pointCloud`
+  （点群の出力先 `.ply`。省略すると書き出さない）
 - `sort`: `input`（必須）/ `output`（必須）/ `overlap` / `maxPerGroup` /
   `minPerGroup` / `timeGap` / `groupThreshold` / `minSharpness` /
   `duplicateDistance` / `link` / `recursive` / `dryRun`
@@ -223,12 +252,18 @@ import PhotogrammetryCore
 let request = ReconstructionRequest(
     inputFolder: URL(fileURLWithPath: "/path/photos", isDirectory: true),
     outputFile: URL(fileURLWithPath: "/path/model.usdz"),
-    detail: .full)
+    detail: .full,
+    // 点群も欲しいときだけ指定する（省略すればモデルだけ）。
+    pointCloudFile: URL(fileURLWithPath: "/path/points.ply"))
 let engine = PhotogrammetryEngine()
 try await engine.process(request) { event in
     if case .progress(let fraction) = event { print(fraction) }
+    if case .completedPointCloud(let url) = event { print("点群: \(url.path)") }
 }
 ```
+
+点群だけを自前のデータから書き出したいときは `PointCloudFile`（`PointCloudPoint`
+の配列 → PLY）を直接使えます。
 
 ## うまくいかないとき
 
@@ -351,6 +386,7 @@ Sources/
     PhotogrammetryEngine   RealityKit PhotogrammetrySession の唯一のラッパー
     HelperProcessEngine    生成を別プロセス（photogrammetry-cli）で走らせる
     HelperProtocol         ヘルパーの stdout 行の書式（CLI と GUI の対）
+    PointCloudFile         点群 → PLY ファイル（純ロジック）
     InputInspection        入力フォルダの事前チェック（枚数・iCloud の未ダウンロード）
     ModelCache             ML モデルのキャッシュ破損の見分けと削除
     Preprocess/            大量の写真の仕分け（sort）

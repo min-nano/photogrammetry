@@ -19,6 +19,13 @@ public struct ReconstructionRequest: Equatable, Sendable
 	public var inputFolder: URL
 	/// 出力: 生成する 3D モデルファイル（.usdz）。
 	public var outputFile: URL
+	/// 出力（任意）: 点群を書き出すファイル（.ply）。nil なら点群は作らない。
+	///
+	/// Object Capture は位置合わせの過程で色つきの 3D 点群を作っており、これを
+	/// メッシュとは別に取り出せる（`PhotogrammetrySession.Request.pointCloud`）。
+	/// メッシュより素直に「撮れた点」を表すので、寸法の確認や他のソフト
+	/// （CloudCompare・CAD）への持ち込みに使える。形式は PLY 固定（PointCloudFile）。
+	public var pointCloudFile: URL?
 	/// モデルの詳細度。
 	public var detail: Detail
 	/// 写真の並び。連続撮影（隣接写真が近い）なら .sequential が速い。
@@ -43,10 +50,14 @@ public struct ReconstructionRequest: Equatable, Sendable
 		sampleOrdering: SampleOrdering = .unordered,
 		featureSensitivity: FeatureSensitivity = .normal,
 		subject: SubjectKind = .object,
-		stageInputLocally: Bool = true)
+		stageInputLocally: Bool = true,
+		// 点群は後から足した出力なので、既存の呼び出し（ライブラリとして
+		// 組み込んでいる側）を壊さないよう引数の末尾に置いてある。
+		pointCloudFile: URL? = nil)
 	{
 		self.inputFolder = inputFolder
 		self.outputFile = outputFile
+		self.pointCloudFile = pointCloudFile
 		self.detail = detail
 		self.sampleOrdering = sampleOrdering
 		self.featureSensitivity = featureSensitivity
@@ -109,6 +120,12 @@ public struct ReconstructionRequest: Equatable, Sendable
 		{
 			throw RequestError.outputExtensionInvalid(outputFile.path)
 		}
+		// 点群の書き出しは自前（PointCloudFile）で、形式は PLY 固定。
+		if let pointCloudFile,
+			pointCloudFile.pathExtension.lowercased() != PointCloudFile.fileExtension
+		{
+			throw RequestError.pointCloudExtensionInvalid(pointCloudFile.path)
+		}
 	}
 }
 
@@ -141,6 +158,7 @@ public enum RequestError: Error, LocalizedError, Equatable
 {
 	case inputNotDirectory(String)
 	case outputExtensionInvalid(String)
+	case pointCloudExtensionInvalid(String)
 
 	public var errorDescription: String?
 	{
@@ -150,6 +168,8 @@ public enum RequestError: Error, LocalizedError, Equatable
 				return "入力フォルダが見つかりません（フォルダを指定してください）: \(path)"
 			case .outputExtensionInvalid(let path):
 				return "出力ファイルは拡張子 .usdz を指定してください: \(path)"
+			case .pointCloudExtensionInvalid(let path):
+				return "点群の出力ファイルは拡張子 .ply を指定してください: \(path)"
 		}
 	}
 }

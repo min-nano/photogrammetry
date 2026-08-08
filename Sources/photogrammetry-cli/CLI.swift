@@ -12,6 +12,7 @@
 //    eta=1830          残り時間の見積もり（秒。OS が返したときだけ）
 //    note=...          注意情報（スキップされた写真など）
 //    output=<パス>     生成されたモデルファイル
+//    pointCloud=<パス> 書き出された点群ファイル（--point-cloud 指定時のみ）
 //    cancelled         SIGINT / SIGTERM で中断した（終了コード 0）
 //    ok                正常終了（終了コード 0）
 //  行の書式は PhotogrammetryCore の HelperProtocol が唯一の定義で、GUI は
@@ -45,6 +46,10 @@ struct PhotogrammetryCLI
 		                                  （既定は有効。クラウド上（iCloud Drive など）の
 		                                  写真でも確実に読めるよう、アプリのキャッシュへ
 		                                  複製してから処理し、終わったら複製を削除する）
+		      --point-cloud <ファイル.ply>  点群も書き出す（既定: 書き出さない）
+		                                  位置合わせで得られた色つきの 3D 点を PLY
+		                                  （binary_little_endian）で保存する。
+		                                  CloudCompare・MeshLab・CAD などで読める
 
 		sort — 大量の写真をグループへ仕分ける:
 		  建物 1 棟ぶんの写真は 1 回のセッションでは解けない（枚数の上限を超え、
@@ -70,6 +75,8 @@ struct PhotogrammetryCLI
 		例:
 		  photogrammetry-cli ~/Pictures/chair ~/Desktop/chair.usdz --detail full
 		  photogrammetry-cli ~/Pictures/house ~/Desktop/house.usdz --subject scene
+		  photogrammetry-cli ~/Pictures/chair ~/Desktop/chair.usdz \\
+		      --point-cloud ~/Desktop/chair.ply
 		  photogrammetry-cli sort ~/Pictures/現場 ~/Desktop/現場-仕分け --dry-run
 		  photogrammetry-cli ~/Desktop/現場-仕分け/group-01 ~/Desktop/group-01.usdz --subject scene
 		"""

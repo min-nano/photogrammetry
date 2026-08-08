@@ -29,6 +29,7 @@ Sources/
     PhotogrammetryEngine   RealityKit PhotogrammetrySession の唯一のラッパー
     HelperProcessEngine    生成を別プロセス（photogrammetry-cli）で実行する
     HelperProtocol         ヘルパーの stdout 行の書式（CLI ↔ GUI の対）
+    PointCloudFile         点群 → PLY（binary_little_endian）の書き出し。純ロジック
     InputInspection        入力フォルダの事前チェック（純ロジック）
     InputStaging           写真をアプリのキャッシュへ複製 → 処理後に破棄
     ModelCache             ML モデルのキャッシュ破損の見分け・場所・削除
@@ -57,8 +58,17 @@ Sources/
 - `PhotogrammetryCore` / `PhotogrammetryUpdater` は SwiftUI / AppKit を import しない。
 - RealityKit の型は `PhotogrammetryEngine.swift` の外に漏らさない
   （API 表現は `ReconstructionRequest` の自前 enum。変換表はエンジン内に 1 つだけ）。
+- **点群（`pointCloudFile`）はモデルとは別の任意の出力**。RealityKit は点群を
+  ファイルにしてくれない（`Result.pointCloud` で点の配列が返るだけ）ので、
+  書き出しは自前の `PointCloudFile` が行う。形式は PLY（`binary_little_endian`）
+  固定 — 建築規模では点が数百万になりテキスト形式では実用にならないため。
+  RealityKit の `PointCloud.Point` → 自前の `PointCloudPoint` への写し替えは
+  他の変換表と同じくエンジン内に閉じ込める（ヘッダの property の並びと
+  `PointCloudFile.body` のバイト順は**対**で、片方を変えるときは両方＋テストを
+  更新する）。
 - 外部連携のパラメータ語彙（`input` / `output` / `detail` / `ordering` /
-  `sensitivity` / `subject` / `overlap` / `maxPerGroup` / …）は `APICommand` に
+  `sensitivity` / `subject` / `pointCloud` / `overlap` / `maxPerGroup` / …）は
+  `APICommand` に
   **1 か所だけ**定義する。入口（URL / CLI）やコマンド（`process` / `sort`）を
   増やす・変えるときは `APICommand` とそのテストを同時に更新する。CLI は
   サブコマンド名が無ければ `process` として解釈する（既存呼び出しの後方互換）。

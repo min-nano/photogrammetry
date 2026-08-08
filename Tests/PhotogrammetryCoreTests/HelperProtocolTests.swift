@@ -23,6 +23,9 @@ final class HelperProtocolTests: XCTestCase
 		XCTAssertEqual(
 			HelperProtocol.encode(.completed(URL(fileURLWithPath: "/tmp/model.usdz"))),
 			"output=/tmp/model.usdz")
+		XCTAssertEqual(
+			HelperProtocol.encode(.completedPointCloud(URL(fileURLWithPath: "/tmp/points.ply"))),
+			"pointCloud=/tmp/points.ply")
 		XCTAssertEqual(HelperProtocol.encode(.cancelled), "cancelled")
 		XCTAssertEqual(HelperProtocol.encode(.stage(.imageAlignment)), "stage=imageAlignment")
 		XCTAssertEqual(HelperProtocol.encode(.estimatedRemainingTime(1830)), "eta=1830")
@@ -45,6 +48,9 @@ final class HelperProtocolTests: XCTestCase
 		XCTAssertEqual(
 			roundTrip(.completed(URL(fileURLWithPath: "/tmp/a b.usdz"))),
 			.event(.completed(URL(fileURLWithPath: "/tmp/a b.usdz"))))
+		XCTAssertEqual(
+			roundTrip(.completedPointCloud(URL(fileURLWithPath: "/tmp/a b.ply"))),
+			.event(.completedPointCloud(URL(fileURLWithPath: "/tmp/a b.ply"))))
 		XCTAssertEqual(roundTrip(.stage(.textureMapping)), .event(.stage(.textureMapping)))
 		XCTAssertEqual(
 			roundTrip(.estimatedRemainingTime(90)),

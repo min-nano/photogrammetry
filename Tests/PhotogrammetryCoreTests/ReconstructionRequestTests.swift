@@ -74,6 +74,44 @@ final class ReconstructionRequestTests: XCTestCase
 		}
 	}
 
+	func testValidateAcceptsPlyPointCloud()
+	{
+		let request = ReconstructionRequest(
+			inputFolder: workDir,
+			outputFile: workDir.appendingPathComponent("model.usdz"),
+			pointCloudFile: workDir.appendingPathComponent("POINTS.PLY"))
+		XCTAssertNoThrow(try request.validate())
+	}
+
+	func testValidateRejectsNonPlyPointCloud()
+	{
+		let request = ReconstructionRequest(
+			inputFolder: workDir,
+			outputFile: workDir.appendingPathComponent("model.usdz"),
+			pointCloudFile: workDir.appendingPathComponent("points.xyz"))
+		XCTAssertThrowsError(try request.validate())
+		{ error in
+			guard case .pointCloudExtensionInvalid = error as? RequestError
+			else
+			{
+				return XCTFail("pointCloudExtensionInvalid であるべき: \(error)")
+			}
+		}
+	}
+
+	func testRequestErrorDescriptions()
+	{
+		XCTAssertEqual(
+			RequestError.inputNotDirectory("/tmp/x").errorDescription,
+			"入力フォルダが見つかりません（フォルダを指定してください）: /tmp/x")
+		XCTAssertEqual(
+			RequestError.outputExtensionInvalid("/tmp/a.obj").errorDescription,
+			"出力ファイルは拡張子 .usdz を指定してください: /tmp/a.obj")
+		XCTAssertEqual(
+			RequestError.pointCloudExtensionInvalid("/tmp/a.xyz").errorDescription,
+			"点群の出力ファイルは拡張子 .ply を指定してください: /tmp/a.xyz")
+	}
+
 	func testValidateAcceptsUppercaseExtension()
 	{
 		let request = ReconstructionRequest(

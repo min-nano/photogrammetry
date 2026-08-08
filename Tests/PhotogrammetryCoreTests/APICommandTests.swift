@@ -28,6 +28,25 @@ final class APICommandTests: XCTestCase
 		XCTAssertEqual(request.subject, .object)
 		// 写真のローカルへのコピーは既定で ON。
 		XCTAssertTrue(request.stageInputLocally)
+		// 点群は任意の出力なので、指定が無ければ書き出さない。
+		XCTAssertNil(request.pointCloudFile)
+	}
+
+	func testParseURLPointCloud() throws
+	{
+		let url = URL(
+			string: "photogrammetry://process?input=/a&output=/b.usdz"
+				+ "&pointCloud=/tmp/points.ply")!
+		XCTAssertEqual(
+			try parseProcess(url: url).pointCloudFile?.path, "/tmp/points.ply")
+	}
+
+	func testParseURLEmptyPointCloudMeansUnset()
+	{
+		// 値の無い &pointCloud= は「指定なし」と同じ扱い（URL を機械的に
+		// 組み立てる側が空文字を渡してきても弾かない）。
+		let url = URL(string: "photogrammetry://process?input=/a&output=/b.usdz&pointCloud=")!
+		XCTAssertNil(try parseProcess(url: url).pointCloudFile)
 	}
 
 	func testParseURLAllParameters() throws
@@ -202,6 +221,23 @@ final class APICommandTests: XCTestCase
 		XCTAssertFalse(request.stageInputLocally)
 	}
 
+	func testParseArgumentsPointCloud() throws
+	{
+		let request = try parseProcess(arguments: [
+			"/tmp/photos", "/tmp/model.usdz", "--point-cloud", "/tmp/points.ply",
+		])
+		XCTAssertEqual(request.pointCloudFile?.path, "/tmp/points.ply")
+	}
+
+	func testParseArgumentsPointCloudMissingValue()
+	{
+		XCTAssertThrowsError(
+			try parseProcess(arguments: ["/a", "/b.usdz", "--point-cloud"]))
+		{ error in
+			XCTAssertEqual(error as? APICommandError, .missingParameter("--point-cloud"))
+		}
+	}
+
 	func testParseArgumentsStageInputDefaultsToOn()
 	{
 		// フラグが無ければコピーする（既定 ON）。
@@ -285,6 +321,20 @@ final class APICommandTests: XCTestCase
 			"--feature-sensitivity", "high",
 			"--subject", "scene",
 		])
+	}
+
+	func testArgumentsForRequestPointCloudRoundTrip() throws
+	{
+		// GUI → ヘルパープロセス → 解釈で同じ指示に戻ること。点群は
+		// 指定が無ければフラグ自体を出さない。
+		var request = ReconstructionRequest(
+			inputFolder: URL(fileURLWithPath: "/tmp/photos", isDirectory: true),
+			outputFile: URL(fileURLWithPath: "/tmp/model.usdz"))
+		XCTAssertFalse(APICommand.arguments(for: request).contains("--point-cloud"))
+
+		request.pointCloudFile = URL(fileURLWithPath: "/tmp/points.ply")
+		let restored = try parseProcess(arguments: APICommand.arguments(for: request))
+		XCTAssertEqual(restored, request)
 	}
 
 	func testArgumentsForRequestWithoutStaging()

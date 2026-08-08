@@ -14,7 +14,7 @@ import Foundation
 /// ヘルパープロセスの 1 行が意味するもの。
 public enum HelperMessage: Equatable, Sendable
 {
-	/// 進捗イベント（progress= / note= / output= / cancelled）。
+	/// 進捗イベント（progress= / note= / output= / pointCloud= / cancelled）。
 	case event(ReconstructionEvent)
 	/// 正常終了マーカー（ok）。これが来ないまま終わった場合は異常終了。
 	case finished
@@ -43,6 +43,8 @@ public enum HelperProtocol
 				return "note=\(singleLine(message))"
 			case .completed(let url):
 				return "output=\(singleLine(url.path))"
+			case .completedPointCloud(let url):
+				return "pointCloud=\(singleLine(url.path))"
 			case .cancelled:
 				return "cancelled"
 		}
@@ -102,6 +104,8 @@ public enum HelperProtocol
 				return .event(.note(value))
 			case "output":
 				return .event(.completed(URL(fileURLWithPath: value)))
+			case "pointCloud":
+				return .event(.completedPointCloud(URL(fileURLWithPath: value)))
 			default:
 				return nil
 		}

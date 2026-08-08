@@ -159,8 +159,8 @@ struct ContentView: View
 			}
 		}
 		.padding()
-		// 仕分けのフォームは項目が多いので、生成のときより高さが要る。
-		.frame(minWidth: 620, minHeight: 620)
+		// どちらのフォームも項目が多い（生成は出力が 2 つ、仕分けは設定が多い）。
+		.frame(minWidth: 620, minHeight: 700)
 		.alert(
 			"新しいビルドがあります",
 			isPresented: $updater.showUpdateAlert,
@@ -201,6 +201,40 @@ struct ContentView: View
 				.disabled(model.isProcessing)
 			}
 			.padding(4)
+		}
+
+		// 点群はメッシュとは別の任意の出力。保存先を選ぶことが「書き出す」の
+		// 指示そのものになるので、ON/OFF のフラグは別に持たない。
+		GroupBox("出力（点群 .ply・任意）")
+		{
+			VStack(alignment: .leading, spacing: 4)
+			{
+				HStack
+				{
+					Text(model.pointCloudFile?.path ?? "書き出さない")
+						.lineLimit(1)
+						.truncationMode(.middle)
+						.foregroundColor(model.pointCloudFile == nil ? .secondary : .primary)
+					Spacer()
+					if model.pointCloudFile != nil
+					{
+						Button("解除")
+						{
+							model.clearPointCloudFile()
+						}
+					}
+					Button("選択…")
+					{
+						model.choosePointCloudFile()
+					}
+				}
+				Text("位置合わせで得られた色つきの 3D 点を PLY で保存します"
+					+ "（CloudCompare・MeshLab・CAD などで読めます）。")
+					.font(.caption)
+					.foregroundColor(.secondary)
+			}
+			.padding(4)
+			.disabled(model.isProcessing)
 		}
 
 		// クラウド（iCloud Drive・Google ドライブなど）に置いたままの写真は、処理中に
