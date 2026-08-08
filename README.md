@@ -52,9 +52,12 @@ xattr -dr com.apple.quarantine /Applications/Photogrammetry.app
 ### GUI
 
 1. 「入力」で写真フォルダを選択
-2. 「出力」で保存先（`.usdz`）を選択
+2. 「出力（3D モデル .usdz）」で保存先を選択
 3. 点群も欲しければ「出力（点群 .ply・任意）」で保存先を選択（下記「点群を取り出す」）
 4. 品質（**対象の種類**・詳細度・写真の並び・特徴点検出）を選んで「3D モデルを生成」
+
+出力はモデル・点群の**どちらか一方でも構いません**。モデル側を「解除」すると
+メッシュを作らず点群だけを書き出します（ボタンは「点群を生成」に変わります）。
 
 **「写真をローカル（アプリのキャッシュ）へコピーしてから処理する」は既定で ON** です。
 クラウド上の写真をそのまま処理すると、処理中に実体が退避されて読み取りに失敗する
@@ -87,7 +90,7 @@ xattr -dr com.apple.quarantine /Applications/Photogrammetry.app
 ### CLI
 
 ```bash
-photogrammetry-cli <入力フォルダ> <出力ファイル.usdz> \
+photogrammetry-cli <入力フォルダ> [<出力ファイル.usdz>] \
     [--detail preview|reduced|medium|full|raw] \
     [--sample-ordering unordered|sequential] \
     [--feature-sensitivity normal|high] \
@@ -103,8 +106,9 @@ StagedInput/` へ複製してから処理し、終わったら複製を削除し
 そのまま扱わないため）。「オンラインのみ」のファイルはコピーの読み取り自体が実体の
 取り寄せを起こすので、そのまま扱えます。
 
-`--point-cloud` を指定すると、**メッシュとは別に点群を書き出します**（下記
-「点群を取り出す」）。
+`--point-cloud` を指定すると、**メッシュとは別に点群を書き出します**。
+**出力ファイル（2 つめの位置引数）を省くとメッシュを作らず、点群だけ**を
+書き出します（下記「点群を取り出す」）。
 
 stdout に機械可読な `key=value` 行を逐次出力します（`progress=0.42` /
 `stage=imageAlignment` / `eta=1830` / `note=…` / `output=/path/model.usdz` /
@@ -124,19 +128,33 @@ Object Capture は写真の位置合わせの過程で**色つきの 3D 点群**
 持ち込みに向きます。
 
 ```bash
+# モデルと点群の両方
 photogrammetry-cli ~/Pictures/chair ~/Desktop/chair.usdz \
     --point-cloud ~/Desktop/chair.ply
+
+# 点群だけ（3D モデルは作らない）
+photogrammetry-cli ~/Pictures/chair --point-cloud ~/Desktop/chair.ply
 ```
+
+**出力ファイルを省くとメッシュを作りません。** メッシュ化・テクスチャ貼り
+（`meshGeneration` / `textureMapping` / `optimization`）の段階がまるごと省かれる
+ので、点群だけの生成は目に見えて速く終わります。寸法を確認したいだけのとき、
+撮り直しの要否を現場で判断したいときに向きます。逆に出力ファイルも
+`--point-cloud` も無い指示は何も生まないので、エラーになります。
 
 - 形式は **PLY（`binary_little_endian 1.0`）固定**で、拡張子は `.ply` のみ
   受け付けます（1 点 = `float x/y/z` + `uchar red/green/blue/alpha` の 16 バイト）。
   CloudCompare・MeshLab・各種 CAD でそのまま読めます。建築規模では点が数百万に
   なるため、テキスト形式は採用していません。
 - 座標はモデルと同じローカル座標系・単位はメートルです。
-- 点群は**任意の出力**です。指定しなければ従来どおりモデルだけを生成します
-  （点群を頼むぶんの追加コストはわずかで、写真の読み直しは起きません）。
-- GUI では「出力（点群 .ply・任意）」で保存先を選ぶと書き出されます。「解除」で
-  やめられます。URL スキームでは `pointCloud=` を付けます。
+- モデルと点群は**どちらも任意の出力**で、少なくとも一方を指定します。指定
+  しなければ従来どおりモデルだけを生成します（点群を頼むぶんの追加コストは
+  わずかで、写真の読み直しは起きません）。
+- **詳細度（`--detail`）はメッシュにしか効きません**（点群のリクエストは詳細度を
+  受け取りません）。点群だけを出すときは指定しても結果は変わりません。
+- GUI では「出力（点群 .ply・任意）」で保存先を選ぶと書き出されます。「3D モデル
+  .usdz」側を「解除」すれば点群だけになります。URL スキームでは `pointCloud=` を
+  付け、`output=` を省けば点群だけになります。
 - 書き出しが終わると `pointCloud=<パス>` の行が出ます（GUI ではログに「点群: …」）。
 
 ### 大量の写真を仕分ける（`sort`）
@@ -230,9 +248,11 @@ open "photogrammetry://sort?input=/Users/me/現場&output=/Users/me/仕分け&ov
 
 パラメータ:
 
-- `process`: `input`（必須）/ `output`（必須）/ `detail` / `ordering` /
-  `sensitivity` / `subject` / `stageInput`（既定 `true`）/ `pointCloud`
-  （点群の出力先 `.ply`。省略すると書き出さない）
+- `process`: `input`（必須）/ `output`（3D モデルの出力先 `.usdz`）/ `pointCloud`
+  （点群の出力先 `.ply`）/ `detail` / `ordering` / `sensitivity` / `subject` /
+  `stageInput`（既定 `true`）
+  — `output` と `pointCloud` は**どちらも任意ですが、少なくとも一方が必要**です
+  （`output` を省くと点群だけ、`pointCloud` を省くとモデルだけ）
 - `sort`: `input`（必須）/ `output`（必須）/ `overlap` / `maxPerGroup` /
   `minPerGroup` / `timeGap` / `groupThreshold` / `minSharpness` /
   `duplicateDistance` / `link` / `recursive` / `dryRun`
@@ -251,6 +271,7 @@ import PhotogrammetryCore
 
 let request = ReconstructionRequest(
     inputFolder: URL(fileURLWithPath: "/path/photos", isDirectory: true),
+    // モデルが要らなければ nil（点群だけになる）。
     outputFile: URL(fileURLWithPath: "/path/model.usdz"),
     detail: .full,
     // 点群も欲しいときだけ指定する（省略すればモデルだけ）。

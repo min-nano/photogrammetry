@@ -114,7 +114,17 @@ final class ReconstructionViewModel: ObservableObject
 
 	var canStart: Bool
 	{
-		inputFolder != nil && outputFile != nil && !isProcessing
+		// 出力はモデル・点群のどちらか一方でよい（点群だけを出す使い方がある）。
+		// 規則そのものは Core（ReconstructionRequest.validate）が持ち、ここは
+		// ボタンを押せるかどうかに映すだけ。
+		inputFolder != nil && (outputFile != nil || pointCloudFile != nil) && !isProcessing
+	}
+
+	/// 実行ボタンの見出し。点群だけを頼んでいるときに「3D モデルを生成」と
+	/// 書いてあるのは嘘になるので、頼んだものに合わせる。
+	var startButtonTitle: String
+	{
+		outputFile == nil ? "点群を生成" : "3D モデルを生成"
 	}
 
 	var canStartSort: Bool
@@ -153,6 +163,12 @@ final class ReconstructionViewModel: ObservableObject
 		{
 			outputFile = panel.url
 		}
+	}
+
+	/// 3D モデルの書き出しをやめる（点群だけを出す形にする）。
+	func clearOutputFile()
+	{
+		outputFile = nil
 	}
 
 	/// 点群の保存先を選ぶ。拡張子は PLY 固定なので、既定名もそれに合わせる
@@ -212,14 +228,15 @@ final class ReconstructionViewModel: ObservableObject
 
 	func start()
 	{
-		guard let input = inputFolder, let output = outputFile
+		guard let input = inputFolder
 		else
 		{
 			return
 		}
+		// 出力はどちらか一方でよい（canStart が保証している）。
 		run(ReconstructionRequest(
 			inputFolder: input,
-			outputFile: output,
+			outputFile: outputFile,
 			detail: detail,
 			sampleOrdering: sampleOrdering,
 			featureSensitivity: featureSensitivity,
@@ -390,7 +407,11 @@ final class ReconstructionViewModel: ObservableObject
 		statusText = "処理中…"
 		canPurgeModelCache = false
 		lastOutput = nil
-		appendLog("開始: \(request.inputFolder.path) → \(request.outputFile.path)")
+		// 出力は 2 つとも任意なので、頼んだものだけを並べる。
+		let destinations = [request.outputFile, request.pointCloudFile]
+			.compactMap { $0?.path }
+			.joined(separator: " / ")
+		appendLog("開始: \(request.inputFolder.path) → \(destinations)")
 
 		// 実行方式（別プロセス / 同一プロセス）の判断は Core の
 		// ReconstructionService が持つ。ここは結果を表示するだけ。

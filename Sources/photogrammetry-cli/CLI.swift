@@ -29,12 +29,15 @@ struct PhotogrammetryCLI
 {
 	static let usage = """
 		使い方:
-		  photogrammetry-cli <入力フォルダ> <出力ファイル.usdz> [オプション]
+		  photogrammetry-cli <入力フォルダ> [<出力ファイル.usdz>] [オプション]
 		  photogrammetry-cli sort <入力フォルダ> <仕分け先フォルダ> [オプション]
 
 		生成（サブコマンド省略時）:
 		  <入力フォルダ>            対象物を多方向から撮影した写真が入ったフォルダ
-		  <出力ファイル.usdz>       生成する 3D モデルの出力先
+		  <出力ファイル.usdz>       生成する 3D モデルの出力先（省略可）
+		                            省略すると**メッシュを作らず**、--point-cloud で
+		                            指定した点群だけを書き出す（メッシュ化・テクスチャ
+		                            貼りの段階が省かれるぶん速い）
 
 		  -d, --detail <値>               preview | reduced | medium | full | raw（既定: medium）
 		  -o, --sample-ordering <値>      unordered | sequential（既定: unordered）
@@ -77,6 +80,8 @@ struct PhotogrammetryCLI
 		  photogrammetry-cli ~/Pictures/house ~/Desktop/house.usdz --subject scene
 		  photogrammetry-cli ~/Pictures/chair ~/Desktop/chair.usdz \\
 		      --point-cloud ~/Desktop/chair.ply
+		  photogrammetry-cli ~/Pictures/chair --point-cloud ~/Desktop/chair.ply
+		      （点群だけ。3D モデルは作らない）
 		  photogrammetry-cli sort ~/Pictures/現場 ~/Desktop/現場-仕分け --dry-run
 		  photogrammetry-cli ~/Desktop/現場-仕分け/group-01 ~/Desktop/group-01.usdz --subject scene
 		"""

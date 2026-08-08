@@ -74,6 +74,43 @@ final class ReconstructionRequestTests: XCTestCase
 		}
 	}
 
+	func testValidateAcceptsPointCloudOnly()
+	{
+		// メッシュを作らず点群だけを頼む形。
+		let request = ReconstructionRequest(
+			inputFolder: workDir,
+			outputFile: nil,
+			pointCloudFile: workDir.appendingPathComponent("points.ply"))
+		XCTAssertNoThrow(try request.validate())
+	}
+
+	func testValidateRejectsRequestWithoutAnyOutput()
+	{
+		// 出力が 1 つも無ければ何も生まれない。入口ごとに散らさず、全員が
+		// 通るこの 1 か所で弾く。
+		let request = ReconstructionRequest(inputFolder: workDir, outputFile: nil)
+		XCTAssertThrowsError(try request.validate())
+		{ error in
+			XCTAssertEqual(error as? RequestError, .noOutputRequested)
+		}
+	}
+
+	func testValidateChecksInputBeforeOutputs()
+	{
+		// 入力が無いほうが利用者にとって重要な情報なので、出力の有無より先に出す。
+		let request = ReconstructionRequest(
+			inputFolder: workDir.appendingPathComponent("does-not-exist"),
+			outputFile: nil)
+		XCTAssertThrowsError(try request.validate())
+		{ error in
+			guard case .inputNotDirectory = error as? RequestError
+			else
+			{
+				return XCTFail("inputNotDirectory であるべき: \(error)")
+			}
+		}
+	}
+
 	func testValidateAcceptsPlyPointCloud()
 	{
 		let request = ReconstructionRequest(
@@ -107,6 +144,9 @@ final class ReconstructionRequestTests: XCTestCase
 		XCTAssertEqual(
 			RequestError.outputExtensionInvalid("/tmp/a.obj").errorDescription,
 			"出力ファイルは拡張子 .usdz を指定してください: /tmp/a.obj")
+		XCTAssertEqual(
+			RequestError.noOutputRequested.errorDescription,
+			"出力が指定されていません（3D モデル .usdz と点群 .ply の少なくとも一方を指定してください）。")
 		XCTAssertEqual(
 			RequestError.pointCloudExtensionInvalid("/tmp/a.xyz").errorDescription,
 			"点群の出力ファイルは拡張子 .ply を指定してください: /tmp/a.xyz")

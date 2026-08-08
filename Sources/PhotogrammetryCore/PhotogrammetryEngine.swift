@@ -82,11 +82,17 @@ public final class PhotogrammetryEngine
 			self.session = nil
 		}
 
-		// 点群は独立したリクエストとして同じセッションに乗せる。位置合わせの
-		// 結果を共有するので、モデルと一緒に頼んでも写真を読み直す無駄は無い。
-		var requests: [PhotogrammetrySession.Request] = [
-			.modelFile(url: request.outputFile, detail: request.detail.realityKitValue)
-		]
+		// 出力はどちらも任意で、頼まれたものだけをリクエストに積む。点群は独立した
+		// リクエストとして同じセッションに乗る（位置合わせの結果を共有するので、
+		// モデルと一緒に頼んでも写真を読み直す無駄は無い）。逆にモデルを頼まなければ
+		// メッシュ化・テクスチャ貼りの段階がまるごと省かれる。
+		// 両方 nil の指示は validate が弾いているので、ここは必ず 1 つ以上になる。
+		var requests: [PhotogrammetrySession.Request] = []
+		if let outputFile = request.outputFile
+		{
+			requests.append(
+				.modelFile(url: outputFile, detail: request.detail.realityKitValue))
+		}
 		if request.pointCloudFile != nil
 		{
 			requests.append(.pointCloud)

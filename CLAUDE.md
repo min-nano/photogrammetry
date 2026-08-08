@@ -58,6 +58,13 @@ Sources/
 - `PhotogrammetryCore` / `PhotogrammetryUpdater` は SwiftUI / AppKit を import しない。
 - RealityKit の型は `PhotogrammetryEngine.swift` の外に漏らさない
   （API 表現は `ReconstructionRequest` の自前 enum。変換表はエンジン内に 1 つだけ）。
+- **出力（`outputFile` / `pointCloudFile`）はどちらも任意で、少なくとも一方が
+  要る。** この規則は入口（CLI / URL / GUI）ではなく `ReconstructionRequest.
+  validate`（全員が通る 1 か所）に置く — ライブラリから直接組み立てる呼び出しも
+  同じ規則で守るため。GUI はそれをボタンの活性に映すだけで判断を持たない。
+  `outputFile` を nil にすると `.modelFile` をリクエストに積まないので、
+  メッシュ化・テクスチャ貼りの段階がまるごと省かれる（点群だけの生成は速い）。
+  CLI では 2 つめの位置引数を省く形（位置引数は 1〜2 個）。
 - **点群（`pointCloudFile`）はモデルとは別の任意の出力**。RealityKit は点群を
   ファイルにしてくれない（`Result.pointCloud` で点の配列が返るだけ）ので、
   書き出しは自前の `PointCloudFile` が行う。形式は PLY（`binary_little_endian`）

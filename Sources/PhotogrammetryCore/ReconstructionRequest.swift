@@ -17,8 +17,13 @@ public struct ReconstructionRequest: Equatable, Sendable
 {
 	/// 入力: 対象物を多方向から撮影した写真が入ったフォルダ。
 	public var inputFolder: URL
-	/// 出力: 生成する 3D モデルファイル（.usdz）。
-	public var outputFile: URL
+	/// 出力（任意）: 生成する 3D モデルファイル（.usdz）。nil ならメッシュは作らない。
+	///
+	/// 点群だけが欲しいときは nil にする。メッシュ化・テクスチャ貼り
+	/// （meshGeneration / textureMapping / optimization）の段階がまるごと省かれる
+	/// ので、点群だけの生成は目に見えて速い。outputFile と pointCloudFile の
+	/// 両方が nil の指示は成立しない（validate が弾く）。
+	public var outputFile: URL?
 	/// 出力（任意）: 点群を書き出すファイル（.ply）。nil なら点群は作らない。
 	///
 	/// Object Capture は位置合わせの過程で色つきの 3D 点群を作っており、これを
@@ -45,7 +50,9 @@ public struct ReconstructionRequest: Equatable, Sendable
 
 	public init(
 		inputFolder: URL,
-		outputFile: URL,
+		// 型は Optional だが既定値は与えない。「モデルは要らない」は明示して
+		// もらう（うっかり出力なしのリクエストが組めてしまわないように）。
+		outputFile: URL?,
 		detail: Detail = .medium,
 		sampleOrdering: SampleOrdering = .unordered,
 		featureSensitivity: FeatureSensitivity = .normal,
@@ -114,9 +121,16 @@ public struct ReconstructionRequest: Equatable, Sendable
 		{
 			throw RequestError.inputNotDirectory(inputFolder.path)
 		}
-		// PhotogrammetrySession.Request.modelFile は .usdz のみ受け付ける。
-		guard outputFile.pathExtension.lowercased() == "usdz"
+		// 出力は 2 つとも任意だが、両方無ければ何も生まれない。この判断は
+		// 入口（CLI / URL / GUI / ライブラリ）に置かず、全員が通るここに 1 つだけ
+		// 置く（ライブラリから直接組み立てる呼び出しも同じ規則で守られる）。
+		guard outputFile != nil || pointCloudFile != nil
 		else
+		{
+			throw RequestError.noOutputRequested
+		}
+		// PhotogrammetrySession.Request.modelFile は .usdz のみ受け付ける。
+		if let outputFile, outputFile.pathExtension.lowercased() != "usdz"
 		{
 			throw RequestError.outputExtensionInvalid(outputFile.path)
 		}
@@ -157,6 +171,7 @@ public extension ReconstructionRequest
 public enum RequestError: Error, LocalizedError, Equatable
 {
 	case inputNotDirectory(String)
+	case noOutputRequested
 	case outputExtensionInvalid(String)
 	case pointCloudExtensionInvalid(String)
 
@@ -166,6 +181,9 @@ public enum RequestError: Error, LocalizedError, Equatable
 		{
 			case .inputNotDirectory(let path):
 				return "入力フォルダが見つかりません（フォルダを指定してください）: \(path)"
+			case .noOutputRequested:
+				return "出力が指定されていません（3D モデル .usdz と点群 .ply の"
+					+ "少なくとも一方を指定してください）。"
 			case .outputExtensionInvalid(let path):
 				return "出力ファイルは拡張子 .usdz を指定してください: \(path)"
 			case .pointCloudExtensionInvalid(let path):

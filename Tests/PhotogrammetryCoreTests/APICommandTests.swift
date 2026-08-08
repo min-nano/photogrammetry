@@ -20,7 +20,7 @@ final class APICommandTests: XCTestCase
 		let url = URL(string: "photogrammetry://process?input=/tmp/photos&output=/tmp/model.usdz")!
 		let request = try parseProcess(url: url)
 		XCTAssertEqual(request.inputFolder.path, "/tmp/photos")
-		XCTAssertEqual(request.outputFile.path, "/tmp/model.usdz")
+		XCTAssertEqual(request.outputFile?.path, "/tmp/model.usdz")
 		// 省略時は既定値。
 		XCTAssertEqual(request.detail, .medium)
 		XCTAssertEqual(request.sampleOrdering, .unordered)
@@ -39,6 +39,34 @@ final class APICommandTests: XCTestCase
 				+ "&pointCloud=/tmp/points.ply")!
 		XCTAssertEqual(
 			try parseProcess(url: url).pointCloudFile?.path, "/tmp/points.ply")
+	}
+
+	func testParseURLPointCloudOnly() throws
+	{
+		// output を省くとメッシュを作らない（点群だけ）。
+		let url = URL(
+			string: "photogrammetry://process?input=/a&pointCloud=/tmp/points.ply")!
+		let request = try parseProcess(url: url)
+		XCTAssertNil(request.outputFile)
+		XCTAssertEqual(request.pointCloudFile?.path, "/tmp/points.ply")
+	}
+
+	func testParseURLEmptyOutputMeansUnset() throws
+	{
+		// 値の無い &output= は「指定なし」と同じ扱い（pointCloud と同じ規則）。
+		let url = URL(
+			string: "photogrammetry://process?input=/a&output=&pointCloud=/tmp/points.ply")!
+		XCTAssertNil(try parseProcess(url: url).outputFile)
+	}
+
+	func testParseSortURLStillRequiresOutput()
+	{
+		// 仕分けは出力が 1 つしか無いので、そちらは必須のまま。
+		let url = URL(string: "photogrammetry://sort?input=/a")!
+		XCTAssertThrowsError(try APICommand.parse(url: url))
+		{ error in
+			XCTAssertEqual(error as? APICommandError, .missingParameter("output"))
+		}
 	}
 
 	func testParseURLEmptyPointCloudMeansUnset()
@@ -186,7 +214,8 @@ final class APICommandTests: XCTestCase
 			"不明なオプションです: --turbo")
 		XCTAssertEqual(
 			APICommandError.missingArguments.errorDescription,
-			"引数が不足しています（<入力フォルダ> <出力ファイル.usdz> が必要です）。")
+			"引数が不足しています（<入力フォルダ> [<出力ファイル.usdz>] が必要です。"
+				+ "点群だけを書き出すときは出力ファイルを省いて --point-cloud を指定してください）。")
 		XCTAssertEqual(
 			APICommandError.missingSortArguments.errorDescription,
 			"引数が不足しています（sort <入力フォルダ> <仕分け先フォルダ> が必要です）。")
@@ -200,7 +229,7 @@ final class APICommandTests: XCTestCase
 	{
 		let request = try parseProcess(arguments: ["/tmp/photos", "/tmp/model.usdz"])
 		XCTAssertEqual(request.inputFolder.path, "/tmp/photos")
-		XCTAssertEqual(request.outputFile.path, "/tmp/model.usdz")
+		XCTAssertEqual(request.outputFile?.path, "/tmp/model.usdz")
 		XCTAssertEqual(request.detail, .medium)
 	}
 
@@ -275,10 +304,44 @@ final class APICommandTests: XCTestCase
 
 	func testParseArgumentsMissingPositional()
 	{
-		XCTAssertThrowsError(try parseProcess(arguments: ["/a"]))
+		// 位置引数は 1〜2 個。0 個（入力フォルダも無い）は誤り。
+		XCTAssertThrowsError(try parseProcess(arguments: ["--detail", "full"]))
 		{ error in
 			XCTAssertEqual(error as? APICommandError, .missingArguments)
 		}
+	}
+
+	func testParseArgumentsTooManyPositionals()
+	{
+		XCTAssertThrowsError(
+			try parseProcess(arguments: ["/a", "/b.usdz", "/c.usdz"]))
+		{ error in
+			XCTAssertEqual(error as? APICommandError, .missingArguments)
+		}
+	}
+
+	func testParseArgumentsPointCloudOnly() throws
+	{
+		// 出力ファイル（2 つめの位置引数）を省くとメッシュを作らない。
+		let request = try parseProcess(arguments: [
+			"/tmp/photos", "--point-cloud", "/tmp/points.ply",
+		])
+		XCTAssertEqual(request.inputFolder.path, "/tmp/photos")
+		XCTAssertNil(request.outputFile)
+		XCTAssertEqual(request.pointCloudFile?.path, "/tmp/points.ply")
+	}
+
+	func testParseArgumentsPointCloudOnlyRoundTrip() throws
+	{
+		// GUI → ヘルパープロセスでも「点群だけ」が伝わること。位置引数が
+		// 1 つに減るので、往復で崩れないことをここで固定する。
+		let request = ReconstructionRequest(
+			inputFolder: URL(fileURLWithPath: "/tmp/photos", isDirectory: true),
+			outputFile: nil,
+			pointCloudFile: URL(fileURLWithPath: "/tmp/points.ply"))
+		let arguments = APICommand.arguments(for: request)
+		XCTAssertFalse(arguments.contains("/tmp/model.usdz"))
+		XCTAssertEqual(try parseProcess(arguments: arguments), request)
 	}
 
 	func testParseArgumentsMissingOptionValue()
