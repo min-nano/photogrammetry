@@ -64,7 +64,7 @@ final class PointCloudFileTests: XCTestCase
 		// 1.0 は IEEE754 で 0x3F800000。リトルエンディアンなので 00 00 80 3F。
 		let point = PointCloudPoint(
 			x: 1, y: -2, z: 0, red: 10, green: 20, blue: 30, alpha: 40)
-		let body = PointCloudFile.body([point][...])
+		let body = PointCloudFile.body(ArraySlice([point]))
 		XCTAssertEqual(body.count, PointCloudFile.bytesPerPoint)
 		XCTAssertEqual(Array(body[0 ..< 4]), [0x00, 0x00, 0x80, 0x3F])
 		// -2.0 は 0xC0000000。

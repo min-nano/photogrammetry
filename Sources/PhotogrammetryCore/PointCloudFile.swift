@@ -93,7 +93,10 @@ public enum PointCloudFile
 	public static func data(points: [PointCloudPoint]) -> Data
 	{
 		var result = Data(header(pointCount: points.count).utf8)
-		result.append(body(points[...]))
+		// 全体を渡すのに points[...] を使わないのは、無境界レンジが
+		// 「呼ばれない暗黙クロージャ」を 1 つ生み、関数カバレッジ（しきい値
+		// 100%）を落とすため。ArraySlice で包めば同じ意味で余計な関数が出ない。
+		result.append(body(ArraySlice(points)))
 		return result
 	}
 
