@@ -83,7 +83,7 @@ struct ContentView: View
 				}
 				else if model.mode == .reconstruct
 				{
-					Button("3D モデルを生成")
+					Button(model.startButtonTitle)
 					{
 						model.start()
 					}
@@ -159,8 +159,8 @@ struct ContentView: View
 			}
 		}
 		.padding()
-		// 仕分けのフォームは項目が多いので、生成のときより高さが要る。
-		.frame(minWidth: 620, minHeight: 620)
+		// どちらのフォームも項目が多い（生成は出力が 2 つ、仕分けは設定が多い）。
+		.frame(minWidth: 620, minHeight: 700)
 		.alert(
 			"新しいビルドがあります",
 			isPresented: $updater.showUpdateAlert,
@@ -185,22 +185,73 @@ struct ContentView: View
 	@ViewBuilder
 	private var reconstructionForm: some View
 	{
+		// モデルも点群も任意の出力で、少なくとも一方を選べば実行できる
+		// （規則は Core の ReconstructionRequest.validate が持つ）。モデルを
+		// 解除すれば「点群だけ」になる。
 		GroupBox("出力（3D モデル .usdz）")
 		{
 			HStack
 			{
-				Text(model.outputFile?.path ?? "未選択")
+				Text(model.outputFile?.path ?? "書き出さない")
 					.lineLimit(1)
 					.truncationMode(.middle)
 					.foregroundColor(model.outputFile == nil ? .secondary : .primary)
 				Spacer()
+				if model.outputFile != nil
+				{
+					Button("解除")
+					{
+						model.clearOutputFile()
+					}
+				}
 				Button("選択…")
 				{
 					model.chooseOutputFile()
 				}
-				.disabled(model.isProcessing)
 			}
 			.padding(4)
+			.disabled(model.isProcessing)
+		}
+
+		// 点群はメッシュとは別の任意の出力。保存先を選ぶことが「書き出す」の
+		// 指示そのものになるので、ON/OFF のフラグは別に持たない。
+		GroupBox("出力（点群 .ply・任意）")
+		{
+			VStack(alignment: .leading, spacing: 4)
+			{
+				HStack
+				{
+					Text(model.pointCloudFile?.path ?? "書き出さない")
+						.lineLimit(1)
+						.truncationMode(.middle)
+						.foregroundColor(model.pointCloudFile == nil ? .secondary : .primary)
+					Spacer()
+					if model.pointCloudFile != nil
+					{
+						Button("解除")
+						{
+							model.clearPointCloudFile()
+						}
+					}
+					Button("選択…")
+					{
+						model.choosePointCloudFile()
+					}
+				}
+				Text("位置合わせで得られた色つきの 3D 点を PLY で保存します"
+					+ "（CloudCompare・MeshLab・CAD などで読めます）。")
+					.font(.caption)
+					.foregroundColor(.secondary)
+				if model.outputFile == nil, model.pointCloudFile != nil
+				{
+					Text("3D モデルは書き出しません。メッシュ化・テクスチャ貼りの"
+						+ "段階が省かれるぶん、点群だけの生成は速く終わります。")
+						.font(.caption)
+						.foregroundColor(.secondary)
+				}
+			}
+			.padding(4)
+			.disabled(model.isProcessing)
 		}
 
 		// クラウド（iCloud Drive・Google ドライブなど）に置いたままの写真は、処理中に
@@ -244,6 +295,8 @@ struct ContentView: View
 						Text(Self.label(for: value)).tag(value)
 					}
 				}
+				// 詳細度はメッシュにしか効かない（点群のリクエストは詳細度を
+				// 受け取らない）。点群だけを頼んでいるときは触らせない。
 				Picker("詳細度", selection: $model.detail)
 				{
 					ForEach(ReconstructionRequest.Detail.allCases, id: \.self)
@@ -251,6 +304,7 @@ struct ContentView: View
 						Text(Self.label(for: value)).tag(value)
 					}
 				}
+				.disabled(model.outputFile == nil)
 				Picker("写真の並び", selection: $model.sampleOrdering)
 				{
 					ForEach(ReconstructionRequest.SampleOrdering.allCases, id: \.self)

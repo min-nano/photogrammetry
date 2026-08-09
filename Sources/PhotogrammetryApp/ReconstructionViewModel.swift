@@ -41,6 +41,8 @@ final class ReconstructionViewModel: ObservableObject
 
 	@Published var inputFolder: URL?
 	@Published var outputFile: URL?
+	/// 点群（.ply）の出力先。nil なら点群は書き出さない（任意の出力）。
+	@Published var pointCloudFile: URL?
 	@Published var detail: ReconstructionRequest.Detail = .medium
 	@Published var sampleOrdering: ReconstructionRequest.SampleOrdering = .unordered
 	@Published var featureSensitivity: ReconstructionRequest.FeatureSensitivity = .normal
@@ -112,7 +114,17 @@ final class ReconstructionViewModel: ObservableObject
 
 	var canStart: Bool
 	{
-		inputFolder != nil && outputFile != nil && !isProcessing
+		// 出力はモデル・点群のどちらか一方でよい（点群だけを出す使い方がある）。
+		// 規則そのものは Core（ReconstructionRequest.validate）が持ち、ここは
+		// ボタンを押せるかどうかに映すだけ。
+		inputFolder != nil && (outputFile != nil || pointCloudFile != nil) && !isProcessing
+	}
+
+	/// 実行ボタンの見出し。点群だけを頼んでいるときに「3D モデルを生成」と
+	/// 書いてあるのは嘘になるので、頼んだものに合わせる。
+	var startButtonTitle: String
+	{
+		outputFile == nil ? "点群を生成" : "3D モデルを生成"
 	}
 
 	var canStartSort: Bool
@@ -153,6 +165,36 @@ final class ReconstructionViewModel: ObservableObject
 		}
 	}
 
+	/// 3D モデルの書き出しをやめる（点群だけを出す形にする）。
+	func clearOutputFile()
+	{
+		outputFile = nil
+	}
+
+	/// 点群の保存先を選ぶ。拡張子は PLY 固定なので、既定名もそれに合わせる
+	/// （形式の判断は Core の PointCloudFile が持つ）。
+	func choosePointCloudFile()
+	{
+		let panel = NSSavePanel()
+		if let type = UTType(filenameExtension: PointCloudFile.fileExtension)
+		{
+			panel.allowedContentTypes = [type]
+		}
+		panel.canCreateDirectories = true
+		panel.nameFieldStringValue = "points.\(PointCloudFile.fileExtension)"
+		panel.message = "点群（.ply）の保存先を選択してください"
+		if panel.runModal() == .OK
+		{
+			pointCloudFile = panel.url
+		}
+	}
+
+	/// 点群の書き出しをやめる（出力先を未選択に戻す）。
+	func clearPointCloudFile()
+	{
+		pointCloudFile = nil
+	}
+
 	func chooseSortOutputFolder()
 	{
 		let panel = NSOpenPanel()
@@ -186,19 +228,21 @@ final class ReconstructionViewModel: ObservableObject
 
 	func start()
 	{
-		guard let input = inputFolder, let output = outputFile
+		guard let input = inputFolder
 		else
 		{
 			return
 		}
+		// 出力はどちらか一方でよい（canStart が保証している）。
 		run(ReconstructionRequest(
 			inputFolder: input,
-			outputFile: output,
+			outputFile: outputFile,
 			detail: detail,
 			sampleOrdering: sampleOrdering,
 			featureSensitivity: featureSensitivity,
 			subject: subject,
-			stageInputLocally: stageInputLocallyEffective))
+			stageInputLocally: stageInputLocallyEffective,
+			pointCloudFile: pointCloudFile))
 	}
 
 	/// フォームの内容で仕分けを実行する。組み立てるのは SortRequest 1 つだけで、
@@ -241,6 +285,7 @@ final class ReconstructionViewModel: ObservableObject
 					featureSensitivity = request.featureSensitivity
 					subject = request.subject
 					stageInputLocally = request.stageInputLocally
+					pointCloudFile = request.pointCloudFile
 					run(request)
 				case .sort(let request):
 					// フォームにも反映する（何が実行されたのか画面で分かるように）。
@@ -362,7 +407,11 @@ final class ReconstructionViewModel: ObservableObject
 		statusText = "処理中…"
 		canPurgeModelCache = false
 		lastOutput = nil
-		appendLog("開始: \(request.inputFolder.path) → \(request.outputFile.path)")
+		// 出力は 2 つとも任意なので、頼んだものだけを並べる。
+		let destinations = [request.outputFile, request.pointCloudFile]
+			.compactMap { $0?.path }
+			.joined(separator: " / ")
+		appendLog("開始: \(request.inputFolder.path) → \(destinations)")
 
 		// 実行方式（別プロセス / 同一プロセス）の判断は Core の
 		// ReconstructionService が持つ。ここは結果を表示するだけ。
@@ -473,6 +522,9 @@ final class ReconstructionViewModel: ObservableObject
 				appendLog(message)
 			case .completed(let url):
 				appendLog("出力: \(url.path)")
+				lastOutput = url
+			case .completedPointCloud(let url):
+				appendLog("点群: \(url.path)")
 				lastOutput = url
 			case .cancelled:
 				statusText = "キャンセルされました"

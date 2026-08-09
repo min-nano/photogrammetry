@@ -17,8 +17,20 @@ public struct ReconstructionRequest: Equatable, Sendable
 {
 	/// 入力: 対象物を多方向から撮影した写真が入ったフォルダ。
 	public var inputFolder: URL
-	/// 出力: 生成する 3D モデルファイル（.usdz）。
-	public var outputFile: URL
+	/// 出力（任意）: 生成する 3D モデルファイル（.usdz）。nil ならメッシュは作らない。
+	///
+	/// 点群だけが欲しいときは nil にする。メッシュ化・テクスチャ貼り
+	/// （meshGeneration / textureMapping / optimization）の段階がまるごと省かれる
+	/// ので、点群だけの生成は目に見えて速い。outputFile と pointCloudFile の
+	/// 両方が nil の指示は成立しない（validate が弾く）。
+	public var outputFile: URL?
+	/// 出力（任意）: 点群を書き出すファイル（.ply）。nil なら点群は作らない。
+	///
+	/// Object Capture は位置合わせの過程で色つきの 3D 点群を作っており、これを
+	/// メッシュとは別に取り出せる（`PhotogrammetrySession.Request.pointCloud`）。
+	/// メッシュより素直に「撮れた点」を表すので、寸法の確認や他のソフト
+	/// （CloudCompare・CAD）への持ち込みに使える。形式は PLY 固定（PointCloudFile）。
+	public var pointCloudFile: URL?
 	/// モデルの詳細度。
 	public var detail: Detail
 	/// 写真の並び。連続撮影（隣接写真が近い）なら .sequential が速い。
@@ -38,15 +50,21 @@ public struct ReconstructionRequest: Equatable, Sendable
 
 	public init(
 		inputFolder: URL,
-		outputFile: URL,
+		// 型は Optional だが既定値は与えない。「モデルは要らない」は明示して
+		// もらう（うっかり出力なしのリクエストが組めてしまわないように）。
+		outputFile: URL?,
 		detail: Detail = .medium,
 		sampleOrdering: SampleOrdering = .unordered,
 		featureSensitivity: FeatureSensitivity = .normal,
 		subject: SubjectKind = .object,
-		stageInputLocally: Bool = true)
+		stageInputLocally: Bool = true,
+		// 点群は後から足した出力なので、既存の呼び出し（ライブラリとして
+		// 組み込んでいる側）を壊さないよう引数の末尾に置いてある。
+		pointCloudFile: URL? = nil)
 	{
 		self.inputFolder = inputFolder
 		self.outputFile = outputFile
+		self.pointCloudFile = pointCloudFile
 		self.detail = detail
 		self.sampleOrdering = sampleOrdering
 		self.featureSensitivity = featureSensitivity
@@ -103,11 +121,24 @@ public struct ReconstructionRequest: Equatable, Sendable
 		{
 			throw RequestError.inputNotDirectory(inputFolder.path)
 		}
-		// PhotogrammetrySession.Request.modelFile は .usdz のみ受け付ける。
-		guard outputFile.pathExtension.lowercased() == "usdz"
+		// 出力は 2 つとも任意だが、両方無ければ何も生まれない。この判断は
+		// 入口（CLI / URL / GUI / ライブラリ）に置かず、全員が通るここに 1 つだけ
+		// 置く（ライブラリから直接組み立てる呼び出しも同じ規則で守られる）。
+		guard outputFile != nil || pointCloudFile != nil
 		else
 		{
+			throw RequestError.noOutputRequested
+		}
+		// PhotogrammetrySession.Request.modelFile は .usdz のみ受け付ける。
+		if let outputFile, outputFile.pathExtension.lowercased() != "usdz"
+		{
 			throw RequestError.outputExtensionInvalid(outputFile.path)
+		}
+		// 点群の書き出しは自前（PointCloudFile）で、形式は PLY 固定。
+		if let pointCloudFile,
+			pointCloudFile.pathExtension.lowercased() != PointCloudFile.fileExtension
+		{
+			throw RequestError.pointCloudExtensionInvalid(pointCloudFile.path)
 		}
 	}
 }
@@ -140,7 +171,9 @@ public extension ReconstructionRequest
 public enum RequestError: Error, LocalizedError, Equatable
 {
 	case inputNotDirectory(String)
+	case noOutputRequested
 	case outputExtensionInvalid(String)
+	case pointCloudExtensionInvalid(String)
 
 	public var errorDescription: String?
 	{
@@ -148,8 +181,13 @@ public enum RequestError: Error, LocalizedError, Equatable
 		{
 			case .inputNotDirectory(let path):
 				return "入力フォルダが見つかりません（フォルダを指定してください）: \(path)"
+			case .noOutputRequested:
+				return "出力が指定されていません（3D モデル .usdz と点群 .ply の"
+					+ "少なくとも一方を指定してください）。"
 			case .outputExtensionInvalid(let path):
 				return "出力ファイルは拡張子 .usdz を指定してください: \(path)"
+			case .pointCloudExtensionInvalid(let path):
+				return "点群の出力ファイルは拡張子 .ply を指定してください: \(path)"
 		}
 	}
 }

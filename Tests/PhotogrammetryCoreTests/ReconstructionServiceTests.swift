@@ -121,7 +121,7 @@ final class ReconstructionServiceTests: XCTestCase
 		XCTAssertEqual(events.all, [
 			.note(ReconstructionService.note(for: .helperProcess(helper))),
 			.progress(0.25),
-			.completed(request.outputFile),
+			.completed(try XCTUnwrap(request.outputFile)),
 		])
 	}
 

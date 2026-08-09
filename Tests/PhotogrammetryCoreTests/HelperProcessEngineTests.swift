@@ -63,7 +63,7 @@ final class HelperProcessEngineTests: XCTestCase
 		XCTAssertEqual(events.all, [
 			.note("開始"),
 			.progress(0.5),
-			.completed(request.outputFile),
+			.completed(try XCTUnwrap(request.outputFile)),
 		])
 	}
 
@@ -190,7 +190,8 @@ final class HelperProcessEngineTests: XCTestCase
 		try await engine.process(request) { events.append($0) }
 
 		let expected: [ReconstructionEvent] =
-			(1 ... 50).map { .progress(Double($0) / 1000) } + [.completed(request.outputFile)]
+			(1 ... 50).map { .progress(Double($0) / 1000) }
+				+ [.completed(try XCTUnwrap(request.outputFile))]
 		XCTAssertEqual(events.all, expected)
 	}
 

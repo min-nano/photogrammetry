@@ -82,9 +82,22 @@ public final class PhotogrammetryEngine
 			self.session = nil
 		}
 
-		try session.process(requests: [
-			.modelFile(url: request.outputFile, detail: request.detail.realityKitValue)
-		])
+		// 出力はどちらも任意で、頼まれたものだけをリクエストに積む。点群は独立した
+		// リクエストとして同じセッションに乗る（位置合わせの結果を共有するので、
+		// モデルと一緒に頼んでも写真を読み直す無駄は無い）。逆にモデルを頼まなければ
+		// メッシュ化・テクスチャ貼りの段階がまるごと省かれる。
+		// 両方 nil の指示は validate が弾いているので、ここは必ず 1 つ以上になる。
+		var requests: [PhotogrammetrySession.Request] = []
+		if let outputFile = request.outputFile
+		{
+			requests.append(
+				.modelFile(url: outputFile, detail: request.detail.realityKitValue))
+		}
+		if request.pointCloudFile != nil
+		{
+			requests.append(.pointCloud)
+		}
+		try session.process(requests: requests)
 
 		// outputs は処理完了（またはキャンセル）で終端する AsyncSequence。
 		// requestError はセッション全体の失敗として throw し、呼び出し側の
@@ -109,9 +122,22 @@ public final class PhotogrammetryEngine
 						onEvent(.estimatedRemainingTime(remaining))
 					}
 				case .requestComplete(_, let result):
-					if case .modelFile(let url) = result
+					switch result
 					{
-						onEvent(.completed(url))
+						case .modelFile(let url):
+							onEvent(.completed(url))
+						case .pointCloud(let cloud):
+							// 点群は OS がファイルにしてくれないので、ここで
+							// 書き出す（形式・バイト列の組み立ては PointCloudFile）。
+							if let destination = request.pointCloudFile
+							{
+								try PointCloudFile.write(
+									points: cloud.points.map { PointCloudPoint($0) },
+									to: destination)
+								onEvent(.completedPointCloud(destination))
+							}
+						default:
+							break
 					}
 				case .requestError(_, let error):
 					throw error
@@ -204,6 +230,24 @@ private extension ProcessingStage
 			default:
 				return nil
 		}
+	}
+}
+
+private extension PointCloudPoint
+{
+	/// RealityKit の点 → 自前の値型。color は RGBA の順（PLY の property 宣言と
+	/// 同じ並び）。この写し替えがあるおかげで、書き出し側は RealityKit を
+	/// 知らずに済む。
+	init(_ point: PhotogrammetrySession.PointCloud.Point)
+	{
+		self.init(
+			x: point.position.x,
+			y: point.position.y,
+			z: point.position.z,
+			red: point.color.x,
+			green: point.color.y,
+			blue: point.color.z,
+			alpha: point.color.w)
 	}
 }
 

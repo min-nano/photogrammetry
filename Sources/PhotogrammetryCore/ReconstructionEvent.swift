@@ -27,6 +27,11 @@ public enum ReconstructionEvent: Equatable, Sendable
 	case note(String)
 	/// モデルファイルが書き出された。
 	case completed(URL)
+	/// 点群ファイル（.ply）が書き出された。
+	///
+	/// モデルとは別のイベントにしてあるのは、受け取り側が「どちらの出力か」を
+	/// 区別できるようにするため（生成物が 2 つあり、片方だけを要求できる）。
+	case completedPointCloud(URL)
 	/// キャンセルにより中断した。
 	case cancelled
 }

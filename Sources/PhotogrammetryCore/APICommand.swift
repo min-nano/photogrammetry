@@ -42,9 +42,12 @@ public enum APICommand: Equatable, Sendable
 
 	// -----------------------------------------------------------------
 	// URL スキーム
-	//   photogrammetry://process?input=<パス>&output=<パス>
+	//   photogrammetry://process?input=<パス>[&output=<パス.usdz>]
 	//                   [&detail=medium][&ordering=sequential][&sensitivity=high]
-	//                   [&subject=scene][&stageInput=false]
+	//                   [&subject=scene][&stageInput=false][&pointCloud=<パス.ply>]
+	//     process の output と pointCloud はどちらも任意（ただし両方省くと何も
+	//     生まれないので ReconstructionRequest.validate が弾く）。点群だけが
+	//     欲しいときは output を省いて pointCloud だけを渡す。
 	//   photogrammetry://sort?input=<パス>&output=<パス>
 	//                   [&overlap=15][&maxPerGroup=150][&minPerGroup=20]
 	//                   [&timeGap=300][&groupThreshold=0.4][&minSharpness=12]
@@ -80,19 +83,19 @@ public enum APICommand: Equatable, Sendable
 		{
 			throw APICommandError.missingParameter("input")
 		}
-		guard let output = parameters["output"], !output.isEmpty
-		else
-		{
-			throw APICommandError.missingParameter("output")
-		}
 		let inputFolder = URL(fileURLWithPath: input, isDirectory: true)
+		// 値の無い &output= は「指定なし」と同じ扱いにする（URL を機械的に
+		// 組み立てる側が空文字を渡してきても弾かない）。pointCloud も同じ規則。
+		let output = parameters["output"].flatMap { $0.isEmpty ? nil : $0 }
 
 		switch command
 		{
 			case processCommand:
+				// 生成では output は任意（点群だけを頼めるため）。「両方とも
+				// 指定なし」は validate の仕事なので、ここでは判断しない。
 				var request = ReconstructionRequest(
 					inputFolder: inputFolder,
-					outputFile: URL(fileURLWithPath: output))
+					outputFile: output.map { URL(fileURLWithPath: $0) })
 				if let raw = parameters["detail"]
 				{
 					request.detail = try enumValue(raw, parameter: "detail")
@@ -113,9 +116,21 @@ public enum APICommand: Equatable, Sendable
 				{
 					request.stageInputLocally = try boolValue(raw, parameter: "stageInput")
 				}
+				// 点群は「指定があれば出す」任意の出力。空文字は指定なしと同じ
+				// 扱いにする（&pointCloud= だけ付いた URL を弾かない）。
+				if let raw = parameters["pointCloud"], !raw.isEmpty
+				{
+					request.pointCloudFile = URL(fileURLWithPath: raw)
+				}
 				return .process(request)
 
 			case sortCommand:
+				// 仕分けは出力が 1 つしか無いので、こちらは必須のまま。
+				guard let output
+				else
+				{
+					throw APICommandError.missingParameter("output")
+				}
 				var request = SortRequest(
 					inputFolder: inputFolder,
 					outputFolder: URL(fileURLWithPath: output, isDirectory: true))
@@ -168,14 +183,19 @@ public enum APICommand: Equatable, Sendable
 
 	// -----------------------------------------------------------------
 	// CLI 引数
-	//   <input-folder> <output-file> [--detail d] [--sample-ordering o]
-	//                                [--feature-sensitivity s] [--subject k]
-	//                                [--no-stage-input]
+	//   <input-folder> [<output-file>] [--detail d] [--sample-ordering o]
+	//                                  [--feature-sensitivity s] [--subject k]
+	//                                  [--no-stage-input] [--point-cloud file.ply]
 	//   sort <input-folder> <output-folder> [--overlap n] [--max-per-group n] …
 	//
 	// 生成の語彙は Apple の HelloPhotogrammetry と同じにしてある（移行しやすさ
 	// 優先）。サブコマンド名が無ければ生成として解釈するので、既存のスクリプトは
 	// そのまま動く。
+	//
+	// 出力ファイル（2 つめの位置引数）を省くと、メッシュを作らず点群だけを
+	// 書き出す（--point-cloud と組み合わせる）。位置引数が 1 つだけで
+	// --point-cloud も無ければ何も生まれないが、その判断は
+	// ReconstructionRequest.validate に置いてある（入口ごとに散らさない）。
 	// -----------------------------------------------------------------
 	public static func parse(arguments: [String]) throws -> APICommand
 	{
@@ -201,6 +221,7 @@ public enum APICommand: Equatable, Sendable
 		var orderingRaw: String?
 		var sensitivityRaw: String?
 		var subjectRaw: String?
+		var pointCloudRaw: String?
 		// 既定が「複製する」なので、フラグは切るほうに置く（sort の
 		// --no-recursive と同じ形）。
 		var stageInputLocally = true
@@ -223,6 +244,9 @@ public enum APICommand: Equatable, Sendable
 				case "--subject":
 					subjectRaw = try optionValue(arguments, at: index, name: argument)
 					index += 2
+				case "--point-cloud":
+					pointCloudRaw = try optionValue(arguments, at: index, name: argument)
+					index += 2
 				case "--no-stage-input":
 					stageInputLocally = false
 					index += 1
@@ -236,7 +260,8 @@ public enum APICommand: Equatable, Sendable
 			}
 		}
 
-		guard positionals.count == 2
+		// 出力ファイルは省ける（点群だけを書き出す形）。
+		guard (1 ... 2).contains(positionals.count)
 		else
 		{
 			throw APICommandError.missingArguments
@@ -244,7 +269,9 @@ public enum APICommand: Equatable, Sendable
 
 		var request = ReconstructionRequest(
 			inputFolder: URL(fileURLWithPath: positionals[0], isDirectory: true),
-			outputFile: URL(fileURLWithPath: positionals[1]),
+			outputFile: positionals.count == 2
+				? URL(fileURLWithPath: positionals[1])
+				: nil,
 			stageInputLocally: stageInputLocally)
 		if let raw = detailRaw
 		{
@@ -261,6 +288,10 @@ public enum APICommand: Equatable, Sendable
 		if let raw = subjectRaw
 		{
 			request.subject = try enumValue(raw, parameter: "--subject")
+		}
+		if let raw = pointCloudRaw
+		{
+			request.pointCloudFile = URL(fileURLWithPath: raw)
 		}
 		return request
 	}
@@ -341,14 +372,24 @@ public enum APICommand: Equatable, Sendable
 	/// 1 か所に保つため、組み立てもここに置く（往復はテストで固定している）。
 	public static func arguments(for request: ReconstructionRequest) -> [String]
 	{
-		var result = [
-			request.inputFolder.path,
-			request.outputFile.path,
+		// 出力ファイルは位置引数なので、省くときは並びごと落とす
+		// （オプションは位置引数の前後どちらでもよいので、これで解釈は変わらない）。
+		var result = [request.inputFolder.path]
+		if let outputFile = request.outputFile
+		{
+			result.append(outputFile.path)
+		}
+		result += [
 			"--detail", request.detail.rawValue,
 			"--sample-ordering", request.sampleOrdering.rawValue,
 			"--feature-sensitivity", request.featureSensitivity.rawValue,
 			"--subject", request.subject.rawValue,
 		]
+		// 点群は任意の出力なので、要求されたときだけ渡す。
+		if let pointCloudFile = request.pointCloudFile
+		{
+			result += ["--point-cloud", pointCloudFile.path]
+		}
 		// 複製はヘルパー（＝実際に写真を読むプロセス）側で行う。既定が有効なので
 		// 切るときだけフラグを渡す。
 		if !request.stageInputLocally
@@ -476,7 +517,8 @@ public enum APICommandError: Error, LocalizedError, Equatable
 			case .unknownOption(let option):
 				return "不明なオプションです: \(option)"
 			case .missingArguments:
-				return "引数が不足しています（<入力フォルダ> <出力ファイル.usdz> が必要です）。"
+				return "引数が不足しています（<入力フォルダ> [<出力ファイル.usdz>] が必要です。"
+					+ "点群だけを書き出すときは出力ファイルを省いて --point-cloud を指定してください）。"
 			case .missingSortArguments:
 				return "引数が不足しています（sort <入力フォルダ> <仕分け先フォルダ> が必要です）。"
 		}
